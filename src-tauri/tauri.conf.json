@@ -14,8 +14,17 @@
       {
         "label": "island",
         "title": "LuckyIsland",
-        "width": 800,
-        "height": 600
+        "width": 720,
+        "height": 80,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "shadow": false,
+        "visible": false,
+        "hiddenTitle": true,
+        "url": "index.html"
       }
     ],
     "security": {
