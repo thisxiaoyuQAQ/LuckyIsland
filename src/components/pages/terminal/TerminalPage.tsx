@@ -48,7 +48,17 @@ export function TerminalPage({ compact }: { compact: boolean }) {
     <div className="flex h-full flex-col gap-2">
       {/* 工具栏：tab 栏（横向滚动） + 快捷命令 + 外部 WT */}
       <div className="flex shrink-0 items-center gap-2">
-        <div className="flex flex-1 min-w-0 items-center gap-1 overflow-x-auto [scrollbar-gutter:stable]">
+        <div
+          className="flex flex-1 min-w-0 items-center gap-1 overflow-x-auto [scrollbar-gutter:stable]"
+          onWheel={(e) => {
+            if (tabs.length < 2) return;
+            const idx = tabs.findIndex((t) => t.id === active);
+            if (idx < 0) return;
+            const next =
+              e.deltaY > 0 ? Math.min(idx + 1, tabs.length - 1) : Math.max(idx - 1, 0);
+            storeSetActive(tabs[next].id);
+          }}
+        >
           {tabs.map((t) => (
             <span
               key={t.id}

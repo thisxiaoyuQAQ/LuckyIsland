@@ -115,7 +115,13 @@ function App() {
         {/* 顶部条 */}
         <div data-tauri-drag-region className="flex h-14 shrink-0 items-center gap-3">
           {expanded ? (
-            <div className="flex items-center gap-1">
+            <div
+              className="flex items-center gap-1"
+              onWheel={(e) => {
+                if (e.deltaY > 0) setPage(pageIndex + 1);
+                else if (e.deltaY < 0) setPage(pageIndex - 1);
+              }}
+            >
               {PAGES.map((p, i) => (
                 <button
                   key={p.id}
@@ -132,7 +138,13 @@ function App() {
               ))}
             </div>
           ) : (
-            <div className="flex items-center gap-1.5">
+            <div
+              className="flex items-center gap-1.5"
+              onWheel={(e) => {
+                if (e.deltaY > 0) setPage(pageIndex + 1);
+                else if (e.deltaY < 0) setPage(pageIndex - 1);
+              }}
+            >
               {PAGES.map((p, i) => (
                 <span
                   key={p.id}

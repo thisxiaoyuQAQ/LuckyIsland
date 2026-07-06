@@ -36,6 +36,9 @@ export async function attachTerminal(
   }
   fitIfReady(fit);
 
+  // 【临时诊断】直接写 xterm，验证渲染是否可见
+  term.write("\r\n\x1b[36m[诊断: xterm 渲染 OK]\x1b[0m\r\n");
+
   const onData = term.onData((d) => {
     void invoke("term_write", { termId, data: d });
   });
@@ -52,6 +55,9 @@ export async function attachTerminal(
   const unExited: UnlistenFn = await listen<string>("term://exited", (e) => {
     if (e.payload === termId) term.write("\r\n\x1b[90m[进程已退出]\x1b[0m\r\n");
   });
+
+  // 【临时诊断】监听注册后触发 Rust emit，验证事件桥
+  void invoke("term_test_emit", { termId });
 
   // 初始尺寸同步给后端
   void invoke("term_resize", { termId, cols: term.cols, rows: term.rows });

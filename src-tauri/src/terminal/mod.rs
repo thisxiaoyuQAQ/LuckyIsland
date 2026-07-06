@@ -103,6 +103,7 @@ pub fn term_create(
         let mut reader = reader;
         let mut buf = [0u8; 4096];
         let mut leftover: Vec<u8> = Vec::new();
+        let mut first_read = true; // 【临时诊断】标记 PTY 是否产出过数据
         loop {
             let n = match reader.read(&mut buf) {
                 Ok(0) => break,
@@ -110,6 +111,16 @@ pub fn term_create(
                 Err(_) => break,
             };
             leftover.extend_from_slice(&buf[..n]);
+            if first_read {
+                first_read = false;
+                let _ = app2.emit(
+                    "term://output",
+                    TermOutput {
+                        term_id: id2.clone(),
+                        data: "\x1b[33m[诊断: PTY 首次收到数据]\x1b[0m\r\n".into(),
+                    },
+                );
+            }
             loop {
                 match std::str::from_utf8(&leftover) {
                     Ok(_) => {
@@ -205,5 +216,18 @@ pub fn term_open_wt(cwd: Option<String>) -> Result<(), String> {
     }
     cmd.spawn()
         .map_err(|e| format!("打开 Windows Terminal 失败：{e}（是否已安装？）"))?;
+    Ok(())
+}
+
+/// 【临时诊断】前端注册监听后调用，验证 Rust→前端 事件桥是否通
+#[tauri::command]
+pub fn term_test_emit(app: AppHandle, term_id: String) -> Result<(), String> {
+    let _ = app.emit(
+        "term://output",
+        TermOutput {
+            term_id,
+            data: "\x1b[32m[诊断: Rust→前端 桥接 OK]\x1b[0m\r\n".into(),
+        },
+    );
     Ok(())
 }

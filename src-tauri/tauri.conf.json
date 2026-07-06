@@ -24,6 +24,7 @@
         "shadow": false,
         "visible": false,
         "hiddenTitle": true,
+        "dragDropEnabled": false,
         "url": "index.html"
       }
     ],
