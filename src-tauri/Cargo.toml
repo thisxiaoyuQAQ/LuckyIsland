@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "LuckyIsland - Windows 灵动岛式桌面助手"
 authors = ["you"]
 edition = "2021"
+default-run = "lucky-island"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
