@@ -274,3 +274,17 @@ pub fn weather_cities_remove(city: String, db: State<'_, Db>) -> Result<(), Stri
         .map_err(|e| e.to_string())?;
     Ok(())
 }
+
+/// 按给定顺序重排城市（前端拖拽后调用，重写 sort）
+#[tauri::command]
+pub fn weather_cities_reorder(cities: Vec<String>, db: State<'_, Db>) -> Result<(), String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    for (i, c) in cities.iter().enumerate() {
+        conn.execute(
+            "UPDATE weather_cities SET sort=?1 WHERE city=?2",
+            params![i as i64, c],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}

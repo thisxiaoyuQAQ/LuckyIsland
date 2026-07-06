@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Loader2, RefreshCw, AlertTriangle, MapPin, LocateFixed, Plus, X } from "lucide-react";
+import {
+  Loader2, RefreshCw, AlertTriangle, MapPin, LocateFixed, Plus, X, Pin,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { useReorder } from "@/lib/useReorder";
 import { CITIES } from "./cities";
 
 interface WeatherAlert {
@@ -36,7 +39,8 @@ interface LocatedCity {
   ip: string;
 }
 
-/** uapis/和风风格 icon 码 → emoji（覆盖常见范围） */
+const COMPACT_KEY = "weather:compact_city";
+
 function weatherEmoji(icon: string): string {
   const n = parseInt(icon, 10);
   if (Number.isNaN(n)) return "🌡️";
@@ -60,14 +64,15 @@ function levelColor(level: string): string {
 export function WeatherPage({ compact }: { compact: boolean }) {
   const [cities, setCities] = useState<string[]>([]);
   const [active, setActive] = useState("");
-  const [w, setW] = useState<WeatherNow | null>(null);
+  const [compactCity, setCompactCity] = useState("");
+  const [cache, setCache] = useState<Record<string, WeatherNow>>({});
   const [draft, setDraft] = useState("");
   const [adding, setAdding] = useState(false);
+  const [picking, setPicking] = useState(false);
   const [loading, setLoading] = useState(false);
   const [locating, setLocating] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  // 添加城市下拉候选（限定在白名单内，过滤已添加的）
   const suggestions = useMemo(() => {
     const q = draft.trim();
     const pool = (q ? CITIES.filter((c) => c.includes(q)) : CITIES).filter(
@@ -82,7 +87,7 @@ export function WeatherPage({ compact }: { compact: boolean }) {
     setErr(null);
     try {
       const data = await invoke<WeatherNow>("weather_get", { city });
-      setW(data);
+      setCache((c) => ({ ...c, [city]: data }));
     } catch (e) {
       setErr(String(e));
     } finally {
@@ -92,9 +97,7 @@ export function WeatherPage({ compact }: { compact: boolean }) {
 
   const loadCities = useCallback(async () => {
     try {
-      const list = await invoke<string[]>("weather_cities_list");
-      setCities(list);
-      return list;
+      return await invoke<string[]>("weather_cities_list");
     } catch (e) {
       setErr(String(e));
       return [];
@@ -108,6 +111,7 @@ export function WeatherPage({ compact }: { compact: boolean }) {
       const loc = await invoke<LocatedCity>("weather_locate");
       await invoke("weather_cities_add", { city: loc.city });
       const list = await loadCities();
+      setCities(list);
       const next = list.length > 0 ? list[list.length - 1] : loc.city;
       setActive(next);
       await fetchWeather(next);
@@ -119,17 +123,24 @@ export function WeatherPage({ compact }: { compact: boolean }) {
     }
   }, [fetchWeather, loadCities]);
 
-  // 首挂载：载入城市；空则自动定位加入
+  // 首挂载：载入城市 + 紧凑态城市；空则自动定位
   useEffect(() => {
     void (async () => {
-      const list = await loadCities();
+      const [list, savedCompact] = await Promise.all([
+        loadCities(),
+        invoke<string | null>("setting_get", { key: COMPACT_KEY }),
+      ]);
       if (list.length === 0) {
         await locateAndAdd();
         return;
       }
+      setCities(list);
       const first = list[0];
+      const comp = savedCompact && list.includes(savedCompact) ? savedCompact : first;
       setActive(first);
-      await fetchWeather(first);
+      setCompactCity(comp);
+      void fetchWeather(first);
+      if (comp !== first) void fetchWeather(comp);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -148,6 +159,7 @@ export function WeatherPage({ compact }: { compact: boolean }) {
       setDraft("");
       setAdding(false);
       const list = await loadCities();
+      setCities(list);
       setActive(city);
       await fetchWeather(city);
     } catch (e) {
@@ -159,49 +171,80 @@ export function WeatherPage({ compact }: { compact: boolean }) {
     try {
       await invoke("weather_cities_remove", { city: c });
       const list = await loadCities();
+      setCities(list);
       if (active === c) {
         const next = list[0] ?? "";
         setActive(next);
         if (next) void fetchWeather(next);
-        else setW(null);
+      }
+      if (compactCity === c) {
+        const next = list[0] ?? "";
+        setCompactCity(next);
+        void invoke("setting_set", { key: COMPACT_KEY, value: next || null });
+        if (next && next !== active) void fetchWeather(next);
       }
     } catch (e) {
       setErr(String(e));
     }
   };
 
+  const pickCompact = async (c: string) => {
+    setCompactCity(c);
+    setPicking(false);
+    await invoke("setting_set", { key: COMPACT_KEY, value: c });
+    if (!cache[c]) void fetchWeather(c);
+  };
+
+  const { overIndex, itemProps } = useReorder<string>((next) => {
+    setCities(next);
+    void invoke("weather_cities_reorder", { cities: next });
+  });
+
+  const refreshAll = () => {
+    if (active) void fetchWeather(active);
+    if (compactCity && compactCity !== active) void fetchWeather(compactCity);
+  };
+
+  const w = cache[active];
+  const wCompact = cache[compactCity];
+
   if (compact) {
-    if (loading && !w) return <span className="text-sm text-muted-foreground">天气…</span>;
-    if (!w) return <span className="text-sm text-muted-foreground">无天气</span>;
+    const cur = wCompact ?? w;
+    if (loading && !cur) return <span className="text-sm text-muted-foreground">天气…</span>;
+    if (!cur) return <span className="text-sm text-muted-foreground">无天气</span>;
     return (
       <span className="flex items-center gap-1.5 text-sm tabular-nums">
-        <span>{weatherEmoji(w.weather_icon)}</span>
-        <span className="text-muted-foreground">{w.city}</span>
-        <span className="font-medium">{Math.round(w.temperature)}°</span>
-        <span className="text-muted-foreground">{w.weather}</span>
-        {w.offline && <span className="text-[10px] text-yellow-500">离线</span>}
+        <span>{weatherEmoji(cur.weather_icon)}</span>
+        <span className="text-muted-foreground">{cur.city}</span>
+        <span className="font-medium">{Math.round(cur.temperature)}°</span>
+        <span className="text-muted-foreground">{cur.weather}</span>
+        {cur.offline && <span className="text-[10px] text-yellow-500">离线</span>}
       </span>
     );
   }
 
   return (
     <div className="flex h-full flex-col gap-3">
-      {/* 城市芯片行 */}
+      {/* 城市芯片行（可拖拽排序） */}
       <div className="flex flex-wrap items-center gap-1.5">
-        {cities.map((c) => (
+        {cities.map((c, i) => (
           <span
             key={c}
+            {...itemProps(i, cities)}
             className={cn(
               "group flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs transition-colors",
               c === active
                 ? "border-primary bg-primary/10 text-foreground"
                 : "border-border/60 text-muted-foreground hover:text-foreground",
+              overIndex === i && "ring-2 ring-primary/60",
             )}
           >
             <button onClick={() => switchCity(c)} className="cursor-pointer">
               {c}
             </button>
+            {c === compactCity && <Pin className="h-2.5 w-2.5 text-primary" />}
             <button
+              draggable={false}
               onClick={() => void removeCity(c)}
               aria-label={`删除${c}`}
               className="text-muted-foreground/50 opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100"
@@ -235,10 +278,7 @@ export function WeatherPage({ compact }: { compact: boolean }) {
                 {suggestions.map((c) => (
                   <button
                     key={c}
-                    onMouseDown={(e) => {
-                      e.preventDefault();
-                      void addCity(c);
-                    }}
+                    onMouseDown={(e) => { e.preventDefault(); void addCity(c); }}
                     className="block w-full px-2.5 py-1 text-left text-xs hover:bg-accent"
                   >
                     {c}
@@ -258,6 +298,36 @@ export function WeatherPage({ compact }: { compact: boolean }) {
         )}
 
         <div className="ml-auto flex items-center gap-1">
+          {/* 选择紧凑态显示的城市 */}
+          <div className="relative">
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-7 px-2"
+              onClick={() => setPicking((v) => !v)}
+              aria-label="选择紧凑态城市"
+              title={`紧凑态显示：${compactCity || "默认"}`}
+            >
+              <Pin className="h-3.5 w-3.5" />
+            </Button>
+            {picking && (
+              <div className="absolute right-0 top-full z-10 mt-1 max-h-56 w-32 overflow-y-auto rounded-md border border-border bg-popover shadow-md">
+                {cities.map((c) => (
+                  <button
+                    key={c}
+                    onMouseDown={(e) => { e.preventDefault(); void pickCompact(c); }}
+                    className={cn(
+                      "flex w-full items-center gap-1.5 px-2.5 py-1 text-left text-xs hover:bg-accent",
+                      c === compactCity && "text-primary",
+                    )}
+                  >
+                    {c === compactCity && <Pin className="h-2.5 w-2.5" />}
+                    {c}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
           <Button
             size="sm"
             variant="ghost"
@@ -273,7 +343,7 @@ export function WeatherPage({ compact }: { compact: boolean }) {
             size="sm"
             variant="ghost"
             className="h-7 px-2"
-            onClick={() => active && void fetchWeather(active)}
+            onClick={refreshAll}
             aria-label="刷新"
           >
             {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
@@ -288,7 +358,6 @@ export function WeatherPage({ compact }: { compact: boolean }) {
 
       {w && (
         <>
-          {/* 主体：图标 + 温度 + 描述 */}
           <div className="flex items-center gap-4">
             <span className="text-5xl leading-none">{weatherEmoji(w.weather_icon)}</span>
             <div>
@@ -306,7 +375,6 @@ export function WeatherPage({ compact }: { compact: boolean }) {
             </div>
           </div>
 
-          {/* 预警 */}
           {w.alerts.length > 0 && (
             <div className="flex-1 space-y-1.5 overflow-y-auto pr-1 [scrollbar-gutter:stable]">
               {w.alerts.map((a, i) => (

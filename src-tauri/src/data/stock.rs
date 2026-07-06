@@ -399,6 +399,20 @@ pub fn stock_watchlist_remove(symbol: String, db: State<'_, Db>) -> Result<(), S
     Ok(())
 }
 
+/// 按给定顺序重排自选股（前端拖拽后调用，重写 sort）
+#[tauri::command]
+pub fn stock_watchlist_reorder(symbols: Vec<String>, db: State<'_, Db>) -> Result<(), String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    for (i, s) in symbols.iter().enumerate() {
+        conn.execute(
+            "UPDATE stock_watchlist SET sort=?1 WHERE symbol=?2",
+            params![i as i64, s],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 /// 后台轮询：交易时段 5s / 非交易 30s，emit `stock://tick`。
 /// 失败时 emit 缓存（若有）以便前端显示离线态。
 pub async fn poll_loop(app: AppHandle) {

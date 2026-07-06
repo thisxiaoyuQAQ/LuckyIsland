@@ -1,4 +1,5 @@
 import { Trash2 } from "lucide-react";
+import type { HTMLAttributes } from "react";
 import { cn } from "@/lib/utils";
 
 export interface Quote {
@@ -48,21 +49,27 @@ export function StockRow({
   onClick,
   active,
   compact,
+  dragProps,
+  dragOver,
 }: {
   q: Quote;
   onRemove?: (symbol: string) => void;
   onClick?: (symbol: string) => void;
   active?: boolean;
   compact?: boolean;
+  dragProps?: HTMLAttributes<HTMLLIElement>;
+  dragOver?: boolean;
 }) {
   const color = colorFor(q.change);
   return (
     <li
+      {...dragProps}
       onClick={() => onClick?.(q.symbol)}
       className={cn(
         "group flex items-center gap-3 rounded-md px-2 py-1.5",
         onClick && "cursor-pointer",
         active ? "bg-accent" : "hover:bg-accent/60",
+        dragOver && "ring-1 ring-primary/60",
       )}
     >
       <div className="min-w-0 flex-1">
@@ -88,6 +95,7 @@ export function StockRow({
       </div>
       {onRemove && (
         <button
+          draggable={false}
           onClick={(e) => {
             e.stopPropagation();
             onRemove(q.symbol);

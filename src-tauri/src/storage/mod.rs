@@ -68,6 +68,14 @@ impl Db {
         .map_err(|e| e.to_string())?;
         Ok(())
     }
+
+    /// 删除一个 settings KV
+    pub fn setting_delete(&self, key: &str) -> Result<(), String> {
+        let conn = self.0.lock().map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM settings WHERE key=?1", params![key])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
 }
 
 fn now_ts() -> i64 {

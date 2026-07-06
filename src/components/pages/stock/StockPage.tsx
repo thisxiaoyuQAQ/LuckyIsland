@@ -2,9 +2,12 @@ import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { cn } from "@/lib/utils";
+import { useReorder } from "@/lib/useReorder";
 import { StockAdd } from "./StockAdd";
 import { StockRow, type Quote } from "./StockRow";
 import { StockDetail } from "./StockDetail";
+
+const COMPACT_KEY = "stock:compact_symbol";
 
 function colorFor(change: number): string {
   if (change > 0) return "text-red-500";
@@ -15,6 +18,7 @@ function colorFor(change: number): string {
 export function StockPage({ compact }: { compact: boolean }) {
   const [quotes, setQuotes] = useState<Quote[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
+  const [compactSymbol, setCompactSymbol] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
@@ -27,6 +31,9 @@ export function StockPage({ compact }: { compact: boolean }) {
 
   useEffect(() => {
     void refresh();
+    void invoke<string | null>("setting_get", { key: COMPACT_KEY }).then((s) => {
+      if (s) setCompactSymbol(s);
+    });
     let un: (() => void) | undefined;
     listen<Quote[]>("stock://tick", (e) => setQuotes(e.payload)).then((fn) => {
       un = fn;
@@ -38,19 +45,35 @@ export function StockPage({ compact }: { compact: boolean }) {
     try {
       await invoke("stock_watchlist_remove", { symbol });
       if (selected === symbol) setSelected(null);
+      if (compactSymbol === symbol) {
+        setCompactSymbol(null);
+        void invoke("setting_set", { key: COMPACT_KEY, value: null });
+      }
       await refresh();
     } catch (e) {
       setErr(String(e));
     }
   };
 
+  // 选中个股 = 进入详情 + 记为紧凑态显示
+  const selectStock = (sym: string) => {
+    setSelected(sym);
+    if (sym !== compactSymbol) {
+      setCompactSymbol(sym);
+      void invoke("setting_set", { key: COMPACT_KEY, value: sym });
+    }
+  };
+
+  const { overIndex, itemProps } = useReorder<Quote>((next) => {
+    setQuotes(next);
+    void invoke("stock_watchlist_reorder", { symbols: next.map((q) => q.symbol) });
+  });
+
   const selectedQuote = quotes.find((q) => q.symbol === selected) ?? null;
 
   if (compact) {
-    if (quotes.length === 0) {
-      return <span className="text-sm text-muted-foreground">无自选</span>;
-    }
-    const q = quotes[0];
+    const q = quotes.find((x) => x.symbol === compactSymbol) ?? quotes[0];
+    if (!q) return <span className="text-sm text-muted-foreground">无自选</span>;
     const color = colorFor(q.change);
     return (
       <span className="flex items-center gap-1.5 text-sm tabular-nums">
@@ -80,13 +103,15 @@ export function StockPage({ compact }: { compact: boolean }) {
               </div>
             ) : (
               <ul className="space-y-1">
-                {quotes.map((q) => (
+                {quotes.map((q, i) => (
                   <StockRow
                     key={q.symbol}
                     q={q}
                     compact
                     active={q.symbol === selected}
-                    onClick={(s) => setSelected(s)}
+                    dragProps={itemProps(i, quotes)}
+                    dragOver={overIndex === i}
+                    onClick={(s) => selectStock(s)}
                     onRemove={(s) => void remove(s)}
                   />
                 ))}
@@ -113,11 +138,13 @@ export function StockPage({ compact }: { compact: boolean }) {
           </div>
         ) : (
           <ul className="space-y-1">
-            {quotes.map((q) => (
+            {quotes.map((q, i) => (
               <StockRow
                 key={q.symbol}
                 q={q}
-                onClick={(s) => setSelected(s)}
+                dragProps={itemProps(i, quotes)}
+                dragOver={overIndex === i}
+                onClick={(s) => selectStock(s)}
                 onRemove={(s) => void remove(s)}
               />
             ))}

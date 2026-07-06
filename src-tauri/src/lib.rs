@@ -1,4 +1,5 @@
 mod data;
+mod settings;
 mod storage;
 
 use tauri::{
@@ -11,12 +12,14 @@ use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut,
 use data::calendar::calendar_month;
 use data::stock::{
     poll_loop, stock_get, stock_kline, stock_search, stock_watchlist_add, stock_watchlist_list,
-    stock_watchlist_remove,
+    stock_watchlist_remove, stock_watchlist_reorder,
 };
 use data::todo::{todo_create, todo_delete, todo_list, todo_update};
 use data::weather::{
-    weather_cities_add, weather_cities_list, weather_cities_remove, weather_get, weather_locate,
+    weather_cities_add, weather_cities_list, weather_cities_remove, weather_cities_reorder,
+    weather_get, weather_locate,
 };
+use settings::{setting_get, setting_set};
 
 const WIN_W: f64 = 720.0;
 const COMPACT_H: f64 = 80.0;
@@ -113,12 +116,16 @@ pub fn run() {
             weather_cities_list,
             weather_cities_add,
             weather_cities_remove,
+            weather_cities_reorder,
             stock_get,
             stock_search,
             stock_kline,
             stock_watchlist_list,
             stock_watchlist_add,
-            stock_watchlist_remove
+            stock_watchlist_remove,
+            stock_watchlist_reorder,
+            setting_get,
+            setting_set
         ])
         .setup(|app| {
             // 注册 Alt+X 全局热键
