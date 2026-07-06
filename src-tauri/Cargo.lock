@@ -2098,6 +2098,7 @@ name = "lucky-island"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "encoding_rs",
  "nongli",
  "reqwest 0.12.28",
  "rusqlite",
@@ -2108,6 +2109,7 @@ dependencies = [
  "tauri-plugin-global-shortcut",
  "tauri-plugin-opener",
  "tauri-plugin-single-instance",
+ "tokio",
  "uuid",
 ]
 

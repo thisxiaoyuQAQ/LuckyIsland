@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { TimePage } from "@/components/pages/time/TimePage";
 import { CalendarPage } from "@/components/pages/calendar/CalendarPage";
 import { WeatherPage } from "@/components/pages/weather/WeatherPage";
+import { StockPage } from "@/components/pages/stock/StockPage";
 import { TodoPage } from "@/components/pages/todo/TodoPage";
 
 type Theme = "light" | "dark";
@@ -21,6 +22,7 @@ const PAGES: PageMeta[] = [
   { id: "time", label: "时间", Component: TimePage },
   { id: "calendar", label: "日历", Component: CalendarPage },
   { id: "weather", label: "天气", Component: WeatherPage },
+  { id: "stock", label: "股票", Component: StockPage },
   { id: "todo", label: "待办", Component: TodoPage },
 ];
 

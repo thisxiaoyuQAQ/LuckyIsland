@@ -1,0 +1,272 @@
+use chrono::{Datelike, Local, NaiveTime, Weekday};
+use encoding_rs::GBK;
+use rusqlite::params;
+use serde::{Deserialize, Serialize};
+use std::time::Duration;
+use tauri::{AppHandle, Emitter, Manager, State};
+
+use crate::storage::Db;
+
+const QT_URL: &str = "https://qt.gtimg.cn/q=";
+const SETTING_CACHE: &str = "stock:last";
+/// A 股交易时段轮询间隔（秒）
+const POLL_TRADING_SEC: u64 = 5;
+/// 非交易时段轮询间隔（秒）
+const POLL_OFF_SEC: u64 = 30;
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Quote {
+    pub symbol: String,
+    pub name: String,
+    pub code: String,
+    pub current: f64,
+    pub yesterday_close: f64,
+    pub open: f64,
+    pub high: f64,
+    pub low: f64,
+    /// 涨跌额（current - yesterday_close）
+    pub change: f64,
+    /// 涨跌幅（%）
+    pub change_percent: f64,
+    /// YYYYMMDDHHMMSS
+    pub time: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct WatchItem {
+    pub symbol: String,
+    pub sort: i64,
+}
+
+fn now_ts() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
+}
+
+/// 规整代码：前缀小写（sh/sz/us/hk/bj），代码部分保留大小写（usAAPL）。
+/// 非法返回 None。
+fn normalize_symbol(input: &str) -> Option<String> {
+    let s = input.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let lower = s.to_lowercase();
+    for pre in ["sh", "sz", "us", "hk", "bj"] {
+        if let Some(rest_lower) = lower.strip_prefix(pre) {
+            if !rest_lower.is_empty() && rest_lower.chars().all(|c| c.is_ascii_alphanumeric()) {
+                let original_rest = &s[pre.len()..];
+                return Some(format!("{pre}{original_rest}"));
+            }
+        }
+    }
+    None
+}
+
+/// 解析腾讯行情文本（GBK 解码后）。每个 symbol 一行：v_sh600519="...~...";
+fn parse_quotes(body: &str, symbols: &[String]) -> Vec<Quote> {
+    let mut out = Vec::with_capacity(symbols.len());
+    for sym in symbols {
+        let prefix = format!("v_{sym}=\"");
+        let Some(start) = body.find(&prefix) else {
+            continue;
+        };
+        let rest = &body[start + prefix.len()..];
+        let Some(end) = rest.find("\";") else {
+            continue;
+        };
+        let payload = &rest[..end];
+        let fields: Vec<&str> = payload.split('~').collect();
+        if fields.len() < 35 {
+            continue;
+        }
+        let name = fields[1].trim();
+        if name.is_empty() {
+            continue;
+        }
+        let parse = |s: &str| -> f64 { s.trim().parse().unwrap_or(0.0) };
+        out.push(Quote {
+            symbol: sym.clone(),
+            name: name.to_string(),
+            code: fields[2].to_string(),
+            current: parse(fields[3]),
+            yesterday_close: parse(fields[4]),
+            open: parse(fields[5]),
+            high: parse(fields[33]),
+            low: parse(fields[34]),
+            change: parse(fields[31]),
+            change_percent: parse(fields[32]),
+            time: fields[30].to_string(),
+        });
+    }
+    out
+}
+
+async fn fetch_quotes(
+    client: &reqwest::Client,
+    symbols: &[String],
+) -> Result<Vec<Quote>, String> {
+    if symbols.is_empty() {
+        return Ok(vec![]);
+    }
+    let url = format!("{QT_URL}{}", symbols.join(","));
+    let resp = client
+        .get(&url)
+        .header("Referer", "https://gu.qq.com/")
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
+    let (text, _, _) = GBK.decode(&bytes);
+    Ok(parse_quotes(&text, symbols))
+}
+
+/// 是否处于 A 股交易时段（周一至周五 9:30-11:30 / 13:00-15:00，本地时间）
+fn is_a_share_trading(now: chrono::DateTime<Local>) -> bool {
+    use Weekday::*;
+    match now.weekday() {
+        Sat | Sun => return false,
+        _ => {}
+    }
+    let t = now.time();
+    let morning = NaiveTime::from_hms_opt(9, 30, 0).unwrap()..=NaiveTime::from_hms_opt(11, 30, 0).unwrap();
+    let afternoon = NaiveTime::from_hms_opt(13, 0, 0).unwrap()..=NaiveTime::from_hms_opt(15, 0, 0).unwrap();
+    morning.contains(&t) || afternoon.contains(&t)
+}
+
+fn watchlist_load(db: &State<'_, Db>) -> Vec<String> {
+    let Ok(conn) = db.0.lock() else {
+        return vec![];
+    };
+    let Ok(mut stmt) = conn.prepare("SELECT symbol FROM stock_watchlist ORDER BY sort ASC, added_at ASC") else {
+        return vec![];
+    };
+    let rows = stmt.query_map([], |r| r.get::<_, String>(0));
+    match rows {
+        Ok(rs) => rs.filter_map(|r| r.ok()).collect(),
+        Err(_) => vec![],
+    }
+}
+
+fn cache_write(db: &State<'_, Db>, qs: &[Quote]) -> Result<(), String> {
+    let s = serde_json::to_string(qs).map_err(|e| e.to_string())?;
+    db.setting_set(SETTING_CACHE, &s)
+}
+
+fn cache_read(db: &State<'_, Db>) -> Option<Vec<Quote>> {
+    let s = db.setting_get(SETTING_CACHE)?;
+    serde_json::from_str(&s).ok()
+}
+
+/// 一次性拉取当前自选股行情（前端首屏用）。失败回退缓存。
+#[tauri::command]
+pub async fn stock_get(
+    db: State<'_, Db>,
+    http: State<'_, reqwest::Client>,
+) -> Result<Vec<Quote>, String> {
+    let symbols = watchlist_load(&db);
+    if symbols.is_empty() {
+        return Ok(vec![]);
+    }
+    match fetch_quotes(http.inner(), &symbols).await {
+        Ok(qs) => {
+            let _ = cache_write(&db, &qs);
+            Ok(qs)
+        }
+        Err(_) => Ok(cache_read(&db).unwrap_or_default()),
+    }
+}
+
+#[tauri::command]
+pub fn stock_watchlist_list(db: State<'_, Db>) -> Result<Vec<WatchItem>, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare("SELECT symbol, sort FROM stock_watchlist ORDER BY sort ASC, added_at ASC")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| Ok(WatchItem { symbol: r.get(0)?, sort: r.get(1)? }))
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+pub fn stock_watchlist_add(symbol: String, db: State<'_, Db>) -> Result<(), String> {
+    let Some(s) = normalize_symbol(&symbol) else {
+        return Err("代码格式无效，应为 sh/sz/us/hk/bj + 数字/字母".into());
+    };
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    let next_sort: i64 = conn
+        .query_row("SELECT COALESCE(MAX(sort),-1)+1 FROM stock_watchlist", [], |r| r.get(0))
+        .unwrap_or(0);
+    conn.execute(
+        "INSERT OR IGNORE INTO stock_watchlist (symbol, sort, added_at) VALUES (?1, ?2, ?3)",
+        params![s, next_sort, now_ts()],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn stock_watchlist_remove(symbol: String, db: State<'_, Db>) -> Result<(), String> {
+    let s = normalize_symbol(&symbol).unwrap_or_else(|| symbol.trim().to_string());
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM stock_watchlist WHERE symbol=?1", params![s])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// 后台轮询：交易时段 5s / 非交易 30s，emit `stock://tick`。
+/// 失败时 emit 缓存（若有）以便前端显示离线态。
+pub async fn poll_loop(app: AppHandle) {
+    loop {
+        let symbols = {
+            let db = app.state::<Db>();
+            watchlist_load(&db)
+        };
+
+        if symbols.is_empty() {
+            tokio::time::sleep(Duration::from_secs(POLL_OFF_SEC)).await;
+            continue;
+        }
+
+        let fetched = {
+            let http = app.state::<reqwest::Client>();
+            fetch_quotes(http.inner(), &symbols).await
+        };
+
+        match fetched {
+            Ok(qs) => {
+                {
+                    let db = app.state::<Db>();
+                    let _ = cache_write(&db, &qs);
+                }
+                let _ = app.emit("stock://tick", &qs);
+            }
+            Err(_) => {
+                let cached = {
+                    let db = app.state::<Db>();
+                    cache_read(&db)
+                };
+                if let Some(c) = cached {
+                    let _ = app.emit("stock://tick", &c);
+                }
+            }
+        }
+
+        let secs = if is_a_share_trading(Local::now()) {
+            POLL_TRADING_SEC
+        } else {
+            POLL_OFF_SEC
+        };
+        tokio::time::sleep(Duration::from_secs(secs)).await;
+    }
+}

@@ -9,6 +9,9 @@ use tauri::{
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
 use data::calendar::calendar_month;
+use data::stock::{
+    poll_loop, stock_get, stock_watchlist_add, stock_watchlist_list, stock_watchlist_remove,
+};
 use data::todo::{todo_create, todo_delete, todo_list, todo_update};
 use data::weather::{weather_get, weather_get_city, weather_set_city};
 
@@ -104,7 +107,11 @@ pub fn run() {
             calendar_month,
             weather_get,
             weather_get_city,
-            weather_set_city
+            weather_set_city,
+            stock_get,
+            stock_watchlist_list,
+            stock_watchlist_add,
+            stock_watchlist_remove
         ])
         .setup(|app| {
             // 注册 Alt+X 全局热键
@@ -149,6 +156,9 @@ pub fn run() {
                 .user_agent("Mozilla/5.0 (compatible; LuckyIsland/0.1)")
                 .build()?;
             app.manage(http);
+
+            // 股票行情后台轮询：交易时段 5s / 非交易 30s，emit stock://tick
+            tauri::async_runtime::spawn(poll_loop(app.handle().clone()));
 
             // 定位到顶部居中，初始 compact 态
             if let Some(window) = app.get_webview_window("island") {
