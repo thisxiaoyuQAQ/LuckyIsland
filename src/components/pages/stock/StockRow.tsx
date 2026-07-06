@@ -68,7 +68,9 @@ export function StockRow({
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline gap-2">
           <span className="truncate text-sm font-medium">{q.name}</span>
-          <span className="text-[10px] uppercase text-muted-foreground">{q.symbol}</span>
+          {!compact && (
+            <span className="text-[10px] uppercase text-muted-foreground">{q.symbol}</span>
+          )}
         </div>
         {!compact && (
           <div className="text-[10px] text-muted-foreground/80">
@@ -79,7 +81,9 @@ export function StockRow({
       <div className="text-right tabular-nums">
         <div className={cn("text-sm font-semibold", color)}>{q.current.toFixed(2)}</div>
         <div className={cn("text-[11px]", color)}>
-          {signed(q.change)} {signed(q.change_percent)}%
+          {compact
+            ? `${signed(q.change_percent)}%`
+            : `${signed(q.change)} ${signed(q.change_percent)}%`}
         </div>
       </div>
       {onRemove && (

@@ -213,14 +213,18 @@ pub async fn weather_locate(http: State<'_, reqwest::Client>) -> Result<LocatedC
         return Err(format!("HTTP {}", resp.status()));
     }
     let info: ApiMyIp = resp.json().await.map_err(|e| e.to_string())?;
-    // region 形如 "中国 福建省 漳州市"，取末段作城市名
+    // region 形如 "中国 福建省 漳州市"，取末段并去掉"市"后缀，与城市白名单统一
     let city = info
         .region
         .split_whitespace()
         .last()
-        .map(str::to_string)
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| "无法解析所在城市".to_string())?;
+        .unwrap_or("")
+        .trim()
+        .trim_end_matches('市')
+        .to_string();
+    if city.is_empty() {
+        return Err("无法解析所在城市".into());
+    }
     Ok(LocatedCity {
         city,
         region: info.region,

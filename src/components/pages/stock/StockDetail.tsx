@@ -2,7 +2,7 @@ import { useState } from "react";
 import { ArrowLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { StockChart } from "./StockChart";
+import { StockChart, MA_COLORS } from "./StockChart";
 import type { Quote } from "./StockRow";
 
 type Period = "day" | "week" | "month";
@@ -11,6 +11,13 @@ const PERIODS: ReadonlyArray<[Period, string]> = [
   ["week", "周K"],
   ["month", "月K"],
 ];
+const MA_PERIODS = [5, 10, 20];
+
+interface MaValues {
+  ma5: number;
+  ma10: number;
+  ma20: number;
+}
 
 /** 0 显示 --，否则保留 digits 位 */
 function fmt(n: number, digits = 2, unit = ""): string {
@@ -29,6 +36,7 @@ function Stat({ label, value, color }: { label: string; value: string; color?: s
 
 export function StockDetail({ quote, onBack }: { quote: Quote; onBack: () => void }) {
   const [period, setPeriod] = useState<Period>("day");
+  const [ma, setMa] = useState<MaValues | null>(null);
   const up = quote.change > 0;
   const down = quote.change < 0;
   const color = up ? "text-red-500" : down ? "text-green-500" : "text-muted-foreground";
@@ -71,27 +79,44 @@ export function StockDetail({ quote, onBack }: { quote: Quote; onBack: () => voi
         <Stat label="成交量" value={fmt(quote.volume, 0, "手")} />
       </div>
 
-      {/* 周期切换 */}
-      <div className="flex shrink-0 items-center gap-1">
-        {PERIODS.map(([p, label]) => (
-          <button
-            key={p}
-            onClick={() => setPeriod(p)}
-            className={cn(
-              "rounded px-2 py-0.5 text-[11px] transition-colors",
-              period === p
-                ? "bg-primary text-primary-foreground"
-                : "text-muted-foreground hover:text-foreground",
-            )}
-          >
-            {label}
-          </button>
-        ))}
+      {/* 周期切换 + MA 图例（图外，独立可读） */}
+      <div className="flex shrink-0 items-center gap-3">
+        <div className="flex items-center gap-1">
+          {PERIODS.map(([p, label]) => (
+            <button
+              key={p}
+              onClick={() => setPeriod(p)}
+              className={cn(
+                "rounded px-2 py-0.5 text-[11px] transition-colors",
+                period === p
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        {ma && (
+          <div className="flex items-center gap-3 text-[10px] tabular-nums text-muted-foreground">
+            {MA_PERIODS.map((n, i) => (
+              <span key={n} className="flex items-center gap-1">
+                <span style={{ color: MA_COLORS[i] }}>●</span>
+                MA{n} {(n === 5 ? ma.ma5 : n === 10 ? ma.ma10 : ma.ma20).toFixed(2)}
+              </span>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* K 图（右下） */}
       <div className="min-h-0 flex-1">
-        <StockChart key={`${quote.symbol}-${period}`} symbol={quote.symbol} period={period} />
+        <StockChart
+          key={`${quote.symbol}-${period}`}
+          symbol={quote.symbol}
+          period={period}
+          onMa={setMa}
+        />
       </div>
     </div>
   );

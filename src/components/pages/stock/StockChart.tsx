@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { init, dispose, TooltipShowRule, type Chart, type KLineData } from "klinecharts";
 import { invoke } from "@tauri-apps/api/core";
 
@@ -12,10 +12,14 @@ interface KBar {
 }
 
 type Period = "day" | "week" | "month";
+interface MaValues {
+  ma5: number;
+  ma10: number;
+  ma20: number;
+}
 
-// MA 线颜色（与下方 setStyles indicator.lines 一致）
-const MA_COLORS = ["#ffb74d", "#4fc3f7", "#ba68c8"];
-const MA_PERIODS = [5, 10, 20];
+// MA 线颜色（与下方 setStyles indicator.lines 一致，图例外侧图例复用）
+export const MA_COLORS = ["#ffb74d", "#4fc3f7", "#ba68c8"];
 
 function maValue(closes: number[], n: number): number {
   if (closes.length < n) return 0;
@@ -24,10 +28,17 @@ function maValue(closes: number[], n: number): number {
   return sum / n;
 }
 
-export function StockChart({ symbol, period }: { symbol: string; period: Period }) {
+export function StockChart({
+  symbol,
+  period,
+  onMa,
+}: {
+  symbol: string;
+  period: Period;
+  onMa?: (ma: MaValues | null) => void;
+}) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<Chart | null>(null);
-  const [ma, setMa] = useState<{ ma5: number; ma10: number; ma20: number } | null>(null);
 
   // 初始化图表（一次）
   useEffect(() => {
@@ -43,7 +54,7 @@ export function StockChart({ symbol, period }: { symbol: string; period: Period 
       indicator: {
         // 隐藏图内 MA 图例（移到图上方单独展示）
         tooltip: { showRule: TooltipShowRule.None },
-        // MA5/10/20 线色，与上方图例对应
+        // MA5/10/20 线色，与外置图例对应
         lines: MA_COLORS.map((c) => ({ color: c })),
       },
     });
@@ -83,32 +94,17 @@ export function StockChart({ symbol, period }: { symbol: string; period: Period 
           volume: b.volume,
         }));
         chartRef.current.applyNewData(data);
-        setMa({
+        onMa?.({
           ma5: maValue(closes, 5),
           ma10: maValue(closes, 10),
           ma20: maValue(closes, 20),
         });
       })
-      .catch(() => setMa(null));
+      .catch(() => onMa?.(null));
     return () => {
       cancelled = true;
     };
-  }, [symbol, period]);
+  }, [symbol, period, onMa]);
 
-  return (
-    <div className="flex h-full min-h-0 flex-col">
-      {/* MA 图例（图上方，独立可读） */}
-      {ma && (
-        <div className="flex shrink-0 items-center gap-3 px-1 pb-0.5 text-[10px] tabular-nums text-muted-foreground">
-          {MA_PERIODS.map((n, i) => (
-            <span key={n} className="flex items-center gap-1">
-              <span style={{ color: MA_COLORS[i] }}>●</span>
-              MA{n} {(n === 5 ? ma.ma5 : n === 10 ? ma.ma10 : ma.ma20).toFixed(2)}
-            </span>
-          ))}
-        </div>
-      )}
-      <div ref={containerRef} className="min-h-0 flex-1" />
-    </div>
-  );
+  return <div ref={containerRef} className="h-full w-full" />;
 }
