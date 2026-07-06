@@ -1,3 +1,4 @@
+use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::State;
@@ -5,6 +6,7 @@ use tauri::State;
 use crate::storage::Db;
 
 const API_URL: &str = "https://uapis.cn/api/v1/misc/weather";
+const MYIP_URL: &str = "https://uapis.cn/api/v1/network/myip";
 const SETTING_CITY: &str = "weather:city";
 const SETTING_CACHE: &str = "weather:last";
 const DEFAULT_CITY: &str = "北京";
@@ -182,4 +184,89 @@ pub fn weather_set_city(city: String, db: State<'_, Db>) -> Result<(), String> {
         return Err("城市不能为空".into());
     }
     db.setting_set(SETTING_CITY, c)
+}
+
+/// IP 定位本机城市（uapis /network/myip，region 末段取城市）
+#[derive(Serialize, Deserialize, Debug)]
+pub struct LocatedCity {
+    pub city: String,
+    pub region: String,
+    pub ip: String,
+}
+
+#[derive(Deserialize)]
+struct ApiMyIp {
+    #[serde(default)]
+    ip: String,
+    #[serde(default)]
+    region: String,
+}
+
+#[tauri::command]
+pub async fn weather_locate(http: State<'_, reqwest::Client>) -> Result<LocatedCity, String> {
+    let resp = http
+        .get(MYIP_URL)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    let info: ApiMyIp = resp.json().await.map_err(|e| e.to_string())?;
+    // region 形如 "中国 福建省 漳州市"，取末段作城市名
+    let city = info
+        .region
+        .split_whitespace()
+        .last()
+        .map(str::to_string)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "无法解析所在城市".to_string())?;
+    Ok(LocatedCity {
+        city,
+        region: info.region,
+        ip: info.ip,
+    })
+}
+
+/// 多城市：列表 / 增 / 删（持久化在 weather_cities 表）
+#[tauri::command]
+pub fn weather_cities_list(db: State<'_, Db>) -> Result<Vec<String>, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare("SELECT city FROM weather_cities ORDER BY sort ASC, added_at ASC")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| r.get::<_, String>(0))
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+pub fn weather_cities_add(city: String, db: State<'_, Db>) -> Result<(), String> {
+    let c = city.trim();
+    if c.is_empty() {
+        return Err("城市不能为空".into());
+    }
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    let next_sort: i64 = conn
+        .query_row("SELECT COALESCE(MAX(sort),-1)+1 FROM weather_cities", [], |r| r.get(0))
+        .unwrap_or(0);
+    conn.execute(
+        "INSERT OR IGNORE INTO weather_cities (city, sort, added_at) VALUES (?1, ?2, ?3)",
+        params![c, next_sort, now_ts()],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn weather_cities_remove(city: String, db: State<'_, Db>) -> Result<(), String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM weather_cities WHERE city=?1", params![city.trim()])
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }

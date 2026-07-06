@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Loader2, RefreshCw, AlertTriangle, MapPin } from "lucide-react";
+import { Loader2, RefreshCw, AlertTriangle, MapPin, LocateFixed, Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -29,6 +29,12 @@ interface WeatherNow {
   fetched_at: number;
 }
 
+interface LocatedCity {
+  city: string;
+  region: string;
+  ip: string;
+}
+
 /** uapis/和风风格 icon 码 → emoji（覆盖常见范围） */
 function weatherEmoji(icon: string): string {
   const n = parseInt(icon, 10);
@@ -51,23 +57,22 @@ function levelColor(level: string): string {
 }
 
 export function WeatherPage({ compact }: { compact: boolean }) {
+  const [cities, setCities] = useState<string[]>([]);
+  const [active, setActive] = useState("");
   const [w, setW] = useState<WeatherNow | null>(null);
-  const [city, setCity] = useState("");
   const [draft, setDraft] = useState("");
+  const [adding, setAdding] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [locating, setLocating] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
+  const fetchWeather = useCallback(async (city: string) => {
+    if (!city) return;
     setLoading(true);
     setErr(null);
     try {
-      const [data, savedCity] = await Promise.all([
-        invoke<WeatherNow>("weather_get"),
-        invoke<string>("weather_get_city"),
-      ]);
+      const data = await invoke<WeatherNow>("weather_get", { city });
       setW(data);
-      setCity(savedCity);
-      setDraft(savedCity);
     } catch (e) {
       setErr(String(e));
     } finally {
@@ -75,24 +80,83 @@ export function WeatherPage({ compact }: { compact: boolean }) {
     }
   }, []);
 
-  useEffect(() => {
-    void load();
-  }, [load]);
-
-  const changeCity = async () => {
-    const c = draft.trim();
-    if (!c || c === city) return;
+  const loadCities = useCallback(async () => {
     try {
-      await invoke("weather_set_city", { city: c });
-      setCity(c);
-      setLoading(true);
-      setErr(null);
-      const data = await invoke<WeatherNow>("weather_get", { city: c });
-      setW(data);
+      const list = await invoke<string[]>("weather_cities_list");
+      setCities(list);
+      return list;
     } catch (e) {
       setErr(String(e));
+      return [];
+    }
+  }, []);
+
+  const locateAndAdd = useCallback(async () => {
+    setLocating(true);
+    setErr(null);
+    try {
+      const loc = await invoke<LocatedCity>("weather_locate");
+      await invoke("weather_cities_add", { city: loc.city });
+      const list = await loadCities();
+      const next = list.length > 0 ? list[list.length - 1] : loc.city;
+      setActive(next);
+      await fetchWeather(next);
+    } catch (e) {
+      setErr(`定位失败：${e}`);
+      setAdding(true);
     } finally {
-      setLoading(false);
+      setLocating(false);
+    }
+  }, [fetchWeather, loadCities]);
+
+  // 首挂载：载入城市；空则自动定位加入
+  useEffect(() => {
+    void (async () => {
+      const list = await loadCities();
+      if (list.length === 0) {
+        await locateAndAdd();
+        return;
+      }
+      const first = list[0];
+      setActive(first);
+      await fetchWeather(first);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const switchCity = (c: string) => {
+    if (c === active) return;
+    setActive(c);
+    void fetchWeather(c);
+  };
+
+  const addCity = async () => {
+    const c = draft.trim();
+    if (!c) return;
+    try {
+      await invoke("weather_cities_add", { city: c });
+      setDraft("");
+      setAdding(false);
+      const list = await loadCities();
+      setActive(c);
+      await fetchWeather(c);
+    } catch (e) {
+      setErr(String(e));
+    }
+  };
+
+  const removeCity = async (c: string) => {
+    try {
+      await invoke("weather_cities_remove", { city: c });
+      const list = await loadCities();
+      if (active === c) {
+        const next = list[0] ?? "";
+        setActive(next);
+        if (next) void fetchWeather(next);
+        else setW(null);
+      }
+    } catch (e) {
+      setErr(String(e));
     }
   };
 
@@ -102,6 +166,7 @@ export function WeatherPage({ compact }: { compact: boolean }) {
     return (
       <span className="flex items-center gap-1.5 text-sm tabular-nums">
         <span>{weatherEmoji(w.weather_icon)}</span>
+        <span className="text-muted-foreground">{w.city}</span>
         <span className="font-medium">{Math.round(w.temperature)}°</span>
         <span className="text-muted-foreground">{w.weather}</span>
         {w.offline && <span className="text-[10px] text-yellow-500">离线</span>}
@@ -111,27 +176,84 @@ export function WeatherPage({ compact }: { compact: boolean }) {
 
   return (
     <div className="flex h-full flex-col gap-3">
-      {/* 顶部：城市 + 刷新 */}
-      <div className="flex items-center gap-2">
-        <MapPin className="h-3.5 w-3.5 text-muted-foreground" />
-        <input
-          value={draft}
-          onChange={(e) => setDraft(e.currentTarget.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              void changeCity();
-            }
-          }}
-          placeholder="城市名，如 北京 / beijing"
-          className="w-32 rounded-md border border-input bg-background px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-ring"
-        />
-        <Button size="sm" variant="ghost" className="h-7 px-2" onClick={() => void load()} aria-label="刷新">
-          {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
-        </Button>
-        {w?.offline && (
-          <span className="text-[10px] text-yellow-500">离线（缓存）</span>
+      {/* 城市芯片行 */}
+      <div className="flex flex-wrap items-center gap-1.5">
+        {cities.map((c) => (
+          <span
+            key={c}
+            className={cn(
+              "group flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs transition-colors",
+              c === active
+                ? "border-primary bg-primary/10 text-foreground"
+                : "border-border/60 text-muted-foreground hover:text-foreground",
+            )}
+          >
+            <button onClick={() => switchCity(c)} className="cursor-pointer">
+              {c}
+            </button>
+            <button
+              onClick={() => void removeCity(c)}
+              aria-label={`删除${c}`}
+              className="text-muted-foreground/50 opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100"
+            >
+              <X className="h-3 w-3" />
+            </button>
+          </span>
+        ))}
+
+        {adding ? (
+          <input
+            autoFocus
+            value={draft}
+            onChange={(e) => setDraft(e.currentTarget.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                void addCity();
+              } else if (e.key === "Escape") {
+                setAdding(false);
+                setDraft("");
+              }
+            }}
+            onBlur={() => {
+              if (!draft.trim()) setAdding(false);
+            }}
+            placeholder="城市名"
+            className="w-20 rounded-full border border-input bg-background px-2 py-0.5 text-xs outline-none focus:ring-1 focus:ring-ring"
+          />
+        ) : (
+          <button
+            onClick={() => setAdding(true)}
+            aria-label="添加城市"
+            className="flex h-6 w-6 items-center justify-center rounded-full border border-dashed border-border/60 text-muted-foreground hover:text-foreground"
+          >
+            <Plus className="h-3 w-3" />
+          </button>
         )}
+
+        <div className="ml-auto flex items-center gap-1">
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-7 px-2"
+            onClick={() => void locateAndAdd()}
+            disabled={locating}
+            aria-label="定位本机"
+            title="IP 定位本机城市"
+          >
+            {locating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <LocateFixed className="h-3.5 w-3.5" />}
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-7 px-2"
+            onClick={() => active && void fetchWeather(active)}
+            aria-label="刷新"
+          >
+            {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+          </Button>
+          {w?.offline && <span className="text-[10px] text-yellow-500">离线</span>}
+        </div>
       </div>
 
       {err && !w && (
@@ -152,6 +274,7 @@ export function WeatherPage({ compact }: { compact: boolean }) {
                 {w.weather} · {w.wind_direction} {w.wind_power} · 湿度 {Math.round(w.humidity)}%
               </div>
               <div className="text-[11px] text-muted-foreground/80">
+                <MapPin className="mr-1 inline h-3 w-3" />
                 {w.district ? `${w.province} ${w.city} ${w.district}` : `${w.province} ${w.city}`} · {w.report_time}
               </div>
             </div>

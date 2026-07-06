@@ -23,6 +23,11 @@ impl Db {
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS weather_cities (
+                city TEXT PRIMARY KEY,
+                sort INTEGER NOT NULL DEFAULT 0,
+                added_at INTEGER NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS stock_watchlist (
                 symbol TEXT PRIMARY KEY,
                 sort INTEGER NOT NULL DEFAULT 0,

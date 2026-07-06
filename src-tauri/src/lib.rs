@@ -13,7 +13,9 @@ use data::stock::{
     poll_loop, stock_get, stock_watchlist_add, stock_watchlist_list, stock_watchlist_remove,
 };
 use data::todo::{todo_create, todo_delete, todo_list, todo_update};
-use data::weather::{weather_get, weather_get_city, weather_set_city};
+use data::weather::{
+    weather_cities_add, weather_cities_list, weather_cities_remove, weather_get, weather_locate,
+};
 
 const WIN_W: f64 = 720.0;
 const COMPACT_H: f64 = 80.0;
@@ -106,8 +108,10 @@ pub fn run() {
             todo_delete,
             calendar_month,
             weather_get,
-            weather_get_city,
-            weather_set_city,
+            weather_locate,
+            weather_cities_list,
+            weather_cities_add,
+            weather_cities_remove,
             stock_get,
             stock_watchlist_list,
             stock_watchlist_add,
