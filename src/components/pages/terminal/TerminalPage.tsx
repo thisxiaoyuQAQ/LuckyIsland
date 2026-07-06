@@ -1,58 +1,31 @@
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Plus, X, ExternalLink } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { TerminalTab } from "./TerminalTab";
 import { Shortcuts, type Shortcut } from "./Shortcuts";
-
-interface Tab {
-  id: string;
-  title: string;
-}
-
-interface NewTabOpts {
-  cwd?: string;
-  command?: string;
-  title?: string;
-}
+import {
+  addTab,
+  closeTab as storeCloseTab,
+  ensureFirstTab,
+  getActive,
+  getTabs,
+  setActive as storeSetActive,
+  subscribe,
+} from "./term-store";
 
 export function TerminalPage({ compact }: { compact: boolean }) {
-  const [tabs, setTabs] = useState<Tab[]>([]);
-  const [active, setActive] = useState("");
+  const tabs = useSyncExternalStore(subscribe, getTabs, getTabs);
+  const active = useSyncExternalStore(subscribe, getActive, getActive);
   const [err, setErr] = useState<string | null>(null);
 
-  const newTab = useCallback(async (opts?: NewTabOpts) => {
-    const id = await invoke<string>("term_create", {
-      cwd: opts?.cwd ?? null,
-      command: opts?.command ?? null,
-    });
-    const title = opts?.title ?? `终端 ${tabsCount(tabs) + 1}`;
-    setTabs((t) => [...t, { id, title }]);
-    setActive(id);
-    return id;
-  }, [tabs]);
-
-  // 首挂载建一个 tab
+  // 首挂载建一个 tab（store 持久，重挂载不会重复建）
   useEffect(() => {
-    void newTab();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    ensureFirstTab();
   }, []);
 
-  const closeTab = async (id: string) => {
-    try {
-      await invoke("term_kill", { termId: id });
-    } catch {
-      /* ignore */
-    }
-    setTabs((t) => {
-      const next = t.filter((x) => x.id !== id);
-      if (active === id) setActive(next[0]?.id ?? "");
-      return next;
-    });
-  };
-
   const runShortcut = (s: Shortcut) => {
-    void newTab({ command: s.command, title: s.name, cwd: s.cwd });
+    void addTab({ command: s.command, title: s.name, cwd: s.cwd });
   };
 
   const openInWt = async () => {
@@ -86,11 +59,11 @@ export function TerminalPage({ compact }: { compact: boolean }) {
                   : "text-muted-foreground hover:text-foreground",
               )}
             >
-              <button onClick={() => setActive(t.id)} className="cursor-pointer">
+              <button onClick={() => storeSetActive(t.id)} className="cursor-pointer">
                 {t.title}
               </button>
               <button
-                onClick={() => void closeTab(t.id)}
+                onClick={() => void storeCloseTab(t.id)}
                 aria-label="关闭标签"
                 className="text-muted-foreground/60 opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100"
               >
@@ -99,7 +72,7 @@ export function TerminalPage({ compact }: { compact: boolean }) {
             </span>
           ))}
           <button
-            onClick={() => void newTab()}
+            onClick={() => void addTab()}
             aria-label="新标签"
             className="flex h-6 w-6 items-center justify-center rounded-md border border-dashed border-border/60 text-muted-foreground hover:text-foreground"
           >
@@ -132,8 +105,4 @@ export function TerminalPage({ compact }: { compact: boolean }) {
       </div>
     </div>
   );
-}
-
-function tabsCount(tabs: Tab[]): number {
-  return tabs.length;
 }
