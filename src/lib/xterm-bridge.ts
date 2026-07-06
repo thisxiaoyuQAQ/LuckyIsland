@@ -27,12 +27,13 @@ export async function attachTerminal(
   const fit = new FitAddon();
   term.loadAddon(fit);
   term.loadAddon(new WebLinksAddon());
+  term.open(container);
+  // WebglAddon 必须在 open 之后加载（它要附着到已渲染的 canvas）
   try {
     term.loadAddon(new WebglAddon());
   } catch {
     // webgl 不可用时回退 canvas（xterm 默认渲染器）
   }
-  term.open(container);
   fitIfReady(fit);
 
   const onData = term.onData((d) => {

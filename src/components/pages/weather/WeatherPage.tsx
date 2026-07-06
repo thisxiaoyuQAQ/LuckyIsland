@@ -226,13 +226,14 @@ export function WeatherPage({ compact }: { compact: boolean }) {
   return (
     <div className="flex h-full flex-col gap-3">
       {/* 城市芯片行（可拖拽排序） */}
-      <div className="flex flex-wrap items-center gap-1.5">
+      <div className="flex items-center gap-1.5">
+        <div className="flex flex-1 min-w-0 items-center gap-1.5 overflow-x-auto [scrollbar-gutter:stable]">
         {cities.map((c, i) => (
           <span
             key={c}
             {...itemProps(i, cities)}
             className={cn(
-              "group flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs transition-colors",
+              "group flex shrink-0 items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs transition-colors",
               c === active
                 ? "border-primary bg-primary/10 text-foreground"
                 : "border-border/60 text-muted-foreground hover:text-foreground",
@@ -255,7 +256,7 @@ export function WeatherPage({ compact }: { compact: boolean }) {
         ))}
 
         {adding ? (
-          <div className="relative">
+          <div className="relative shrink-0">
             <input
               autoFocus
               value={draft}
@@ -291,13 +292,14 @@ export function WeatherPage({ compact }: { compact: boolean }) {
           <button
             onClick={() => setAdding(true)}
             aria-label="添加城市"
-            className="flex h-6 w-6 items-center justify-center rounded-full border border-dashed border-border/60 text-muted-foreground hover:text-foreground"
+            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-dashed border-border/60 text-muted-foreground hover:text-foreground"
           >
             <Plus className="h-3 w-3" />
           </button>
         )}
+        </div>
 
-        <div className="ml-auto flex items-center gap-1">
+        <div className="flex shrink-0 items-center gap-1">
           {/* 选择紧凑态显示的城市 */}
           <div className="relative">
             <Button
