@@ -71,7 +71,7 @@ export function StockPage({ compact }: { compact: boolean }) {
   if (selected && selectedQuote) {
     return (
       <div className="flex h-full gap-3">
-        <div className="flex w-[200px] shrink-0 flex-col gap-2 border-r border-border/60 pr-2">
+        <div className="flex w-[220px] shrink-0 flex-col gap-2 border-r border-border/60 pr-2">
           <StockAdd onAdded={refresh} />
           <div className="min-h-0 flex-1 overflow-y-auto pr-1 [scrollbar-gutter:stable]">
             {quotes.length === 0 ? (
@@ -84,6 +84,7 @@ export function StockPage({ compact }: { compact: boolean }) {
                   <StockRow
                     key={q.symbol}
                     q={q}
+                    compact
                     active={q.symbol === selected}
                     onClick={(s) => setSelected(s)}
                     onRemove={(s) => void remove(s)}

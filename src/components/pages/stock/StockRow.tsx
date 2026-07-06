@@ -47,11 +47,13 @@ export function StockRow({
   onRemove,
   onClick,
   active,
+  compact,
 }: {
   q: Quote;
   onRemove?: (symbol: string) => void;
   onClick?: (symbol: string) => void;
   active?: boolean;
+  compact?: boolean;
 }) {
   const color = colorFor(q.change);
   return (
@@ -68,9 +70,11 @@ export function StockRow({
           <span className="truncate text-sm font-medium">{q.name}</span>
           <span className="text-[10px] uppercase text-muted-foreground">{q.symbol}</span>
         </div>
-        <div className="text-[10px] text-muted-foreground/80">
-          高 {q.high.toFixed(2)} · 低 {q.low.toFixed(2)} · {hhmm(q.time)}
-        </div>
+        {!compact && (
+          <div className="text-[10px] text-muted-foreground/80">
+            高 {q.high.toFixed(2)} · 低 {q.low.toFixed(2)} · {hhmm(q.time)}
+          </div>
+        )}
       </div>
       <div className="text-right tabular-nums">
         <div className={cn("text-sm font-semibold", color)}>{q.current.toFixed(2)}</div>

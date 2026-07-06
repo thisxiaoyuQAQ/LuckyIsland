@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Loader2, RefreshCw, AlertTriangle, MapPin, LocateFixed, Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { CITIES } from "./cities";
 
 interface WeatherAlert {
   title: string;
@@ -65,6 +66,15 @@ export function WeatherPage({ compact }: { compact: boolean }) {
   const [loading, setLoading] = useState(false);
   const [locating, setLocating] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+
+  // 添加城市下拉候选（限定在白名单内，过滤已添加的）
+  const suggestions = useMemo(() => {
+    const q = draft.trim();
+    const pool = (q ? CITIES.filter((c) => c.includes(q)) : CITIES).filter(
+      (c) => !cities.includes(c),
+    );
+    return pool.slice(0, 12);
+  }, [draft, cities]);
 
   const fetchWeather = useCallback(async (city: string) => {
     if (!city) return;
@@ -130,16 +140,16 @@ export function WeatherPage({ compact }: { compact: boolean }) {
     void fetchWeather(c);
   };
 
-  const addCity = async () => {
-    const c = draft.trim();
-    if (!c) return;
+  const addCity = async (c: string) => {
+    const city = c.trim();
+    if (!city) return;
     try {
-      await invoke("weather_cities_add", { city: c });
+      await invoke("weather_cities_add", { city });
       setDraft("");
       setAdding(false);
       const list = await loadCities();
-      setActive(c);
-      await fetchWeather(c);
+      setActive(city);
+      await fetchWeather(city);
     } catch (e) {
       setErr(String(e));
     }
@@ -202,25 +212,41 @@ export function WeatherPage({ compact }: { compact: boolean }) {
         ))}
 
         {adding ? (
-          <input
-            autoFocus
-            value={draft}
-            onChange={(e) => setDraft(e.currentTarget.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                void addCity();
-              } else if (e.key === "Escape") {
-                setAdding(false);
-                setDraft("");
-              }
-            }}
-            onBlur={() => {
-              if (!draft.trim()) setAdding(false);
-            }}
-            placeholder="城市名"
-            className="w-20 rounded-full border border-input bg-background px-2 py-0.5 text-xs outline-none focus:ring-1 focus:ring-ring"
-          />
+          <div className="relative">
+            <input
+              autoFocus
+              value={draft}
+              onChange={(e) => setDraft(e.currentTarget.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  if (suggestions.length > 0) void addCity(suggestions[0]);
+                } else if (e.key === "Escape") {
+                  setAdding(false);
+                  setDraft("");
+                }
+              }}
+              onBlur={() => setTimeout(() => { setAdding(false); setDraft(""); }, 120)}
+              placeholder="城市名"
+              className="w-24 rounded-full border border-input bg-background px-2 py-0.5 text-xs outline-none focus:ring-1 focus:ring-ring"
+            />
+            {suggestions.length > 0 && (
+              <div className="absolute left-0 top-full z-10 mt-1 max-h-48 overflow-y-auto rounded-md border border-border bg-popover shadow-md">
+                {suggestions.map((c) => (
+                  <button
+                    key={c}
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      void addCity(c);
+                    }}
+                    className="block w-full px-2.5 py-1 text-left text-xs hover:bg-accent"
+                  >
+                    {c}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         ) : (
           <button
             onClick={() => setAdding(true)}

@@ -52,8 +52,8 @@ export function StockDetail({ quote, onBack }: { quote: Quote; onBack: () => voi
         </span>
       </div>
 
-      {/* 数据面板（右上） */}
-      <div className="grid shrink-0 grid-cols-4 gap-x-3 gap-y-1.5 rounded-md border border-border/60 bg-background/40 px-3 py-2">
+      {/* 数据面板（右上）：2 行 + 横向滚动，给 K 图让出纵向空间 */}
+      <div className="grid shrink-0 grid-flow-col grid-rows-2 auto-cols-max gap-x-3 gap-y-1 overflow-x-auto rounded-md border border-border/60 bg-background/40 px-3 py-2 [scrollbar-gutter:stable]">
         <Stat label="昨收" value={fmt(quote.yesterday_close)} />
         <Stat label="今开" value={fmt(quote.open)} />
         <Stat label="最高" value={fmt(quote.high)} color="text-red-500" />
