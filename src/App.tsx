@@ -5,6 +5,7 @@ import { ChevronDown, ChevronUp, Moon, Sun } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { TimePage } from "@/components/pages/time/TimePage";
 import { CalendarPage } from "@/components/pages/calendar/CalendarPage";
+import { WeatherPage } from "@/components/pages/weather/WeatherPage";
 import { TodoPage } from "@/components/pages/todo/TodoPage";
 
 type Theme = "light" | "dark";
@@ -19,6 +20,7 @@ interface PageMeta {
 const PAGES: PageMeta[] = [
   { id: "time", label: "时间", Component: TimePage },
   { id: "calendar", label: "日历", Component: CalendarPage },
+  { id: "weather", label: "天气", Component: WeatherPage },
   { id: "todo", label: "待办", Component: TodoPage },
 ];
 

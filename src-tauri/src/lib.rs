@@ -10,6 +10,7 @@ use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut,
 
 use data::calendar::calendar_month;
 use data::todo::{todo_create, todo_delete, todo_list, todo_update};
+use data::weather::{weather_get, weather_get_city, weather_set_city};
 
 const WIN_W: f64 = 720.0;
 const COMPACT_H: f64 = 80.0;
@@ -100,7 +101,10 @@ pub fn run() {
             todo_create,
             todo_update,
             todo_delete,
-            calendar_month
+            calendar_month,
+            weather_get,
+            weather_get_city,
+            weather_set_city
         ])
         .setup(|app| {
             // 注册 Alt+X 全局热键
@@ -139,6 +143,12 @@ pub fn run() {
             // 初始化 SQLite（%APPDATA%/com.luckyisland.app/data.db）
             let db = storage::Db::init(app.handle())?;
             app.manage(db);
+
+            // 共享 HTTP 客户端（天气 / 股票拉取复用）
+            let http = reqwest::Client::builder()
+                .user_agent("Mozilla/5.0 (compatible; LuckyIsland/0.1)")
+                .build()?;
+            app.manage(http);
 
             // 定位到顶部居中，初始 compact 态
             if let Some(window) = app.get_webview_window("island") {
