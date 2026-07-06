@@ -1,9 +1,14 @@
+mod data;
+mod storage;
+
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Emitter, LogicalSize, Manager, PhysicalPosition, Size,
 };
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+
+use data::todo::{todo_create, todo_delete, todo_list, todo_update};
 
 const WIN_W: f64 = 720.0;
 const COMPACT_H: f64 = 80.0;
@@ -88,7 +93,13 @@ pub fn run() {
                 })
                 .build(),
         )
-        .invoke_handler(tauri::generate_handler![set_island_state])
+        .invoke_handler(tauri::generate_handler![
+            set_island_state,
+            todo_list,
+            todo_create,
+            todo_update,
+            todo_delete
+        ])
         .setup(|app| {
             // 注册 Alt+X 全局热键
             app.global_shortcut()
@@ -122,6 +133,10 @@ pub fn run() {
                     }
                 })
                 .build(app)?;
+
+            // 初始化 SQLite（%APPDATA%/com.luckyisland.app/data.db）
+            let db = storage::Db::init(app.handle())?;
+            app.manage(db);
 
             // 定位到顶部居中，初始 compact 态
             if let Some(window) = app.get_webview_window("island") {

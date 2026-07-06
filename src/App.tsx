@@ -72,10 +72,14 @@ function App() {
   useEffect(() => {
     if (!expanded) return;
     const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      const typing =
+        !!t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable);
       if (e.key === "Escape") {
         setState("compact");
         return;
       }
+      if (typing) return;
       if (e.altKey && /^[1-9]$/.test(e.key)) {
         const i = parseInt(e.key, 10) - 1;
         if (i < PAGES.length) {
