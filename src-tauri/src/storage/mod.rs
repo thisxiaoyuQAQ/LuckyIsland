@@ -32,6 +32,17 @@ impl Db {
                 symbol TEXT PRIMARY KEY,
                 sort INTEGER NOT NULL DEFAULT 0,
                 added_at INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS notifications (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                body TEXT,
+                source TEXT NOT NULL,
+                level TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                read INTEGER NOT NULL DEFAULT 0,
+                action_type TEXT,
+                action_cwd TEXT
             );",
         )?;
         // 首次启动：播种默认自选股（贵州茅台 + 平安银行），方便即时实测
