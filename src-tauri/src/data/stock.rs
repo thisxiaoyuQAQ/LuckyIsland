@@ -38,6 +38,13 @@ pub struct WatchItem {
     pub sort: i64,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SearchResult {
+    pub name: String,
+    pub symbol: String,
+    pub market: String,
+}
+
 fn now_ts() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
@@ -124,6 +131,81 @@ async fn fetch_quotes(
     let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
     let (text, _, _) = GBK.decode(&bytes);
     Ok(parse_quotes(&text, symbols))
+}
+
+/// 从 `var suggestdata="...";` 中抠出 payload
+fn extract_suggest_payload(body: &str) -> Option<&str> {
+    let start = body.find("=\"")? + 2;
+    let end = body.rfind("\";")?;
+    (end > start).then_some(&body[start..end])
+}
+
+/// 解析 sina suggest 结果，过滤股票类型并规整符号：
+/// 11/12/13/14 沪深A/B（已是 sh/sz 前缀）, 31 港股（补 hk）, 103 美股（补 us + 大写）
+fn parse_suggest(payload: &str) -> Vec<SearchResult> {
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for entry in payload.split(';') {
+        let f: Vec<&str> = entry.split(',').collect();
+        if f.len() < 4 {
+            continue;
+        }
+        let name = f[0].trim();
+        let typ: i64 = f[1].parse().unwrap_or(-1);
+        let sym_raw = f[3].trim();
+        if name.is_empty() || sym_raw.is_empty() {
+            continue;
+        }
+        let (sym, market) = match typ {
+            11 => (sym_raw.to_string(), "沪"),
+            12 => (sym_raw.to_string(), "深"),
+            13 => (sym_raw.to_string(), "沪B"),
+            14 => (sym_raw.to_string(), "深B"),
+            31 => (format!("hk{sym_raw}"), "港"),
+            103 => (format!("us{}", sym_raw.to_uppercase()), "美"),
+            _ => continue,
+        };
+        if normalize_symbol(&sym).is_none() {
+            continue;
+        }
+        if !seen.insert(sym.clone()) {
+            continue;
+        }
+        out.push(SearchResult {
+            name: name.to_string(),
+            symbol: sym,
+            market: market.to_string(),
+        });
+    }
+    out
+}
+
+/// 按名字/代码/拼音搜索股票（sina suggest3，GBK）
+#[tauri::command]
+pub async fn stock_search(
+    query: String,
+    http: State<'_, reqwest::Client>,
+) -> Result<Vec<SearchResult>, String> {
+    let q = query.trim();
+    if q.is_empty() {
+        return Ok(vec![]);
+    }
+    let resp = http
+        .get("https://suggest3.sinajs.cn/suggest/type=")
+        .query(&[("key", q), ("name", "suggestdata")])
+        .header("Referer", "https://finance.sina.com.cn/")
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
+    let (text, _, _) = GBK.decode(&bytes);
+    let payload = extract_suggest_payload(text.trim()).unwrap_or_default();
+    let mut results = parse_suggest(payload);
+    results.truncate(10);
+    Ok(results)
 }
 
 /// 是否处于 A 股交易时段（周一至周五 9:30-11:30 / 13:00-15:00，本地时间）
