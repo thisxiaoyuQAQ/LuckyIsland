@@ -9,6 +9,7 @@ import { WeatherPage } from "@/components/pages/weather/WeatherPage";
 import { StockPage } from "@/components/pages/stock/StockPage";
 import { TodoPage } from "@/components/pages/todo/TodoPage";
 import { TerminalPage } from "@/components/pages/terminal/TerminalPage";
+import { NotifyPage } from "@/components/pages/notify/NotifyPage";
 
 type Theme = "light" | "dark";
 type IslandState = "hidden" | "compact" | "expanded";
@@ -25,6 +26,7 @@ const PAGES: PageMeta[] = [
   { id: "weather", label: "天气", Component: WeatherPage },
   { id: "stock", label: "股票", Component: StockPage },
   { id: "todo", label: "待办", Component: TodoPage },
+  { id: "notify", label: "通知", Component: NotifyPage },
   { id: "terminal", label: "终端", Component: TerminalPage },
 ];
 
@@ -73,6 +75,19 @@ function App() {
     );
     return () => un?.();
   }, []);
+
+  // 通知到达：切通知页 + 展开灵动岛
+  useEffect(() => {
+    let un: (() => void) | undefined;
+    listen("notify://incoming", () => {
+      const i = PAGES.findIndex((p) => p.id === "notify");
+      if (i >= 0) setPage(i);
+      setState("expanded");
+    }).then((fn) => {
+      un = fn;
+    });
+    return () => un?.();
+  }, [setPage, setState]);
 
   // 局部快捷键（仅展开态，需窗口焦点）
   useEffect(() => {
