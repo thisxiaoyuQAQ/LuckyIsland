@@ -193,6 +193,12 @@ pub fn run() {
             // 终端注册表（多 tab PTY 管理）
             app.manage(TerminalRegistry::new());
 
+            // 本地通知 HTTP server：127.0.0.1:9753/notify
+            let notify_app = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                notify::server::start(notify_app).await;
+            });
+
             // 定位到顶部居中，初始 compact 态
             if let Some(window) = app.get_webview_window("island") {
                 let _ = position_top_center(&window);

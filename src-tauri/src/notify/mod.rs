@@ -5,6 +5,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 
+pub mod server;
+
 const TOKEN_KEY: &str = "notify:http_token";
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
