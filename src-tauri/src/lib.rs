@@ -98,6 +98,7 @@ pub fn run() {
             set_state_and_emit(app, "compact");
         }))
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
         // 全局热键
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()

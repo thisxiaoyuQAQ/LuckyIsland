@@ -3,6 +3,7 @@ use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_notification::NotificationExt;
 use uuid::Uuid;
 
 pub mod server;
@@ -225,6 +226,13 @@ pub fn dispatch_notification(
         let _ = window.show();
         let _ = window.set_focus();
     }
+    // OS 系统通知（Windows toast），hook 场景下吸引注意力
+    let _ = app
+        .notification()
+        .builder()
+        .title(n.title.as_str())
+        .body(n.body.as_deref().unwrap_or(""))
+        .show();
     Ok(n)
 }
 
