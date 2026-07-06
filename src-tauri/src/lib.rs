@@ -18,7 +18,7 @@ use data::stock::{
 use data::todo::{todo_create, todo_delete, todo_list, todo_update};
 use data::weather::{
     weather_cities_add, weather_cities_list, weather_cities_remove, weather_cities_reorder,
-    weather_get, weather_locate,
+    weather_get, weather_get_city, weather_locate, weather_set_city,
 };
 use settings::{setting_get, setting_set};
 use terminal::{term_create, term_kill, term_open_wt, term_resize, term_snapshot, term_write, TerminalRegistry};
@@ -114,6 +114,8 @@ pub fn run() {
             todo_delete,
             calendar_month,
             weather_get,
+            weather_get_city,
+            weather_set_city,
             weather_locate,
             weather_cities_list,
             weather_cities_add,

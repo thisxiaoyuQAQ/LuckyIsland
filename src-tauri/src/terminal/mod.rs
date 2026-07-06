@@ -18,7 +18,7 @@ struct PtyHandle {
     output_buffer: Arc<Mutex<String>>,
 }
 
-pub struct TerminalRegistry(pub Arc<Mutex<HashMap<String, PtyHandle>>>);
+pub struct TerminalRegistry(Arc<Mutex<HashMap<String, PtyHandle>>>);
 
 impl TerminalRegistry {
     pub fn new() -> Self {
