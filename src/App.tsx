@@ -8,6 +8,7 @@ import { CalendarPage } from "@/components/pages/calendar/CalendarPage";
 import { WeatherPage } from "@/components/pages/weather/WeatherPage";
 import { StockPage } from "@/components/pages/stock/StockPage";
 import { TodoPage } from "@/components/pages/todo/TodoPage";
+import { TerminalPage } from "@/components/pages/terminal/TerminalPage";
 
 type Theme = "light" | "dark";
 type IslandState = "hidden" | "compact" | "expanded";
@@ -24,6 +25,7 @@ const PAGES: PageMeta[] = [
   { id: "weather", label: "天气", Component: WeatherPage },
   { id: "stock", label: "股票", Component: StockPage },
   { id: "todo", label: "待办", Component: TodoPage },
+  { id: "terminal", label: "终端", Component: TerminalPage },
 ];
 
 function getInitialTheme(): Theme {

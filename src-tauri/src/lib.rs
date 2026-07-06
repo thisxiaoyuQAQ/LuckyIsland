@@ -1,6 +1,7 @@
 mod data;
 mod settings;
 mod storage;
+mod terminal;
 
 use tauri::{
     menu::{Menu, MenuItem},
@@ -20,6 +21,7 @@ use data::weather::{
     weather_get, weather_locate,
 };
 use settings::{setting_get, setting_set};
+use terminal::{term_create, term_kill, term_resize, term_write, TerminalRegistry};
 
 const WIN_W: f64 = 720.0;
 const COMPACT_H: f64 = 80.0;
@@ -125,7 +127,11 @@ pub fn run() {
             stock_watchlist_remove,
             stock_watchlist_reorder,
             setting_get,
-            setting_set
+            setting_set,
+            term_create,
+            term_write,
+            term_resize,
+            term_kill
         ])
         .setup(|app| {
             // 注册 Alt+X 全局热键
@@ -174,6 +180,9 @@ pub fn run() {
             // 股票行情后台轮询：交易时段 5s / 非交易 30s，emit stock://tick
             tauri::async_runtime::spawn(poll_loop(app.handle().clone()));
 
+            // 终端注册表（多 tab PTY 管理）
+            app.manage(TerminalRegistry::new());
+
             // 定位到顶部居中，初始 compact 态
             if let Some(window) = app.get_webview_window("island") {
                 let _ = position_top_center(&window);
@@ -182,6 +191,14 @@ pub fn run() {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            // 退出时杀掉所有终端子进程，避免僵尸
+            if let tauri::RunEvent::Exit = event {
+                if let Some(reg) = app_handle.try_state::<TerminalRegistry>() {
+                    terminal::cleanup_all(reg.inner());
+                }
+            }
+        });
 }
