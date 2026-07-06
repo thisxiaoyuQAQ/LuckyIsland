@@ -15,6 +15,7 @@ struct PtyHandle {
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
     child: Option<Box<dyn portable_pty::Child + Send + Sync>>,
+    output_buffer: Arc<Mutex<String>>,
 }
 
 pub struct TerminalRegistry(pub Arc<Mutex<HashMap<String, PtyHandle>>>);
@@ -41,6 +42,28 @@ pub fn cleanup_all(reg: &TerminalRegistry) {
 struct TermOutput {
     term_id: String,
     data: String,
+}
+
+fn push_output(app: &AppHandle, term_id: &str, output_buffer: &Arc<Mutex<String>>, data: String) {
+    if let Ok(mut b) = output_buffer.lock() {
+        b.push_str(&data);
+        // 限制缓存，避免长期运行占内存。保留最后约 200KB 可见输出。
+        const MAX: usize = 200_000;
+        if b.len() > MAX {
+            let mut drain_to = b.len() - MAX;
+            while drain_to < b.len() && !b.is_char_boundary(drain_to) {
+                drain_to += 1;
+            }
+            b.drain(..drain_to);
+        }
+    }
+    let _ = app.emit(
+        "term://output",
+        TermOutput {
+            term_id: term_id.to_string(),
+            data,
+        },
+    );
 }
 
 /// 默认 shell：PowerShell 7（标准安装路径）→ Windows PowerShell → cmd
@@ -89,6 +112,7 @@ pub fn term_create(
 
     let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
     let mut writer = pair.master.take_writer().map_err(|e| e.to_string())?;
+    let output_buffer = Arc::new(Mutex::new(String::new()));
 
     // 快捷命令：spawn 后把命令写入 PTY（PTY 输入缓冲会排队等 shell 就绪）
     if let Some(command) = command.as_deref() {
@@ -99,11 +123,11 @@ pub fn term_create(
     // 后台线程：读 PTY 输出，流式 UTF-8 解码（避免 CJK 跨块截断），emit term://output
     let app2 = app.clone();
     let id2 = term_id.clone();
+    let output_buffer2 = output_buffer.clone();
     std::thread::spawn(move || {
         let mut reader = reader;
         let mut buf = [0u8; 4096];
         let mut leftover: Vec<u8> = Vec::new();
-        let mut first_read = true; // 【临时诊断】标记 PTY 是否产出过数据
         loop {
             let n = match reader.read(&mut buf) {
                 Ok(0) => break,
@@ -111,21 +135,11 @@ pub fn term_create(
                 Err(_) => break,
             };
             leftover.extend_from_slice(&buf[..n]);
-            if first_read {
-                first_read = false;
-                let _ = app2.emit(
-                    "term://output",
-                    TermOutput {
-                        term_id: id2.clone(),
-                        data: "\x1b[33m[诊断: PTY 首次收到数据]\x1b[0m\r\n".into(),
-                    },
-                );
-            }
             loop {
                 match std::str::from_utf8(&leftover) {
                     Ok(_) => {
                         let text = String::from_utf8_lossy(&leftover).into_owned();
-                        let _ = app2.emit("term://output", TermOutput { term_id: id2.clone(), data: text });
+                        push_output(&app2, &id2, &output_buffer2, text);
                         leftover.clear();
                         break;
                     }
@@ -133,7 +147,7 @@ pub fn term_create(
                         let valid = e.valid_up_to();
                         if valid > 0 {
                             let text = std::str::from_utf8(&leftover[..valid]).unwrap().to_string();
-                            let _ = app2.emit("term://output", TermOutput { term_id: id2.clone(), data: text });
+                            push_output(&app2, &id2, &output_buffer2, text);
                             leftover.drain(..valid);
                         }
                         match e.error_len() {
@@ -151,6 +165,7 @@ pub fn term_create(
         master: pair.master,
         writer,
         child: Some(child),
+        output_buffer,
     };
     registry
         .0
@@ -176,6 +191,20 @@ pub fn term_write(
         .map_err(|e| e.to_string())?;
     handle.writer.flush().map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// 返回该终端已缓存输出。解决前端监听晚于 PTY 初始提示符导致输出丢失的问题。
+#[tauri::command]
+pub fn term_snapshot(term_id: String, registry: State<'_, TerminalRegistry>) -> Result<String, String> {
+    let guard = registry.0.lock().map_err(|e| e.to_string())?;
+    let Some(handle) = guard.get(&term_id) else {
+        return Ok(String::new());
+    };
+    Ok(handle
+        .output_buffer
+        .lock()
+        .map_err(|e| e.to_string())?
+        .clone())
 }
 
 #[tauri::command]
@@ -219,15 +248,3 @@ pub fn term_open_wt(cwd: Option<String>) -> Result<(), String> {
     Ok(())
 }
 
-/// 【临时诊断】前端注册监听后调用，验证 Rust→前端 事件桥是否通
-#[tauri::command]
-pub fn term_test_emit(app: AppHandle, term_id: String) -> Result<(), String> {
-    let _ = app.emit(
-        "term://output",
-        TermOutput {
-            term_id,
-            data: "\x1b[32m[诊断: Rust→前端 桥接 OK]\x1b[0m\r\n".into(),
-        },
-    );
-    Ok(())
-}

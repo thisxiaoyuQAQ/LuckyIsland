@@ -35,9 +35,7 @@ export async function attachTerminal(
     // webgl 不可用时回退 canvas（xterm 默认渲染器）
   }
   fitIfReady(fit);
-
-  // 【临时诊断】直接写 xterm，验证渲染是否可见
-  term.write("\r\n\x1b[36m[诊断: xterm 渲染 OK]\x1b[0m\r\n");
+  term.focus();
 
   const onData = term.onData((d) => {
     void invoke("term_write", { termId, data: d });
@@ -56,8 +54,10 @@ export async function attachTerminal(
     if (e.payload === termId) term.write("\r\n\x1b[90m[进程已退出]\x1b[0m\r\n");
   });
 
-  // 【临时诊断】监听注册后触发 Rust emit，验证事件桥
-  void invoke("term_test_emit", { termId });
+  // 回放后端缓存：解决 PTY 在 TerminalTab attach 前已经输出（提示符）导致事件丢失。
+  void invoke<string>("term_snapshot", { termId }).then((snapshot) => {
+    if (snapshot) term.write(snapshot);
+  });
 
   // 初始尺寸同步给后端
   void invoke("term_resize", { termId, cols: term.cols, rows: term.rows });

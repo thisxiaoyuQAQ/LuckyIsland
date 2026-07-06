@@ -21,7 +21,7 @@ use data::weather::{
     weather_get, weather_locate,
 };
 use settings::{setting_get, setting_set};
-use terminal::{term_create, term_kill, term_open_wt, term_resize, term_test_emit, term_write, TerminalRegistry};
+use terminal::{term_create, term_kill, term_open_wt, term_resize, term_snapshot, term_write, TerminalRegistry};
 
 const WIN_W: f64 = 720.0;
 const COMPACT_H: f64 = 80.0;
@@ -131,9 +131,9 @@ pub fn run() {
             term_create,
             term_write,
             term_resize,
+            term_snapshot,
             term_kill,
-            term_open_wt,
-            term_test_emit
+            term_open_wt
         ])
         .setup(|app| {
             // 注册 Alt+X 全局热键

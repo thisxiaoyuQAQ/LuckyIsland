@@ -2,6 +2,7 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Plus, X, ExternalLink } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useReorder } from "@/lib/useReorder";
 import { TerminalTab } from "./TerminalTab";
 import { Shortcuts, type Shortcut } from "./Shortcuts";
 import {
@@ -10,6 +11,8 @@ import {
   ensureFirstTab,
   getActive,
   getTabs,
+  renameTab,
+  reorderTabs,
   setActive as storeSetActive,
   subscribe,
 } from "./term-store";
@@ -18,6 +21,9 @@ export function TerminalPage({ compact }: { compact: boolean }) {
   const tabs = useSyncExternalStore(subscribe, getTabs, getTabs);
   const active = useSyncExternalStore(subscribe, getActive, getActive);
   const [err, setErr] = useState<string | null>(null);
+  const [editing, setEditing] = useState<string | null>(null);
+  const [titleDraft, setTitleDraft] = useState("");
+  const { overIndex, itemProps } = useReorder(reorderTabs);
 
   // 首挂载建一个 tab（store 持久，重挂载不会重复建）
   useEffect(() => {
@@ -34,6 +40,12 @@ export function TerminalPage({ compact }: { compact: boolean }) {
     } catch (e) {
       setErr(String(e));
     }
+  };
+
+  const commitTitle = (id: string) => {
+    renameTab(id, titleDraft);
+    setEditing(null);
+    setTitleDraft("");
   };
 
   if (compact) {
@@ -59,20 +71,48 @@ export function TerminalPage({ compact }: { compact: boolean }) {
             storeSetActive(tabs[next].id);
           }}
         >
-          {tabs.map((t) => (
+          {tabs.map((t, i) => (
             <span
               key={t.id}
+              {...itemProps(i, tabs)}
               className={cn(
                 "group flex shrink-0 items-center gap-1 rounded-md px-2 py-0.5 text-xs transition-colors",
                 t.id === active
                   ? "bg-primary/10 text-foreground"
                   : "text-muted-foreground hover:text-foreground",
+                overIndex === i && "ring-1 ring-primary/60",
               )}
             >
-              <button onClick={() => storeSetActive(t.id)} className="cursor-pointer">
-                {t.title}
-              </button>
+              {editing === t.id ? (
+                <input
+                  autoFocus
+                  value={titleDraft}
+                  onChange={(e) => setTitleDraft(e.currentTarget.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") commitTitle(t.id);
+                    else if (e.key === "Escape") {
+                      setEditing(null);
+                      setTitleDraft("");
+                    }
+                  }}
+                  onBlur={() => commitTitle(t.id)}
+                  className="w-20 rounded bg-background px-1 py-0 text-xs outline-none ring-1 ring-ring"
+                />
+              ) : (
+                <button
+                  onClick={() => storeSetActive(t.id)}
+                  onDoubleClick={() => {
+                    setEditing(t.id);
+                    setTitleDraft(t.title);
+                  }}
+                  className="cursor-pointer"
+                  title="双击改名，拖动排序"
+                >
+                  {t.title}
+                </button>
+              )}
               <button
+                draggable={false}
                 onClick={() => void storeCloseTab(t.id)}
                 aria-label="关闭标签"
                 className="text-muted-foreground/60 opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100"

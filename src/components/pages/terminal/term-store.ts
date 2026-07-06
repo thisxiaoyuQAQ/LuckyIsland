@@ -45,6 +45,18 @@ export function setActive(id: string) {
   emit();
 }
 
+export function renameTab(id: string, title: string) {
+  const t = title.trim();
+  if (!t) return;
+  tabs = tabs.map((tab) => (tab.id === id ? { ...tab, title: t } : tab));
+  emit();
+}
+
+export function reorderTabs(next: Tab[]) {
+  tabs = next;
+  emit();
+}
+
 export async function closeTab(id: string) {
   try {
     await invoke("term_kill", { termId: id });
