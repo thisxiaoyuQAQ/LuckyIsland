@@ -1,16 +1,10 @@
-import { useCallback, useEffect, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { Plus } from "lucide-react";
-import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { StockAdd } from "./StockAdd";
 import { StockRow, type Quote } from "./StockRow";
-
-interface SearchResult {
-  name: string;
-  symbol: string;
-  market: string;
-}
+import { StockDetail } from "./StockDetail";
 
 function colorFor(change: number): string {
   if (change > 0) return "text-red-500";
@@ -20,16 +14,12 @@ function colorFor(change: number): string {
 
 export function StockPage({ compact }: { compact: boolean }) {
   const [quotes, setQuotes] = useState<Quote[]>([]);
-  const [input, setInput] = useState("");
-  const [suggestions, setSuggestions] = useState<SearchResult[]>([]);
-  const [showSug, setShowSug] = useState(false);
-  const [hl, setHl] = useState(0);
+  const [selected, setSelected] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
-      const qs = await invoke<Quote[]>("stock_get");
-      setQuotes(qs);
+      setQuotes(await invoke<Quote[]>("stock_get"));
     } catch (e) {
       setErr(String(e));
     }
@@ -44,76 +34,17 @@ export function StockPage({ compact }: { compact: boolean }) {
     return () => un?.();
   }, [refresh]);
 
-  // 输入防抖搜索
-  useEffect(() => {
-    const q = input.trim();
-    if (!q) {
-      setSuggestions([]);
-      setShowSug(false);
-      return;
-    }
-    const t = setTimeout(() => {
-      void invoke<SearchResult[]>("stock_search", { query: q })
-        .then((r) => {
-          setSuggestions(r);
-          setShowSug(true);
-          setHl(0);
-        })
-        .catch(() => {
-          setSuggestions([]);
-          setShowSug(false);
-        });
-    }, 250);
-    return () => clearTimeout(t);
-  }, [input]);
-
-  const addBySymbol = useCallback(
-    async (sym: string) => {
-      try {
-        setErr(null);
-        await invoke("stock_watchlist_add", { symbol: sym });
-        setInput("");
-        setSuggestions([]);
-        setShowSug(false);
-        await refresh();
-      } catch (e) {
-        setErr(String(e));
-      }
-    },
-    [refresh],
-  );
-
-  const onInputKey = (e: KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "ArrowDown" && showSug && suggestions.length) {
-      e.preventDefault();
-      setHl((h) => Math.min(h + 1, suggestions.length - 1));
-    } else if (e.key === "ArrowUp" && showSug && suggestions.length) {
-      e.preventDefault();
-      setHl((h) => Math.max(h - 1, 0));
-    } else if (e.key === "Escape") {
-      setShowSug(false);
-    } else if (e.key === "Enter") {
-      e.preventDefault();
-      const picked = suggestions[hl];
-      if (showSug && picked) {
-        void addBySymbol(picked.symbol);
-      } else if (suggestions.length === 1) {
-        void addBySymbol(suggestions[0].symbol);
-      } else {
-        const s = input.trim();
-        if (s) void addBySymbol(s);
-      }
-    }
-  };
-
   const remove = async (symbol: string) => {
     try {
       await invoke("stock_watchlist_remove", { symbol });
+      if (selected === symbol) setSelected(null);
       await refresh();
     } catch (e) {
       setErr(String(e));
     }
   };
+
+  const selectedQuote = quotes.find((q) => q.symbol === selected) ?? null;
 
   if (compact) {
     if (quotes.length === 0) {
@@ -136,57 +67,45 @@ export function StockPage({ compact }: { compact: boolean }) {
     );
   }
 
+  // 选中个股：左列表 + 右详情（上数据 / 下K图）
+  if (selected && selectedQuote) {
+    return (
+      <div className="flex h-full gap-3">
+        <div className="flex w-[200px] shrink-0 flex-col gap-2 border-r border-border/60 pr-2">
+          <StockAdd onAdded={refresh} />
+          <div className="min-h-0 flex-1 overflow-y-auto pr-1 [scrollbar-gutter:stable]">
+            {quotes.length === 0 ? (
+              <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
+                暂无自选
+              </div>
+            ) : (
+              <ul className="space-y-1">
+                {quotes.map((q) => (
+                  <StockRow
+                    key={q.symbol}
+                    q={q}
+                    active={q.symbol === selected}
+                    onClick={(s) => setSelected(s)}
+                    onRemove={(s) => void remove(s)}
+                  />
+                ))}
+              </ul>
+            )}
+          </div>
+        </div>
+        <div className="min-w-0 flex-1">
+          <StockDetail quote={selectedQuote} onBack={() => setSelected(null)} />
+        </div>
+      </div>
+    );
+  }
+
+  // 未选：全宽列表
   return (
     <div className="flex h-full flex-col gap-3">
-      {/* 添加（typeahead） */}
-      <div className="relative flex gap-2">
-        <input
-          value={input}
-          onChange={(e) => setInput(e.currentTarget.value)}
-          onKeyDown={onInputKey}
-          onFocus={() => suggestions.length && setShowSug(true)}
-          onBlur={() => setTimeout(() => setShowSug(false), 120)}
-          placeholder="搜索名称/代码/拼音，如 茅台 / 600519 / maotai"
-          className="flex-1 rounded-md border border-input bg-background px-3 py-1.5 text-sm outline-none focus:ring-1 focus:ring-ring"
-        />
-        <Button
-          size="sm"
-          onClick={() => {
-            const picked = suggestions[hl];
-            if (showSug && picked) void addBySymbol(picked.symbol);
-            else if (input.trim()) void addBySymbol(input.trim());
-          }}
-          aria-label="添加"
-        >
-          <Plus className="h-3.5 w-3.5" />
-        </Button>
-
-        {showSug && suggestions.length > 0 && (
-          <div className="absolute left-0 right-0 top-full z-10 mt-1 max-h-56 overflow-y-auto rounded-md border border-border bg-popover shadow-md">
-            {suggestions.map((s, i) => (
-              <button
-                key={s.symbol}
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  void addBySymbol(s.symbol);
-                }}
-                className={cn(
-                  "flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-xs hover:bg-accent",
-                  i === hl && "bg-accent",
-                )}
-              >
-                <span className="w-6 shrink-0 text-[10px] text-muted-foreground">{s.market}</span>
-                <span className="flex-1 truncate">{s.name}</span>
-                <span className="text-[10px] text-muted-foreground">{s.symbol}</span>
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
-
+      <StockAdd onAdded={refresh} />
       {err && <div className="text-[11px] text-destructive">{err}</div>}
-
-      <div className="flex-1 overflow-y-auto pr-1 [scrollbar-gutter:stable]">
+      <div className="min-h-0 flex-1 overflow-y-auto pr-1 [scrollbar-gutter:stable]">
         {quotes.length === 0 ? (
           <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
             暂无自选股
@@ -194,7 +113,12 @@ export function StockPage({ compact }: { compact: boolean }) {
         ) : (
           <ul className="space-y-1">
             {quotes.map((q) => (
-              <StockRow key={q.symbol} q={q} onRemove={(s) => void remove(s)} />
+              <StockRow
+                key={q.symbol}
+                q={q}
+                onClick={(s) => setSelected(s)}
+                onRemove={(s) => void remove(s)}
+              />
             ))}
           </ul>
         )}

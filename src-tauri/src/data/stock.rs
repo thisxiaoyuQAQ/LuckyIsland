@@ -30,6 +30,28 @@ pub struct Quote {
     pub change_percent: f64,
     /// YYYYMMDDHHMMSS
     pub time: String,
+    // —— 详情面板额外字段（腾讯 qt 下标，已对茅台样本校验）——
+    pub volume: f64,           // 6  成交量（手）
+    pub amount: f64,           // 37 成交额（万元）
+    pub turnover_rate: f64,    // 38 换手率（%）
+    pub pe: f64,               // 39 市盈率
+    pub amplitude: f64,        // 43 振幅（%）
+    pub circ_market_cap: f64,  // 44 流通市值（亿）
+    pub total_market_cap: f64, // 45 总市值（亿）
+    pub pb: f64,               // 46 市净率
+    pub limit_up: f64,         // 47 涨停价
+    pub limit_down: f64,       // 48 跌停价
+    pub volume_ratio: f64,     // 49 量比
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct KBar {
+    pub date: String,
+    pub open: f64,
+    pub close: f64,
+    pub high: f64,
+    pub low: f64,
+    pub volume: f64,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -93,19 +115,32 @@ fn parse_quotes(body: &str, symbols: &[String]) -> Vec<Quote> {
         if name.is_empty() {
             continue;
         }
-        let parse = |s: &str| -> f64 { s.trim().parse().unwrap_or(0.0) };
+        let parse = |i: usize| -> f64 {
+            fields.get(i).and_then(|s| s.trim().parse().ok()).unwrap_or(0.0)
+        };
         out.push(Quote {
             symbol: sym.clone(),
             name: name.to_string(),
             code: fields[2].to_string(),
-            current: parse(fields[3]),
-            yesterday_close: parse(fields[4]),
-            open: parse(fields[5]),
-            high: parse(fields[33]),
-            low: parse(fields[34]),
-            change: parse(fields[31]),
-            change_percent: parse(fields[32]),
+            current: parse(3),
+            yesterday_close: parse(4),
+            open: parse(5),
+            high: parse(33),
+            low: parse(34),
+            change: parse(31),
+            change_percent: parse(32),
             time: fields[30].to_string(),
+            volume: parse(6),
+            amount: parse(37),
+            turnover_rate: parse(38),
+            pe: parse(39),
+            amplitude: parse(43),
+            circ_market_cap: parse(44),
+            total_market_cap: parse(45),
+            pb: parse(46),
+            limit_up: parse(47),
+            limit_down: parse(48),
+            volume_ratio: parse(49),
         });
     }
     out
@@ -206,6 +241,64 @@ pub async fn stock_search(
     let mut results = parse_suggest(payload);
     results.truncate(10);
     Ok(results)
+}
+
+/// 拉取 K 线（腾讯 fqkline，前复权）。period: day/week/month
+#[tauri::command]
+pub async fn stock_kline(
+    symbol: String,
+    period: String,
+    http: State<'_, reqwest::Client>,
+) -> Result<Vec<KBar>, String> {
+    let sym = normalize_symbol(&symbol).ok_or("代码格式无效")?;
+    let p = match period.as_str() {
+        "day" | "week" | "month" => period.as_str(),
+        _ => return Err("period 需为 day/week/month".into()),
+    };
+    let url = format!(
+        "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={sym},{p},,,320,qfq"
+    );
+    let resp = http
+        .get(&url)
+        .header("Referer", "https://gu.qq.com/")
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    let v: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    let key = format!("qfq{p}");
+    let arr = v
+        .get("data")
+        .and_then(|d| d.get(sym.as_str()))
+        .and_then(|s| s.get(key.as_str()))
+        .and_then(|k| k.as_array())
+        .ok_or("K线数据缺失")?;
+    // 每条 [date, open, close, high, low, volume]（close 在 high 之前，注意顺序）
+    let bars = arr
+        .iter()
+        .filter_map(|b| {
+            let a = b.as_array()?;
+            if a.len() < 6 {
+                return None;
+            }
+            let num = |i: usize| {
+                a.get(i)
+                    .and_then(|x| x.as_str().and_then(|s| s.parse().ok()).or_else(|| x.as_f64()))
+                    .unwrap_or(0.0)
+            };
+            Some(KBar {
+                date: a[0].as_str()?.to_string(),
+                open: num(1),
+                close: num(2),
+                high: num(3),
+                low: num(4),
+                volume: num(5),
+            })
+        })
+        .collect();
+    Ok(bars)
 }
 
 /// 是否处于 A 股交易时段（周一至周五 9:30-11:30 / 13:00-15:00，本地时间）

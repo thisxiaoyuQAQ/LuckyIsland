@@ -13,6 +13,18 @@ export interface Quote {
   change: number;
   change_percent: number;
   time: string;
+  // 详情字段
+  volume: number;
+  amount: number;
+  turnover_rate: number;
+  pe: number;
+  amplitude: number;
+  circ_market_cap: number;
+  total_market_cap: number;
+  pb: number;
+  limit_up: number;
+  limit_down: number;
+  volume_ratio: number;
 }
 
 function colorFor(change: number): string {
@@ -33,13 +45,24 @@ function hhmm(time: string): string {
 export function StockRow({
   q,
   onRemove,
+  onClick,
+  active,
 }: {
   q: Quote;
   onRemove?: (symbol: string) => void;
+  onClick?: (symbol: string) => void;
+  active?: boolean;
 }) {
   const color = colorFor(q.change);
   return (
-    <li className="group flex items-center gap-3 rounded-md px-2 py-1.5 hover:bg-accent">
+    <li
+      onClick={() => onClick?.(q.symbol)}
+      className={cn(
+        "group flex items-center gap-3 rounded-md px-2 py-1.5",
+        onClick && "cursor-pointer",
+        active ? "bg-accent" : "hover:bg-accent/60",
+      )}
+    >
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline gap-2">
           <span className="truncate text-sm font-medium">{q.name}</span>
@@ -57,7 +80,10 @@ export function StockRow({
       </div>
       {onRemove && (
         <button
-          onClick={() => onRemove(q.symbol)}
+          onClick={(e) => {
+            e.stopPropagation();
+            onRemove(q.symbol);
+          }}
           aria-label="删除"
           className="text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100"
         >

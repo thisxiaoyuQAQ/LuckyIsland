@@ -10,7 +10,7 @@ use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut,
 
 use data::calendar::calendar_month;
 use data::stock::{
-    poll_loop, stock_get, stock_search, stock_watchlist_add, stock_watchlist_list,
+    poll_loop, stock_get, stock_kline, stock_search, stock_watchlist_add, stock_watchlist_list,
     stock_watchlist_remove,
 };
 use data::todo::{todo_create, todo_delete, todo_list, todo_update};
@@ -115,6 +115,7 @@ pub fn run() {
             weather_cities_remove,
             stock_get,
             stock_search,
+            stock_kline,
             stock_watchlist_list,
             stock_watchlist_add,
             stock_watchlist_remove
