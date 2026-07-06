@@ -1,4 +1,4 @@
-use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize, PtySystem};
+use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -196,15 +196,15 @@ pub fn term_write(
 /// 返回该终端已缓存输出。解决前端监听晚于 PTY 初始提示符导致输出丢失的问题。
 #[tauri::command]
 pub fn term_snapshot(term_id: String, registry: State<'_, TerminalRegistry>) -> Result<String, String> {
-    let guard = registry.0.lock().map_err(|e| e.to_string())?;
-    let Some(handle) = guard.get(&term_id) else {
-        return Ok(String::new());
+    let output_buffer = {
+        let guard = registry.0.lock().map_err(|e| e.to_string())?;
+        let Some(handle) = guard.get(&term_id) else {
+            return Ok(String::new());
+        };
+        handle.output_buffer.clone()
     };
-    Ok(handle
-        .output_buffer
-        .lock()
-        .map_err(|e| e.to_string())?
-        .clone())
+    let snapshot = output_buffer.lock().map_err(|e| e.to_string())?.clone();
+    Ok(snapshot)
 }
 
 #[tauri::command]
