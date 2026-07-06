@@ -472,8 +472,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1aa79e62e7697b8e29b513a68abacf485adcd1fe8284a4316c5ae868e6633327"
 dependencies = [
  "iana-time-zone",
+ "js-sys",
  "num-traits",
  "serde",
+ "wasm-bindgen",
  "windows-link 0.2.1",
 ]
 
@@ -2008,6 +2010,8 @@ checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
 name = "lucky-island"
 version = "0.1.0"
 dependencies = [
+ "chrono",
+ "nongli",
  "rusqlite",
  "serde",
  "serde_json",
@@ -2122,6 +2126,15 @@ name = "new_debug_unreachable"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "650eef8c711430f1a879fdd01d4745a7deea475becfb90269c06775983bbf086"
+
+[[package]]
+name = "nongli"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "200dc2148c36ff40698321054c1eda690b638d7e9c8f6fd3879601f2ba86a934"
+dependencies = [
+ "chrono",
+]
 
 [[package]]
 name = "num-conv"

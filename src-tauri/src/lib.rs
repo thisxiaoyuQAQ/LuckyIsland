@@ -8,6 +8,7 @@ use tauri::{
 };
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
+use data::calendar::calendar_month;
 use data::todo::{todo_create, todo_delete, todo_list, todo_update};
 
 const WIN_W: f64 = 720.0;
@@ -98,7 +99,8 @@ pub fn run() {
             todo_list,
             todo_create,
             todo_update,
-            todo_delete
+            todo_delete,
+            calendar_month
         ])
         .setup(|app| {
             // 注册 Alt+X 全局热键
