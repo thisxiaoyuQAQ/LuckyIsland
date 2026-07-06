@@ -195,3 +195,15 @@ pub fn term_kill(term_id: String, registry: State<'_, TerminalRegistry>) -> Resu
     }
     Ok(())
 }
+
+/// 在外部 Windows Terminal 打开（spawn wt.exe -d <cwd>）
+#[tauri::command]
+pub fn term_open_wt(cwd: Option<String>) -> Result<(), String> {
+    let mut cmd = std::process::Command::new("wt.exe");
+    if let Some(c) = cwd.as_deref() {
+        cmd.arg("-d").arg(c);
+    }
+    cmd.spawn()
+        .map_err(|e| format!("打开 Windows Terminal 失败：{e}（是否已安装？）"))?;
+    Ok(())
+}
