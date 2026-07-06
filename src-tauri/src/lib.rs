@@ -1,9 +1,13 @@
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Manager, PhysicalPosition,
+    Emitter, LogicalSize, Manager, PhysicalPosition, Size,
 };
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+
+const WIN_W: f64 = 720.0;
+const COMPACT_H: f64 = 80.0;
+const EXPANDED_H: f64 = 400.0;
 
 /// 把窗口定位到当前显示器顶部居中（顶部留 16px）
 fn position_top_center(window: &tauri::WebviewWindow) -> tauri::Result<()> {
@@ -18,16 +22,52 @@ fn position_top_center(window: &tauri::WebviewWindow) -> tauri::Result<()> {
     Ok(())
 }
 
-/// 切换灵动岛显示/隐藏
-fn toggle_visibility(app: &tauri::AppHandle) {
-    if let Some(window) = app.get_webview_window("island") {
-        if window.is_visible().unwrap_or(false) {
-            let _ = window.hide();
-        } else {
-            let _ = window.show();
-            let _ = window.set_focus();
+/// 应用状态：调整窗口尺寸与可见性
+fn apply_state(window: &tauri::WebviewWindow, state: &str) -> tauri::Result<()> {
+    match state {
+        "hidden" => window.hide()?,
+        "compact" => {
+            window.set_size(Size::Logical(LogicalSize {
+                width: WIN_W,
+                height: COMPACT_H,
+            }))?;
+            window.show()?;
+            window.set_focus()?;
         }
+        "expanded" => {
+            window.set_size(Size::Logical(LogicalSize {
+                width: WIN_W,
+                height: EXPANDED_H,
+            }))?;
+            window.show()?;
+            window.set_focus()?;
+        }
+        _ => {}
     }
+    Ok(())
+}
+
+/// 改状态并通知前端
+fn set_state_and_emit(app: &tauri::AppHandle, state: &str) {
+    if let Some(window) = app.get_webview_window("island") {
+        let _ = apply_state(&window, state);
+    }
+    let _ = app.emit("window://state-changed", state.to_string());
+}
+
+/// Alt+X / 托盘：在 hidden ↔ compact 间切换
+fn toggle_visibility(app: &tauri::AppHandle) {
+    let visible = app
+        .get_webview_window("island")
+        .map(|w| w.is_visible().unwrap_or(false))
+        .unwrap_or(false);
+    set_state_and_emit(app, if visible { "hidden" } else { "compact" });
+}
+
+#[tauri::command]
+fn set_island_state(app: tauri::AppHandle, state: String) -> Result<(), String> {
+    set_state_and_emit(&app, &state);
+    Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -35,10 +75,7 @@ pub fn run() {
     tauri::Builder::default()
         // 单实例：重复启动时唤起已有窗口
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if let Some(window) = app.get_webview_window("island") {
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
+            set_state_and_emit(app, "compact");
         }))
         .plugin(tauri_plugin_opener::init())
         // 全局热键
@@ -51,6 +88,7 @@ pub fn run() {
                 })
                 .build(),
         )
+        .invoke_handler(tauri::generate_handler![set_island_state])
         .setup(|app| {
             // 注册 Alt+X 全局热键
             app.global_shortcut()
@@ -85,10 +123,10 @@ pub fn run() {
                 })
                 .build(app)?;
 
-            // 定位到顶部居中并显示
+            // 定位到顶部居中，初始 compact 态
             if let Some(window) = app.get_webview_window("island") {
                 let _ = position_top_center(&window);
-                let _ = window.show();
+                let _ = apply_state(&window, "compact");
             }
 
             Ok(())
