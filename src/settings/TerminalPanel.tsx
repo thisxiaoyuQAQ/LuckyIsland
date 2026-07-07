@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
-import { Plus, Trash2 } from "lucide-react";
+import { GripVertical, Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Row, selectCls } from "./shared";
+import { cn } from "@/lib/utils";
+import { useReorder } from "@/lib/useReorder";
 import {
   KEYS,
   parseFontSize,
@@ -43,6 +45,10 @@ export function TerminalPanel() {
     setShortcuts(next);
     await settingSetEmit(KEYS.terminalShortcuts, JSON.stringify(next));
   };
+
+  const { overIndex, itemProps } = useReorder<Shortcut>((next) => {
+    void persistShortcuts(next);
+  });
 
   const addShortcut = async () => {
     const name = draft.name.trim();
@@ -107,8 +113,13 @@ export function TerminalPanel() {
         {shortcuts.map((s, i) => (
           <div
             key={i}
-            className="flex items-center gap-2 rounded-lg border border-border/70 bg-card/50 px-3 py-2"
+            {...itemProps(i, shortcuts)}
+            className={cn(
+              "flex items-center gap-2 rounded-lg border border-border/70 bg-card/50 px-3 py-2 transition-colors",
+              overIndex === i && "border-primary/70 bg-primary/5",
+            )}
           >
+            <GripVertical className="h-4 w-4 cursor-grab text-muted-foreground" aria-hidden />
             <div className="min-w-0 flex-1">
               <div className="text-sm font-medium">{s.name}</div>
               <div className="truncate text-xs text-muted-foreground">
@@ -116,13 +127,18 @@ export function TerminalPanel() {
                 {s.cwd ? ` @ ${s.cwd}` : ""}
               </div>
             </div>
-            <button
-              onClick={() => void removeShortcut(i)}
-              aria-label="删除"
-              className="text-muted-foreground transition-colors hover:text-destructive"
+            <div
+              onPointerDown={(e) => e.stopPropagation()}
+              onDragStart={(e) => e.preventDefault()}
             >
-              <Trash2 className="h-3.5 w-3.5" />
-            </button>
+              <button
+                onClick={() => void removeShortcut(i)}
+                aria-label="删除"
+                className="text-muted-foreground transition-colors hover:text-destructive"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            </div>
           </div>
         ))}
         {shortcuts.length === 0 && <p className="text-xs text-muted-foreground">暂无快捷命令</p>}
