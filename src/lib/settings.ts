@@ -9,6 +9,9 @@ export const KEYS = {
   defaultState: "general:default_state",
   toast: "general:toast",
   theme: "general:theme",
+  stockRedUp: "stock:red_up",
+  notifyFilterSources: "notify:filter_sources",
+  weatherRefreshMin: "weather:refresh_min",
 } as const;
 
 /** 全部页面 id（与 App.tsx PAGES 对齐） */
@@ -23,6 +26,9 @@ export const DEFAULTS = {
   defaultState: "compact",
   toast: "true",
   theme: "auto",
+  stockRedUp: "true",
+  notifyFilterSources: "claude,codex,custom",
+  weatherRefreshMin: "10",
 } as const;
 
 function isPageId(v: string): v is PageId {
@@ -73,6 +79,30 @@ export function parsePagesOrder(v: string | null | undefined): PageId[] {
 export function parseBool(v: string | null | undefined, fallback: boolean): boolean {
   if (v == null) return fallback;
   return v === "true" || v === "1";
+}
+
+/** 通知来源过滤：返回每个来源是否允许弹卡片 */
+export type NotifySource = "claude" | "codex" | "custom";
+export const NOTIFY_SOURCES: NotifySource[] = ["claude", "codex", "custom"];
+export function parseFilterSources(
+  v: string | null | undefined,
+): Record<NotifySource, boolean> {
+  const fallback: Record<NotifySource, boolean> = { claude: true, codex: true, custom: true };
+  if (!v) return fallback;
+  const allowed = v.split(",").map((s) => s.trim()).filter(Boolean);
+  if (allowed.length === 0) return fallback;
+  return {
+    claude: allowed.includes("claude"),
+    codex: allowed.includes("codex"),
+    custom: allowed.includes("custom"),
+  };
+}
+
+/** 天气刷新间隔（分钟），无效回退 10，范围 1~1440 */
+export function parseRefreshMin(v: string | null | undefined): number {
+  const n = v == null ? 10 : parseInt(v, 10);
+  if (Number.isNaN(n) || n < 1) return 10;
+  return Math.min(n, 1440);
 }
 
 /** 读单个 setting（返回字符串或 null） */

@@ -6,6 +6,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useReorder } from "@/lib/useReorder";
+import { KEYS, onSettingsChanged, parseRefreshMin, settingGet } from "@/lib/settings";
 import { CITIES } from "./cities";
 
 interface WeatherAlert {
@@ -72,6 +73,7 @@ export function WeatherPage({ compact }: { compact: boolean }) {
   const [loading, setLoading] = useState(false);
   const [locating, setLocating] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [refreshMin, setRefreshMin] = useState(10);
 
   const suggestions = useMemo(() => {
     const q = draft.trim();
@@ -200,10 +202,29 @@ export function WeatherPage({ compact }: { compact: boolean }) {
     void invoke("weather_cities_reorder", { cities: next });
   });
 
-  const refreshAll = () => {
+  const refreshAll = useCallback(() => {
     if (active) void fetchWeather(active);
     if (compactCity && compactCity !== active) void fetchWeather(compactCity);
-  };
+  }, [active, compactCity, fetchWeather]);
+
+  // 自动刷新间隔：读 settings + 监听即时生效
+  useEffect(() => {
+    void settingGet(KEYS.weatherRefreshMin).then((v) => setRefreshMin(parseRefreshMin(v)));
+    let un: (() => void) | undefined;
+    onSettingsChanged((key, value) => {
+      if (key === KEYS.weatherRefreshMin) setRefreshMin(parseRefreshMin(value));
+    }).then((fn) => {
+      un = fn;
+    });
+    return () => un?.();
+  }, []);
+
+  // 后台定时刷新（间隔由 refreshMin 控制）
+  useEffect(() => {
+    if (refreshMin <= 0) return;
+    const id = window.setInterval(() => refreshAll(), refreshMin * 60 * 1000);
+    return () => clearInterval(id);
+  }, [refreshMin, refreshAll]);
 
   const w = cache[active];
   const wCompact = cache[compactCity];

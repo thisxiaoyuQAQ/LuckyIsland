@@ -1,13 +1,19 @@
 import { useState } from "react";
 import { GeneralPanel } from "./GeneralPanel";
 import { PageManagerPanel } from "./PageManagerPanel";
+import { NotifyPanel } from "./NotifyPanel";
+import { WeatherPanel } from "./WeatherPanel";
+import { StockPanel } from "./StockPanel";
 import { cn } from "@/lib/utils";
 
-type Tab = "general" | "pages";
+type Tab = "general" | "pages" | "notify" | "weather" | "stock";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "general", label: "总体" },
   { id: "pages", label: "页面管理" },
+  { id: "notify", label: "通知" },
+  { id: "weather", label: "天气" },
+  { id: "stock", label: "股票" },
 ];
 
 function SettingsApp() {
@@ -38,7 +44,17 @@ function SettingsApp() {
 
       {/* 内容区 */}
       <main className="flex-1 overflow-auto p-6">
-        {tab === "general" ? <GeneralPanel /> : <PageManagerPanel />}
+        {tab === "general" ? (
+          <GeneralPanel />
+        ) : tab === "pages" ? (
+          <PageManagerPanel />
+        ) : tab === "notify" ? (
+          <NotifyPanel />
+        ) : tab === "weather" ? (
+          <WeatherPanel />
+        ) : (
+          <StockPanel />
+        )}
       </main>
     </div>
   );

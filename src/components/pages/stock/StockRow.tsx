@@ -28,9 +28,10 @@ export interface Quote {
   volume_ratio: number;
 }
 
-function colorFor(change: number): string {
-  if (change > 0) return "text-red-500";
-  if (change < 0) return "text-green-500";
+/** 涨跌着色：redUp=true 红涨绿跌（中国习惯），false 绿涨红跌 */
+export function colorFor(change: number, redUp = true): string {
+  if (change > 0) return redUp ? "text-red-500" : "text-green-500";
+  if (change < 0) return redUp ? "text-green-500" : "text-red-500";
   return "text-muted-foreground";
 }
 
@@ -49,6 +50,7 @@ export function StockRow({
   onClick,
   active,
   compact,
+  redUp = true,
   dragProps,
   dragOver,
 }: {
@@ -57,10 +59,11 @@ export function StockRow({
   onClick?: (symbol: string) => void;
   active?: boolean;
   compact?: boolean;
+  redUp?: boolean;
   dragProps?: HTMLAttributes<HTMLLIElement>;
   dragOver?: boolean;
 }) {
-  const color = colorFor(q.change);
+  const color = colorFor(q.change, redUp);
   return (
     <li
       {...dragProps}

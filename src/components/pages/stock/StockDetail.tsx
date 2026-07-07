@@ -3,7 +3,7 @@ import { ArrowLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { StockChart, MA_COLORS } from "./StockChart";
-import type { Quote } from "./StockRow";
+import { colorFor, type Quote } from "./StockRow";
 
 type Period = "day" | "week" | "month";
 const PERIODS: ReadonlyArray<[Period, string]> = [
@@ -34,12 +34,10 @@ function Stat({ label, value, color }: { label: string; value: string; color?: s
   );
 }
 
-export function StockDetail({ quote, onBack }: { quote: Quote; onBack: () => void }) {
+export function StockDetail({ quote, onBack, redUp = true }: { quote: Quote; onBack: () => void; redUp?: boolean }) {
   const [period, setPeriod] = useState<Period>("day");
   const [ma, setMa] = useState<MaValues | null>(null);
-  const up = quote.change > 0;
-  const down = quote.change < 0;
-  const color = up ? "text-red-500" : down ? "text-green-500" : "text-muted-foreground";
+  const color = colorFor(quote.change, redUp);
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-2">

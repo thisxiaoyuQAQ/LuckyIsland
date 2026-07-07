@@ -3,23 +3,19 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { cn } from "@/lib/utils";
 import { useReorder } from "@/lib/useReorder";
+import { KEYS, onSettingsChanged, parseBool, settingGet } from "@/lib/settings";
 import { StockAdd } from "./StockAdd";
-import { StockRow, type Quote } from "./StockRow";
+import { StockRow, colorFor, type Quote } from "./StockRow";
 import { StockDetail } from "./StockDetail";
 
 const COMPACT_KEY = "stock:compact_symbol";
-
-function colorFor(change: number): string {
-  if (change > 0) return "text-red-500";
-  if (change < 0) return "text-green-500";
-  return "text-muted-foreground";
-}
 
 export function StockPage({ compact }: { compact: boolean }) {
   const [quotes, setQuotes] = useState<Quote[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [compactSymbol, setCompactSymbol] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [redUp, setRedUp] = useState(true);
 
   const refresh = useCallback(async () => {
     try {
@@ -40,6 +36,18 @@ export function StockPage({ compact }: { compact: boolean }) {
     });
     return () => un?.();
   }, [refresh]);
+
+  // 红涨绿跌方向：读 settings + 监听即时生效
+  useEffect(() => {
+    void settingGet(KEYS.stockRedUp).then((v) => setRedUp(parseBool(v, true)));
+    let un: (() => void) | undefined;
+    onSettingsChanged((key, value) => {
+      if (key === KEYS.stockRedUp) setRedUp(parseBool(value, true));
+    }).then((fn) => {
+      un = fn;
+    });
+    return () => un?.();
+  }, []);
 
   const remove = async (symbol: string) => {
     try {
@@ -74,7 +82,7 @@ export function StockPage({ compact }: { compact: boolean }) {
   if (compact) {
     const q = quotes.find((x) => x.symbol === compactSymbol) ?? quotes[0];
     if (!q) return <span className="text-sm text-muted-foreground">无自选</span>;
-    const color = colorFor(q.change);
+    const color = colorFor(q.change, redUp);
     return (
       <span className="flex items-center gap-1.5 text-sm tabular-nums">
         <span className="text-muted-foreground">{q.name}</span>
@@ -109,6 +117,7 @@ export function StockPage({ compact }: { compact: boolean }) {
                     q={q}
                     compact
                     active={q.symbol === selected}
+                    redUp={redUp}
                     dragProps={itemProps(i, quotes)}
                     dragOver={overIndex === i}
                     onClick={(s) => selectStock(s)}
@@ -120,7 +129,7 @@ export function StockPage({ compact }: { compact: boolean }) {
           </div>
         </div>
         <div className="min-w-0 flex-1">
-          <StockDetail quote={selectedQuote} onBack={() => setSelected(null)} />
+          <StockDetail quote={selectedQuote} onBack={() => setSelected(null)} redUp={redUp} />
         </div>
       </div>
     );
@@ -142,6 +151,7 @@ export function StockPage({ compact }: { compact: boolean }) {
               <StockRow
                 key={q.symbol}
                 q={q}
+                redUp={redUp}
                 dragProps={itemProps(i, quotes)}
                 dragOver={overIndex === i}
                 onClick={(s) => selectStock(s)}

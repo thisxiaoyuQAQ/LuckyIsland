@@ -1,17 +1,34 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Bell } from "lucide-react";
 import { NotifyCard, type NotificationItem } from "./NotifyCard";
+import { KEYS, onSettingsChanged, parseFilterSources, settingGet, type NotifySource } from "@/lib/settings";
 
 export function NotifyPage({ compact }: { compact: boolean }) {
   const [items, setItems] = useState<NotificationItem[]>([]);
+  const filterRef = useRef<Record<NotifySource, boolean>>(parseFilterSources(null));
   const unread = items.filter((i) => !i.read).length;
+
+  // 来源过滤：读 settings + 监听即时生效（listener 用 ref 避免闭包过期）
+  useEffect(() => {
+    void settingGet(KEYS.notifyFilterSources).then((v) => {
+      filterRef.current = parseFilterSources(v);
+    });
+    let un: (() => void) | undefined;
+    onSettingsChanged((key, value) => {
+      if (key === KEYS.notifyFilterSources) filterRef.current = parseFilterSources(value);
+    }).then((fn) => {
+      un = fn;
+    });
+    return () => un?.();
+  }, []);
 
   useEffect(() => {
     void invoke<NotificationItem[]>("notify_list", { limit: 100 }).then(setItems);
     let un: (() => void) | undefined;
     listen<NotificationItem>("notify://incoming", (e) => {
+      if (!filterRef.current[e.payload.source as NotifySource]) return; // 被过滤来源不弹卡片
       setItems((xs) => [e.payload, ...xs.filter((x) => x.id !== e.payload.id)]);
     }).then((fn) => {
       un = fn;
