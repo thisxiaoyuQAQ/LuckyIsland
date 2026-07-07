@@ -56,19 +56,20 @@ export function TerminalTab({ termId, active }: { termId: string; active: boolea
     return () => un?.();
   }, []);
 
-  // 容器尺寸变化（compact↔expanded 高度过渡 / 窗口 resize）时重新 fit，
-  // 避免 attachTerminal 的 fit 用过渡中间尺寸导致内容显示不全、滚动异常
+  // 容器尺寸变化（compact↔expanded 高度过渡 / 窗口 resize）时重新 fit。
+  // debounce 200ms：过渡中尺寸连续变化不 fit，等稳定后 fit 一次，
+  // 避免频繁 fit/term_resize 导致 PTY 反复 resize、内容错位
   useEffect(() => {
     if (!ref.current) return;
     const el = ref.current;
-    let raf = 0;
+    let timer = 0;
     const ro = new ResizeObserver(() => {
-      cancelAnimationFrame(raf);
-      raf = requestAnimationFrame(() => bridgeRef.current?.fit());
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => bridgeRef.current?.fit(), 200);
     });
     ro.observe(el);
     return () => {
-      cancelAnimationFrame(raf);
+      window.clearTimeout(timer);
       ro.disconnect();
     };
   }, []);
