@@ -1,14 +1,16 @@
 mod data;
 mod notify;
 mod settings;
+mod settings_window;
 mod storage;
 mod terminal;
 
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Emitter, LogicalSize, Manager, PhysicalPosition, Size,
+    Emitter, LogicalSize, Manager, PhysicalPosition, Size, WindowEvent,
 };
+use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
 use data::calendar::calendar_month;
@@ -23,6 +25,7 @@ use data::weather::{
 };
 use notify::{notify_create, notify_get_token, notify_list, notify_mark_read};
 use settings::{setting_get, setting_set};
+use settings_window::{autostart_get, autostart_set, open_settings, setting_set_and_emit, settings_list};
 use terminal::{term_create, term_kill, term_open_wt, term_resize, term_snapshot, term_write, TerminalRegistry};
 
 const WIN_W: f64 = 720.0;
@@ -99,6 +102,17 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
+        // 开机自启（M7 设置面板）
+        .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
+        // 设置窗口点关闭改为隐藏（保持单例，避免销毁后重建）
+        .on_window_event(|window, event| {
+            if window.label() == "settings" {
+                if let WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+        })
         // 全局热键
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
@@ -133,6 +147,11 @@ pub fn run() {
             stock_watchlist_reorder,
             setting_get,
             setting_set,
+            settings_list,
+            setting_set_and_emit,
+            open_settings,
+            autostart_set,
+            autostart_get,
             notify_list,
             notify_mark_read,
             notify_create,
@@ -151,8 +170,9 @@ pub fn run() {
 
             // 系统托盘
             let show_item = MenuItem::with_id(app, "show", "显示/隐藏", true, None::<&str>)?;
+            let settings_item = MenuItem::with_id(app, "settings", "设置...", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
+            let menu = Menu::with_items(app, &[&show_item, &settings_item, &quit_item])?;
             TrayIconBuilder::new()
                 .icon(
                     app.default_window_icon()
@@ -163,6 +183,9 @@ pub fn run() {
                 .tooltip("LuckyIsland")
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "show" => toggle_visibility(app),
+                    "settings" => {
+                        let _ = open_settings(app.clone());
+                    }
                     "quit" => app.exit(0),
                     _ => {}
                 })
@@ -180,6 +203,10 @@ pub fn run() {
 
             // 初始化 SQLite（%APPDATA%/com.luckyisland.app/data.db）
             let db = storage::Db::init(app.handle())?;
+            let default_state = db
+                .setting_get("general:default_state")
+                .filter(|s| matches!(s.as_str(), "hidden" | "compact" | "expanded"))
+                .unwrap_or_else(|| "compact".to_string());
             app.manage(db);
 
             // 共享 HTTP 客户端（天气 / 股票拉取复用）
@@ -200,10 +227,10 @@ pub fn run() {
                 notify::server::start(notify_app).await;
             });
 
-            // 定位到顶部居中，初始 compact 态
+            // 定位到顶部居中，并按设置面板的启动默认态显示
             if let Some(window) = app.get_webview_window("island") {
                 let _ = position_top_center(&window);
-                let _ = apply_state(&window, "compact");
+                let _ = apply_state(&window, &default_state);
             }
 
             Ok(())

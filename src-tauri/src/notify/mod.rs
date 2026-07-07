@@ -226,13 +226,19 @@ pub fn dispatch_notification(
         let _ = window.show();
         let _ = window.set_focus();
     }
-    // OS 系统通知（Windows toast），hook 场景下吸引注意力
-    let _ = app
-        .notification()
-        .builder()
-        .title(n.title.as_str())
-        .body(n.body.as_deref().unwrap_or(""))
-        .show();
+    // OS 系统通知（Windows toast）：默认开启，可由 M7 设置面板 general:toast 关闭。
+    let toast_enabled = db
+        .setting_get("general:toast")
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(true);
+    if toast_enabled {
+        let _ = app
+            .notification()
+            .builder()
+            .title(n.title.as_str())
+            .body(n.body.as_deref().unwrap_or(""))
+            .show();
+    }
     Ok(n)
 }
 

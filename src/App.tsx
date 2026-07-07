@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState, type FC } from "react";
+import { useCallback, useEffect, useMemo, useState, type FC } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { ChevronDown, ChevronUp, Moon, Sun } from "lucide-react";
+import { ChevronDown, ChevronUp, Moon, Settings, Sun } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import { TimePage } from "@/components/pages/time/TimePage";
 import { CalendarPage } from "@/components/pages/calendar/CalendarPage";
 import { WeatherPage } from "@/components/pages/weather/WeatherPage";
@@ -10,17 +11,28 @@ import { StockPage } from "@/components/pages/stock/StockPage";
 import { TodoPage } from "@/components/pages/todo/TodoPage";
 import { TerminalPage } from "@/components/pages/terminal/TerminalPage";
 import { NotifyPage } from "@/components/pages/notify/NotifyPage";
+import {
+  KEYS,
+  onSettingsChanged,
+  openSettings,
+  parsePagesEnabled,
+  parsePagesOrder,
+  settingGet,
+  settingSetEmit,
+  type PageId,
+} from "@/lib/settings";
 
 type Theme = "light" | "dark";
+type ThemeMode = Theme | "auto";
 type IslandState = "hidden" | "compact" | "expanded";
 
 interface PageMeta {
-  id: string;
+  id: PageId;
   label: string;
   Component: FC<{ compact: boolean }>;
 }
 
-const PAGES: PageMeta[] = [
+const ALL_PAGES: PageMeta[] = [
   { id: "time", label: "时间", Component: TimePage },
   { id: "calendar", label: "日历", Component: CalendarPage },
   { id: "weather", label: "天气", Component: WeatherPage },
@@ -30,66 +42,135 @@ const PAGES: PageMeta[] = [
   { id: "terminal", label: "终端", Component: TerminalPage },
 ];
 
-function getInitialTheme(): Theme {
+const PAGE_BY_ID = Object.fromEntries(ALL_PAGES.map((p) => [p.id, p])) as Record<PageId, PageMeta>;
+
+function getSystemTheme(): Theme {
   if (typeof window === "undefined") return "light";
   return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 
+function normalizeThemeMode(v: string | null): ThemeMode | null {
+  return v === "light" || v === "dark" || v === "auto" ? v : null;
+}
+
+function normalizeIslandState(v: string | null): IslandState | null {
+  return v === "hidden" || v === "compact" || v === "expanded" ? v : null;
+}
+
 function App() {
-  const [theme, setTheme] = useState<Theme>(getInitialTheme);
+  const [themeMode, setThemeMode] = useState<ThemeMode>("auto");
+  const [systemTheme, setSystemTheme] = useState<Theme>(getSystemTheme);
   const [islandState, setIslandState] = useState<IslandState>("compact");
   const [pageIndex, setPageIndex] = useState(0);
+  const [pagesEnabled, setPagesEnabled] = useState(parsePagesEnabled(null));
+  const [pagesOrder, setPagesOrder] = useState(parsePagesOrder(null));
+
+  const pages = useMemo(() => {
+    const ordered = pagesOrder.map((id) => PAGE_BY_ID[id]).filter(Boolean);
+    const visible = ordered.filter((p) => pagesEnabled[p.id]);
+    return visible.length > 0 ? visible : [PAGE_BY_ID.time];
+  }, [pagesEnabled, pagesOrder]);
 
   const expanded = islandState === "expanded";
-  const CurrentPage = PAGES[pageIndex].Component;
+  const effectiveTheme: Theme = themeMode === "auto" ? systemTheme : themeMode;
+  const CurrentPage = pages[pageIndex]?.Component ?? TimePage;
 
   const setState = useCallback((s: IslandState) => {
     setIslandState(s);
-    void invoke("set_island_state", { state: s });
+    if (s === "compact") {
+      // 收起：先让容器 CSS 收缩（在原窗口尺寸内，圆角不被裁剪），过渡完成后再缩小窗口，
+      // 避免窗口先变小、容器仍大被窗口方形边界裁剪出无圆角的方框
+      window.setTimeout(() => {
+        void invoke("set_island_state", { state: s });
+      }, 300);
+    } else {
+      void invoke("set_island_state", { state: s });
+    }
   }, []);
 
-  const setPage = useCallback((i: number) => {
-    setPageIndex((((i % PAGES.length) + PAGES.length) % PAGES.length));
+  const setPage = useCallback(
+    (i: number) => {
+      setPageIndex((((i % pages.length) + pages.length) % pages.length));
+    },
+    [pages.length],
+  );
+
+  const setThemeAndPersist = useCallback((mode: ThemeMode) => {
+    setThemeMode(mode);
+    void settingSetEmit(KEYS.theme, mode);
   }, []);
 
-  // 主题：写入 data-theme
+  // settings KV 初始化：页面显隐/顺序、主题模式、启动默认态。
   useEffect(() => {
-    document.documentElement.setAttribute("data-theme", theme);
-  }, [theme]);
+    (async () => {
+      const [enabledRaw, orderRaw, themeRaw, defaultStateRaw] = await Promise.all([
+        settingGet(KEYS.pagesEnabled),
+        settingGet(KEYS.pagesOrder),
+        settingGet(KEYS.theme),
+        settingGet(KEYS.defaultState),
+      ]);
+      setPagesEnabled(parsePagesEnabled(enabledRaw));
+      setPagesOrder(parsePagesOrder(orderRaw));
+      setThemeMode(normalizeThemeMode(themeRaw) ?? "auto");
+      const initialState = normalizeIslandState(defaultStateRaw);
+      if (initialState) setIslandState(initialState);
+    })();
+  }, []);
 
-  // 主题：跟随系统变化
+  // settings://changed：设置窗口改写后即时重算页面与主题。
+  useEffect(() => {
+    let un: (() => void) | undefined;
+    onSettingsChanged((key, value) => {
+      if (key === KEYS.pagesEnabled) setPagesEnabled(parsePagesEnabled(value));
+      if (key === KEYS.pagesOrder) setPagesOrder(parsePagesOrder(value));
+      if (key === KEYS.theme) setThemeMode(normalizeThemeMode(value) ?? "auto");
+    }).then((fn) => {
+      un = fn;
+    });
+    return () => un?.();
+  }, []);
+
+  // 页面列表变化后，当前 index 超界则回到第一个可见页。
+  useEffect(() => {
+    if (pageIndex >= pages.length) setPageIndex(0);
+  }, [pageIndex, pages.length]);
+
+  // 主题：写入 data-theme。
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", effectiveTheme);
+  }, [effectiveTheme]);
+
+  // 主题：跟随系统变化（仅在 themeMode=auto 时体现在 effectiveTheme）。
   useEffect(() => {
     const mq = window.matchMedia("(prefers-color-scheme: dark)");
-    const h = (e: MediaQueryListEvent) => setTheme(e.matches ? "dark" : "light");
+    const h = (e: MediaQueryListEvent) => setSystemTheme(e.matches ? "dark" : "light");
     mq.addEventListener("change", h);
     return () => mq.removeEventListener("change", h);
   }, []);
 
-  // 监听 Rust 推送的状态变化
+  // 监听 Rust 推送的状态变化。
   useEffect(() => {
     let un: (() => void) | undefined;
-    listen<IslandState>("window://state-changed", (e) => setIslandState(e.payload)).then(
-      (fn) => {
-        un = fn;
-      },
-    );
+    listen<IslandState>("window://state-changed", (e) => setIslandState(e.payload)).then((fn) => {
+      un = fn;
+    });
     return () => un?.();
   }, []);
 
-  // 通知到达：切通知页 + 展开灵动岛
+  // 通知到达：切通知页（若通知页未关闭）+ 展开灵动岛。
   useEffect(() => {
     let un: (() => void) | undefined;
     listen("notify://incoming", () => {
-      const i = PAGES.findIndex((p) => p.id === "notify");
+      const i = pages.findIndex((p) => p.id === "notify");
       if (i >= 0) setPage(i);
       setState("expanded");
     }).then((fn) => {
       un = fn;
     });
     return () => un?.();
-  }, [setPage, setState]);
+  }, [pages, setPage, setState]);
 
-  // 局部快捷键（仅展开态，需窗口焦点）
+  // 局部快捷键（仅展开态，需窗口焦点）。
   useEffect(() => {
     if (!expanded) return;
     const onKey = (e: KeyboardEvent) => {
@@ -103,7 +184,7 @@ function App() {
       if (typing) return;
       if (e.altKey && /^[1-9]$/.test(e.key)) {
         const i = parseInt(e.key, 10) - 1;
-        if (i < PAGES.length) {
+        if (i < pages.length) {
           e.preventDefault();
           setPage(i);
         }
@@ -117,15 +198,15 @@ function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [expanded, pageIndex, setPage, setState]);
+  }, [expanded, pageIndex, pages.length, setPage, setState]);
 
   return (
     <div className="flex h-screen w-screen items-start justify-center pt-3">
       <div
-        className={
-          "flex w-full max-w-[700px] flex-col rounded-2xl border border-border/60 bg-card/70 px-4 shadow-2xl backdrop-blur-xl transition-[height] duration-300 ease-out " +
-          (expanded ? "h-[380px] py-3" : "h-14 py-0")
-        }
+        className={cn(
+          "flex w-full max-w-[700px] flex-col rounded-2xl border border-border/60 bg-card/70 px-4 shadow-2xl backdrop-blur-xl transition-[height] duration-300 ease-out",
+          expanded ? "h-[380px] py-3" : "h-14 py-0",
+        )}
       >
         {/* 顶部条 */}
         <div data-tauri-drag-region className="flex h-14 shrink-0 items-center gap-3">
@@ -137,16 +218,16 @@ function App() {
                 else if (e.deltaY < 0) setPage(pageIndex - 1);
               }}
             >
-              {PAGES.map((p, i) => (
+              {pages.map((p, i) => (
                 <button
                   key={p.id}
                   onClick={() => setPage(i)}
-                  className={
-                    "rounded-md px-2.5 py-1 text-xs transition-colors " +
-                    (i === pageIndex
+                  className={cn(
+                    "rounded-md px-2.5 py-1 text-xs transition-colors",
+                    i === pageIndex
                       ? "bg-primary text-primary-foreground"
-                      : "text-muted-foreground hover:text-foreground")
-                  }
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
                 >
                   {p.label}
                 </button>
@@ -160,13 +241,13 @@ function App() {
                 else if (e.deltaY < 0) setPage(pageIndex - 1);
               }}
             >
-              {PAGES.map((p, i) => (
+              {pages.map((p, i) => (
                 <span
                   key={p.id}
-                  className={
-                    "h-1.5 rounded-full transition-all " +
-                    (i === pageIndex ? "w-4 bg-foreground" : "w-1.5 bg-muted-foreground/40")
-                  }
+                  className={cn(
+                    "h-1.5 rounded-full transition-all",
+                    i === pageIndex ? "w-4 bg-foreground" : "w-1.5 bg-muted-foreground/40",
+                  )}
                 />
               ))}
             </div>
@@ -181,27 +262,36 @@ function App() {
           <div className="ml-auto flex items-center gap-1">
             <Button
               variant="ghost"
-              size="icon"
-              className="h-7 w-7"
+              size="icon-xs"
               onClick={(e) => {
                 e.stopPropagation();
                 setState(expanded ? "compact" : "expanded");
               }}
               aria-label="展开/收起"
             >
-              {expanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+              {expanded ? <ChevronUp /> : <ChevronDown />}
             </Button>
             <Button
               variant="ghost"
-              size="icon"
-              className="h-7 w-7"
+              size="icon-xs"
               onClick={(e) => {
                 e.stopPropagation();
-                setTheme(theme === "dark" ? "light" : "dark");
+                void openSettings();
+              }}
+              aria-label="打开设置"
+            >
+              <Settings />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              onClick={(e) => {
+                e.stopPropagation();
+                setThemeAndPersist(effectiveTheme === "dark" ? "light" : "dark");
               }}
               aria-label="切换主题"
             >
-              {theme === "dark" ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
+              {effectiveTheme === "dark" ? <Sun /> : <Moon />}
             </Button>
           </div>
         </div>

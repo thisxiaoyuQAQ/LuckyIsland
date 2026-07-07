@@ -87,6 +87,24 @@ impl Db {
             .map_err(|e| e.to_string())?;
         Ok(())
     }
+
+    /// 批量读 settings：key 以 `prefix` 开头的全部 (key, value)。M7 设置面板初始化用。
+    pub fn settings_list_prefix(&self, prefix: &str) -> Result<Vec<(String, String)>, String> {
+        let conn = self.0.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT key, value FROM settings WHERE key LIKE ?1")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![format!("{}%", prefix)], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(|e| e.to_string())?);
+        }
+        Ok(out)
+    }
 }
 
 fn now_ts() -> i64 {

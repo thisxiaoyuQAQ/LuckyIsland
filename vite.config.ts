@@ -36,4 +36,14 @@ export default defineConfig(async () => ({
       ignored: ["**/src-tauri/**"],
     },
   },
+
+  // 多页入口：island（index.html）+ 设置面板（settings.html）
+  build: {
+    rollupOptions: {
+      input: {
+        main: fileURLToPath(new URL("./index.html", import.meta.url)),
+        settings: fileURLToPath(new URL("./settings.html", import.meta.url)),
+      },
+    },
+  },
 }));
