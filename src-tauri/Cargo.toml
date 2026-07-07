@@ -37,3 +37,8 @@ tokio = { version = "1", features = ["time"] }
 portable-pty = "0.9"
 axum = "0.7"
 clap = { version = "4", features = ["derive"] }
+
+# release 优化：thin LTO + strip 符号，减小安装包体积（需求 <15MB）
+[profile.release]
+lto = "thin"
+strip = true
