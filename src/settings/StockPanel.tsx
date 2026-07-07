@@ -1,24 +1,23 @@
 import { useCallback, useEffect, useState } from "react";
-import { Trash2 } from "lucide-react";
+import { GripVertical, Trash2 } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { Row } from "./shared";
+import { cn } from "@/lib/utils";
+import { useReorder } from "@/lib/useReorder";
 import { StockAdd } from "@/components/pages/stock/StockAdd";
 import { invoke } from "@tauri-apps/api/core";
 import { KEYS, parseBool, settingGet, settingSetEmit } from "@/lib/settings";
-
-interface WatchItem {
-  symbol: string;
-}
+import type { Quote } from "@/components/pages/stock/StockRow";
 
 /** 股票页配置：红涨绿跌 + 自选股管理（F9.8，与股票页同步） */
 export function StockPanel() {
   const [redUp, setRedUp] = useState(true);
-  const [list, setList] = useState<WatchItem[]>([]);
+  const [list, setList] = useState<Quote[]>([]);
   const [loading, setLoading] = useState(true);
 
   const refreshList = useCallback(async () => {
     try {
-      setList(await invoke<WatchItem[]>("stock_watchlist_list"));
+      setList(await invoke<Quote[]>("stock_get"));
     } catch {
       /* ignore */
     }
@@ -32,6 +31,17 @@ export function StockPanel() {
       setLoading(false);
     })();
   }, [refreshList]);
+
+  const persistOrder = useCallback(async (next: Quote[]) => {
+    setList(next);
+    try {
+      await invoke("stock_watchlist_reorder", { symbols: next.map((q) => q.symbol) });
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const { overIndex, itemProps } = useReorder<Quote>(persistOrder);
 
   const remove = async (symbol: string) => {
     await invoke("stock_watchlist_remove", { symbol });
@@ -62,25 +72,36 @@ export function StockPanel() {
 
       <div className="flex flex-col gap-1">
         <div className="text-sm font-medium">自选股</div>
-        <div className="text-xs text-muted-foreground">搜索添加 / 删除，与股票页同步。</div>
+        <div className="text-xs text-muted-foreground">搜索添加 / 删除 / 拖拽排序，与股票页同步。</div>
       </div>
       <StockAdd onAdded={() => void refreshList()} />
       <div className="flex flex-col gap-2">
-        {list.map((w) => (
+        {list.map((q, i) => (
           <div
-            key={w.symbol}
-            className="flex items-center gap-2 rounded-lg border border-border/70 bg-card/50 px-3 py-2"
+            key={q.symbol}
+            {...itemProps(i, list)}
+            className={cn(
+              "flex items-center gap-2 rounded-lg border border-border/70 bg-card/50 px-3 py-2 transition-colors",
+              overIndex === i && "border-primary/70 bg-primary/5",
+            )}
           >
-            <span className="min-w-0 flex-1 truncate text-xs uppercase text-muted-foreground">
-              {w.symbol}
-            </span>
-            <button
-              onClick={() => void remove(w.symbol)}
-              aria-label="删除"
-              className="text-muted-foreground transition-colors hover:text-destructive"
+            <GripVertical className="h-4 w-4 cursor-grab text-muted-foreground" aria-hidden />
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-sm font-medium">{q.name}</div>
+              <div className="text-xs uppercase text-muted-foreground">{q.symbol}</div>
+            </div>
+            <div
+              onPointerDown={(e) => e.stopPropagation()}
+              onDragStart={(e) => e.preventDefault()}
             >
-              <Trash2 className="h-3.5 w-3.5" />
-            </button>
+              <button
+                onClick={() => void remove(q.symbol)}
+                aria-label="删除"
+                className="text-muted-foreground transition-colors hover:text-destructive"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            </div>
           </div>
         ))}
         {list.length === 0 && <p className="text-xs text-muted-foreground">暂无自选股</p>}

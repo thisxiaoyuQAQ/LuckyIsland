@@ -23,10 +23,10 @@ export function WeatherPanel() {
 
   const suggestions = useMemo(() => {
     const q = draft.trim();
-    const pool = (q ? CITIES.filter((c) => c.includes(q)) : CITIES).filter(
-      (c) => !cities.includes(c),
-    );
-    return pool.slice(0, 12);
+    if (!q) return []; // 空输入不弹建议
+    return CITIES.filter((c) => c.includes(q))
+      .filter((c) => !cities.includes(c))
+      .slice(0, 12);
   }, [draft, cities]);
 
   useEffect(() => {
