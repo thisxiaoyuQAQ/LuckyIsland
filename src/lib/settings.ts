@@ -12,6 +12,8 @@ export const KEYS = {
   stockRedUp: "stock:red_up",
   notifyFilterSources: "notify:filter_sources",
   weatherRefreshMin: "weather:refresh_min",
+  terminalShell: "terminal:shell",
+  terminalFontSize: "terminal:font_size",
 } as const;
 
 /** 全部页面 id（与 App.tsx PAGES 对齐） */
@@ -29,6 +31,8 @@ export const DEFAULTS = {
   stockRedUp: "true",
   notifyFilterSources: "claude,codex,custom",
   weatherRefreshMin: "10",
+  terminalShell: "default",
+  terminalFontSize: "13",
 } as const;
 
 function isPageId(v: string): v is PageId {
@@ -103,6 +107,13 @@ export function parseRefreshMin(v: string | null | undefined): number {
   const n = v == null ? 10 : parseInt(v, 10);
   if (Number.isNaN(n) || n < 1) return 10;
   return Math.min(n, 1440);
+}
+
+/** 终端字号，无效回退 13，范围 6~72 */
+export function parseFontSize(v: string | null | undefined): number {
+  const n = v == null ? 13 : parseInt(v, 10);
+  if (Number.isNaN(n) || n < 6) return 13;
+  return Math.min(n, 72);
 }
 
 /** 读单个 setting（返回字符串或 null） */

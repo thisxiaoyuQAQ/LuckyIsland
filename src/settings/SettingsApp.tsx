@@ -4,14 +4,16 @@ import { PageManagerPanel } from "./PageManagerPanel";
 import { NotifyPanel } from "./NotifyPanel";
 import { WeatherPanel } from "./WeatherPanel";
 import { StockPanel } from "./StockPanel";
+import { TerminalPanel } from "./TerminalPanel";
 import { cn } from "@/lib/utils";
 
-type Tab = "general" | "pages" | "notify" | "weather" | "stock";
+type Tab = "general" | "pages" | "notify" | "terminal" | "weather" | "stock";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "general", label: "总体" },
   { id: "pages", label: "页面管理" },
   { id: "notify", label: "通知" },
+  { id: "terminal", label: "终端" },
   { id: "weather", label: "天气" },
   { id: "stock", label: "股票" },
 ];
@@ -50,6 +52,8 @@ function SettingsApp() {
           <PageManagerPanel />
         ) : tab === "notify" ? (
           <NotifyPanel />
+        ) : tab === "terminal" ? (
+          <TerminalPanel />
         ) : tab === "weather" ? (
           <WeatherPanel />
         ) : (

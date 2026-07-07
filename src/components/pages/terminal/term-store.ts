@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { KEYS, settingGet } from "@/lib/settings";
 
 export interface Tab {
   id: string;
@@ -28,9 +29,13 @@ export function subscribe(l: () => void): () => void {
 }
 
 export async function addTab(opts?: { cwd?: string; command?: string; title?: string }): Promise<string> {
+  // 读 terminal:shell：default → null（后端走 default_shell），否则传可执行名
+  const shellSetting = await settingGet(KEYS.terminalShell);
+  const shell = shellSetting && shellSetting !== "default" ? shellSetting : null;
   const id = await invoke<string>("term_create", {
     cwd: opts?.cwd ?? null,
     command: opts?.command ?? null,
+    shell,
   });
   const title = opts?.title ?? `终端 ${tabs.length + 1}`;
   tabs = [...tabs, { id, title }];
