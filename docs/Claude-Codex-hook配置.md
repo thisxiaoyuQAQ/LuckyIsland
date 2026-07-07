@@ -82,6 +82,7 @@ lucky-notify --title "Codex 完成" --source codex --level success --cwd "$PWD"
 ## 排错
 
 - `failed to connect to LuckyIsland at ...`：LuckyIsland 没运行，或 9753 端口未启动。
+- `server returned 502 ...`：lucky-notify 被系统/全局代理拦截（127.0.0.1 走了代理）。新版 CLI 已 `.no_proxy()` 直连本地；旧版可在 hook 命令前加 `NO_PROXY=127.0.0.1` 临时绕过。
 - `server returned 401 ...`：token 不匹配；重启 LuckyIsland 后重试，或显式设置 `LUCKY_TOKEN`。
 - `server returned 400 ...`：检查 `--source claude|codex|custom` 和 `--level info|success|warn|error`，title 不能为空。
 - `token not found`：LuckyIsland 从未启动过（settings 里还没有 token）。启动一次 LuckyIsland 即可生成。

@@ -58,7 +58,11 @@ fn run(args: Args) -> Result<(), String> {
         action,
     };
     let url = format!("http://127.0.0.1:{}/notify", args.port);
-    let resp = Client::new()
+    // 强制直连本地，禁用 env/系统代理：开 Clash 等代理时 127.0.0.1 会被代理拦截返回 502
+    let resp = Client::builder()
+        .no_proxy()
+        .build()
+        .map_err(|e| format!("build http client: {e}"))?
         .post(&url)
         .bearer_auth(token)
         .json(&payload)
