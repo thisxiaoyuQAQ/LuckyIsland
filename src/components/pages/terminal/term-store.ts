@@ -73,6 +73,12 @@ export async function closeTab(id: string) {
   emit();
 }
 
+let ensuring = false;
 export function ensureFirstTab() {
-  if (tabs.length === 0) void addTab();
+  // addTab 异步：compact/expanded 重挂载 + StrictMode 下多次调用会并发建多个 tab，用 ensuring 互斥
+  if (tabs.length > 0 || ensuring) return;
+  ensuring = true;
+  void addTab().finally(() => {
+    ensuring = false;
+  });
 }

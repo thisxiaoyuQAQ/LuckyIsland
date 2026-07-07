@@ -14,6 +14,7 @@ export const KEYS = {
   weatherRefreshMin: "weather:refresh_min",
   terminalShell: "terminal:shell",
   terminalFontSize: "terminal:font_size",
+  terminalShortcuts: "terminal:shortcuts",
 } as const;
 
 /** 全部页面 id（与 App.tsx PAGES 对齐） */
@@ -33,6 +34,7 @@ export const DEFAULTS = {
   weatherRefreshMin: "10",
   terminalShell: "default",
   terminalFontSize: "13",
+  terminalShortcuts: "",
 } as const;
 
 function isPageId(v: string): v is PageId {
@@ -114,6 +116,48 @@ export function parseFontSize(v: string | null | undefined): number {
   const n = v == null ? 13 : parseInt(v, 10);
   if (Number.isNaN(n) || n < 6) return 13;
   return Math.min(n, 72);
+}
+
+/** 终端快捷命令 */
+export interface Shortcut {
+  name: string;
+  command: string;
+  cwd?: string;
+}
+
+const SHORTCUT_FALLBACK: Shortcut[] = [
+  { name: "codex", command: "codex" },
+  { name: "claude", command: "claude" },
+  { name: "git status", command: "git status" },
+  { name: "git pull", command: "git pull" },
+];
+
+/** 解析 terminal:shortcuts（JSON 数组）；空/无效回退内置示例，空数组允许（用户删光） */
+export function parseShortcuts(v: string | null | undefined): Shortcut[] {
+  if (!v) return SHORTCUT_FALLBACK;
+  try {
+    const parsed = JSON.parse(v) as unknown;
+    if (!Array.isArray(parsed)) return SHORTCUT_FALLBACK;
+    const out: Shortcut[] = [];
+    for (const s of parsed) {
+      if (
+        s &&
+        typeof s === "object" &&
+        typeof (s as { name?: unknown }).name === "string" &&
+        typeof (s as { command?: unknown }).command === "string"
+      ) {
+        const sc = s as { name: string; command: string; cwd?: string };
+        out.push({
+          name: sc.name,
+          command: sc.command,
+          cwd: sc.cwd && sc.cwd.trim() ? sc.cwd : undefined,
+        });
+      }
+    }
+    return out;
+  } catch {
+    return SHORTCUT_FALLBACK;
+  }
 }
 
 /** 读单个 setting（返回字符串或 null） */

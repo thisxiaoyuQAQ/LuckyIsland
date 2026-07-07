@@ -4,7 +4,8 @@ import { Plus, X, ExternalLink } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useReorder } from "@/lib/useReorder";
 import { TerminalTab } from "./TerminalTab";
-import { Shortcuts, type Shortcut } from "./Shortcuts";
+import { Shortcuts } from "./Shortcuts";
+import type { Shortcut } from "@/lib/settings";
 import {
   addTab,
   closeTab as storeCloseTab,
