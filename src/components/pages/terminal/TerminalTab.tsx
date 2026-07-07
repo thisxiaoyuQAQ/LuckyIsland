@@ -56,6 +56,23 @@ export function TerminalTab({ termId, active }: { termId: string; active: boolea
     return () => un?.();
   }, []);
 
+  // 容器尺寸变化（compact↔expanded 高度过渡 / 窗口 resize）时重新 fit，
+  // 避免 attachTerminal 的 fit 用过渡中间尺寸导致内容显示不全、滚动异常
+  useEffect(() => {
+    if (!ref.current) return;
+    const el = ref.current;
+    let raf = 0;
+    const ro = new ResizeObserver(() => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => bridgeRef.current?.fit());
+    });
+    ro.observe(el);
+    return () => {
+      cancelAnimationFrame(raf);
+      ro.disconnect();
+    };
+  }, []);
+
   // 激活态变化 → 重新 fit（容器从 hidden 变可见后尺寸恢复）
   useEffect(() => {
     if (active) {
