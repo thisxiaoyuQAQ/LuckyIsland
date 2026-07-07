@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Plus, Trash2 } from "lucide-react";
+import { GripVertical, Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Row, selectCls } from "./shared";
+import { cn } from "@/lib/utils";
+import { useReorder } from "@/lib/useReorder";
 import { CITIES } from "@/components/pages/weather/cities";
 import { invoke } from "@tauri-apps/api/core";
 import { KEYS, parseRefreshMin, settingGet, settingSetEmit } from "@/lib/settings";
@@ -20,6 +22,17 @@ export function WeatherPanel() {
       /* ignore */
     }
   }, []);
+
+  const persistOrder = useCallback(async (next: string[]) => {
+    setCities(next);
+    try {
+      await invoke("weather_cities_reorder", { cities: next });
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const { overIndex, itemProps } = useReorder<string>(persistOrder);
 
   const suggestions = useMemo(() => {
     const q = draft.trim();
@@ -129,19 +142,29 @@ export function WeatherPanel() {
         )}
       </div>
       <div className="flex flex-col gap-2">
-        {cities.map((c) => (
+        {cities.map((c, i) => (
           <div
             key={c}
-            className="flex items-center gap-2 rounded-lg border border-border/70 bg-card/50 px-3 py-2"
+            {...itemProps(i, cities)}
+            className={cn(
+              "flex items-center gap-2 rounded-lg border border-border/70 bg-card/50 px-3 py-2 transition-colors",
+              overIndex === i && "border-primary/70 bg-primary/5",
+            )}
           >
+            <GripVertical className="h-4 w-4 cursor-grab text-muted-foreground" aria-hidden />
             <span className="min-w-0 flex-1 truncate text-sm">{c}</span>
-            <button
-              onClick={() => void removeCity(c)}
-              aria-label="删除"
-              className="text-muted-foreground transition-colors hover:text-destructive"
+            <div
+              onPointerDown={(e) => e.stopPropagation()}
+              onDragStart={(e) => e.preventDefault()}
             >
-              <Trash2 className="h-3.5 w-3.5" />
-            </button>
+              <button
+                onClick={() => void removeCity(c)}
+                aria-label="删除"
+                className="text-muted-foreground transition-colors hover:text-destructive"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            </div>
           </div>
         ))}
         {cities.length === 0 && <p className="text-xs text-muted-foreground">暂无城市</p>}
