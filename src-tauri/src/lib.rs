@@ -1,3 +1,4 @@
+mod ai;
 mod data;
 mod notify;
 mod settings;
@@ -26,7 +27,16 @@ use data::weather::{
 use notify::{notify_create, notify_get_token, notify_list, notify_mark_read};
 use settings::{setting_get, setting_set};
 use settings_window::{autostart_get, autostart_set, open_settings, setting_set_and_emit, settings_list};
+use ai::{
+    ai_chat, ai_clear_history, ai_get_position, ai_history_list, ai_reset_position,
+    ai_save_position, ai_switch_provider, hide_ai_palette, open_ai_palette,
+};
 use terminal::{term_create, term_kill, term_open_wt, term_resize, term_snapshot, term_write, TerminalRegistry};
+
+use std::sync::atomic::AtomicBool;
+
+/// AI 思考中标志：ai_chat 期间 true，on_window_event 据此不隐藏 ai-palette
+pub static AI_LOADING: AtomicBool = AtomicBool::new(false);
 
 const WIN_W: f64 = 720.0;
 const COMPACT_H: f64 = 80.0;
@@ -87,6 +97,19 @@ fn toggle_visibility(app: &tauri::AppHandle) {
     set_state_and_emit(app, if visible { "hidden" } else { "compact" });
 }
 
+/// Alt+Space / 托盘「AI 助手」：面板已显示则关闭（同 ESC，保存位置），否则打开
+fn toggle_ai_palette(app: &tauri::AppHandle) {
+    let visible = app
+        .get_webview_window("ai-palette")
+        .map(|w| w.is_visible().unwrap_or(false))
+        .unwrap_or(false);
+    if visible {
+        let _ = hide_ai_palette(app.clone());
+    } else {
+        let _ = open_ai_palette(app.clone());
+    }
+}
+
 #[tauri::command]
 fn set_island_state(app: tauri::AppHandle, state: String) -> Result<(), String> {
     set_state_and_emit(&app, &state);
@@ -105,20 +128,27 @@ pub fn run() {
         // 开机自启（M7 设置面板）
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
         // 设置窗口点关闭改为隐藏（保持单例，避免销毁后重建）
-        .on_window_event(|window, event| {
-            if window.label() == "settings" {
+        // ai-palette 不做失焦自动隐藏：顶部拖动区域会触发焦点变化，失焦隐藏会导致点击标题栏即关闭。
+        // AI 面板改为仅 ESC / 显式 hide 关闭，拖动位置由 hide_ai_palette 保存。
+        .on_window_event(|window, event| match window.label() {
+            "settings" => {
                 if let WindowEvent::CloseRequested { api, .. } = event {
                     api.prevent_close();
                     let _ = window.hide();
                 }
             }
+            _ => {}
         })
         // 全局热键
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
-                .with_handler(|app, _shortcut, event| {
+                .with_handler(|app, shortcut, event| {
                     if event.state == ShortcutState::Pressed {
-                        toggle_visibility(app);
+                        if shortcut == &Shortcut::new(Some(Modifiers::ALT), Code::Space) {
+                            toggle_ai_palette(app);
+                        } else {
+                            toggle_visibility(app);
+                        }
                     }
                 })
                 .build(),
@@ -152,6 +182,15 @@ pub fn run() {
             open_settings,
             autostart_set,
             autostart_get,
+            ai_chat,
+            ai_switch_provider,
+            ai_history_list,
+            ai_clear_history,
+            open_ai_palette,
+            hide_ai_palette,
+            ai_save_position,
+            ai_get_position,
+            ai_reset_position,
             notify_list,
             notify_mark_read,
             notify_create,
@@ -164,15 +203,18 @@ pub fn run() {
             term_open_wt
         ])
         .setup(|app| {
-            // 注册 Alt+X 全局热键
+            // 注册全局热键：Alt+X 切换灵动岛，Alt+Space 唤起 AI 面板
             app.global_shortcut()
                 .register(Shortcut::new(Some(Modifiers::ALT), Code::KeyX))?;
+            app.global_shortcut()
+                .register(Shortcut::new(Some(Modifiers::ALT), Code::Space))?;
 
             // 系统托盘
             let show_item = MenuItem::with_id(app, "show", "显示/隐藏", true, None::<&str>)?;
             let settings_item = MenuItem::with_id(app, "settings", "设置...", true, None::<&str>)?;
+            let ai_item = MenuItem::with_id(app, "ai", "AI 助手", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show_item, &settings_item, &quit_item])?;
+            let menu = Menu::with_items(app, &[&show_item, &settings_item, &ai_item, &quit_item])?;
             TrayIconBuilder::new()
                 .icon(
                     app.default_window_icon()
@@ -186,6 +228,7 @@ pub fn run() {
                     "settings" => {
                         let _ = open_settings(app.clone());
                     }
+                    "ai" => toggle_ai_palette(app),
                     "quit" => app.exit(0),
                     _ => {}
                 })

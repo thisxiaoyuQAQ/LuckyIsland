@@ -43,6 +43,7 @@ export default defineConfig(async () => ({
       input: {
         main: fileURLToPath(new URL("./index.html", import.meta.url)),
         settings: fileURLToPath(new URL("./settings.html", import.meta.url)),
+        ai: fileURLToPath(new URL("./ai.html", import.meta.url)),
       },
     },
   },

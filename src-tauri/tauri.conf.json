@@ -39,6 +39,22 @@
         "visible": false,
         "decorations": true,
         "dragDropEnabled": false
+      },
+      {
+        "label": "ai-palette",
+        "title": "LuckyIsland AI",
+        "url": "ai.html",
+        "width": 640,
+        "height": 480,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "shadow": false,
+        "visible": false,
+        "hiddenTitle": true,
+        "dragDropEnabled": false
       }
     ],
     "security": {

@@ -33,10 +33,11 @@ nongli = "0.4"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 reqwest = { version = "0.12", features = ["json", "blocking"] }
 encoding_rs = "0.8"
-tokio = { version = "1", features = ["time"] }
+tokio = { version = "1", features = ["time", "process"] }
 portable-pty = "0.9"
 axum = "0.7"
 clap = { version = "4", features = ["derive"] }
+async-trait = "0.1"
 
 # release 优化：thin LTO + strip 符号，减小安装包体积（需求 <15MB）
 [profile.release]

@@ -5,9 +5,10 @@ import { NotifyPanel } from "./NotifyPanel";
 import { WeatherPanel } from "./WeatherPanel";
 import { StockPanel } from "./StockPanel";
 import { TerminalPanel } from "./TerminalPanel";
+import { AiHistoryPanel } from "./AiHistoryPanel";
 import { cn } from "@/lib/utils";
 
-type Tab = "general" | "pages" | "notify" | "terminal" | "weather" | "stock";
+type Tab = "general" | "pages" | "notify" | "terminal" | "weather" | "stock" | "ai";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "general", label: "总体" },
@@ -16,6 +17,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: "terminal", label: "终端" },
   { id: "weather", label: "天气" },
   { id: "stock", label: "股票" },
+  { id: "ai", label: "AI" },
 ];
 
 function SettingsApp() {
@@ -56,8 +58,10 @@ function SettingsApp() {
           <TerminalPanel />
         ) : tab === "weather" ? (
           <WeatherPanel />
-        ) : (
+        ) : tab === "stock" ? (
           <StockPanel />
+        ) : (
+          <AiHistoryPanel />
         )}
       </main>
     </div>

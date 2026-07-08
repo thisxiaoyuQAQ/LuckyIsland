@@ -43,6 +43,12 @@ impl Db {
                 read INTEGER NOT NULL DEFAULT 0,
                 action_type TEXT,
                 action_cwd TEXT
+            );
+            CREATE TABLE IF NOT EXISTS ai_conversations (
+                id TEXT PRIMARY KEY,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at INTEGER NOT NULL
             );",
         )?;
         // 首次启动：播种默认自选股（贵州茅台 + 平安银行），方便即时实测
@@ -104,6 +110,50 @@ impl Db {
             out.push(row.map_err(|e| e.to_string())?);
         }
         Ok(out)
+    }
+
+    /// AI 对话历史：追加一条（id 用 uuid，role=user/assistant，content 文本/JSON）
+    pub fn ai_history_add(&self, id: &str, role: &str, content: &str) -> Result<(), String> {
+        let conn = self.0.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO ai_conversations (id, role, content, created_at) VALUES (?1, ?2, ?3, ?4)",
+            params![id, role, content, now_ts()],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// AI 对话历史：最近 limit 条，按时间升序返回（旧->新）
+    pub fn ai_history_list(&self, limit: i64) -> Result<Vec<(String, String, String)>, String> {
+        let conn = self.0.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT role, content, created_at FROM ai_conversations ORDER BY created_at DESC LIMIT ?1",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![limit], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)?.to_string(),
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+        let mut out: Vec<(String, String, String)> = Vec::new();
+        for row in rows {
+            out.push(row.map_err(|e| e.to_string())?);
+        }
+        out.reverse();
+        Ok(out)
+    }
+
+    /// AI 对话历史：清空
+    pub fn ai_history_clear(&self) -> Result<(), String> {
+        let conn = self.0.lock().map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM ai_conversations", [])
+            .map_err(|e| e.to_string())?;
+        Ok(())
     }
 }
 
