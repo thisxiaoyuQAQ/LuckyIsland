@@ -5,6 +5,7 @@ mod settings;
 mod settings_window;
 mod storage;
 mod terminal;
+mod voice;
 
 use tauri::{
     menu::{Menu, MenuItem},
@@ -32,6 +33,10 @@ use ai::{
     ai_save_position, ai_switch_provider, hide_ai_palette, open_ai_palette,
 };
 use terminal::{term_create, term_kill, term_open_wt, term_resize, term_snapshot, term_write, TerminalRegistry};
+use voice::{
+    voice_download_model, voice_model_ready, voice_start_listening, voice_stop_listening,
+    voice_validate_keyword, VoiceState,
+};
 
 use std::sync::atomic::AtomicBool;
 
@@ -200,7 +205,12 @@ pub fn run() {
             term_resize,
             term_snapshot,
             term_kill,
-            term_open_wt
+            term_open_wt,
+            voice_model_ready,
+            voice_download_model,
+            voice_start_listening,
+            voice_stop_listening,
+            voice_validate_keyword
         ])
         .setup(|app| {
             // 注册全局热键：Alt+X 切换灵动岛，Alt+Space 唤起 AI 面板
@@ -264,6 +274,10 @@ pub fn run() {
             // 终端注册表（多 tab PTY 管理）
             app.manage(TerminalRegistry::new());
 
+            // 语音唤醒/问答状态（M8/M9，默认关闭，不自动 spawn 监听任务；
+            // 常驻监听循环由用户在设置里开启后调 voice_start_listening 触发，见后续任务）
+            app.manage(VoiceState::new());
+
             // 本地通知 HTTP server：127.0.0.1:9753/notify
             let notify_app = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -281,10 +295,16 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app_handle, event| {
-            // 退出时杀掉所有终端子进程，避免僵尸
+            // 退出时杀掉所有终端子进程，避免僵尸；停止语音监听（若开着），
+            // 释放麦克风占用——监听线程的检测循环会在下一次 200ms 轮询时看到标志位
+            // 变化并退出，Drop 里会关掉 cpal 音频流。进程马上就要退出，不等线程真正
+            // 结束也无妨（OS 会在进程退出时回收所有句柄）。
             if let tauri::RunEvent::Exit = event {
                 if let Some(reg) = app_handle.try_state::<TerminalRegistry>() {
                     terminal::cleanup_all(reg.inner());
+                }
+                if let Some(state) = app_handle.try_state::<VoiceState>() {
+                    let _ = voice_stop_listening(state);
                 }
             }
         });

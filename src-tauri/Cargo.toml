@@ -38,6 +38,31 @@ portable-pty = "0.9"
 axum = "0.7"
 clap = { version = "4", features = ["derive"] }
 async-trait = "0.1"
+# M8/M9 语音唤醒 + 语音问答：sherpa-onnx（k2-fsa 官方，KWS + 流式 ASR）+ cpal（纯 Rust 音频采集，
+# Windows 走 WASAPI 无额外系统库）。sherpa-onnx-sys 编译期若未设 SHERPA_ONNX_LIB_DIR 会自动从
+# GitHub Releases 下载预编译原生库（MSVC 版，非 MinGW，实测可正常下载链接）。默认关闭功能
+# （wake:enabled=false），不影响现有任何功能。
+#
+# 坑：cpal 0.18.1 依赖范围是 windows-core >=0.61,<=0.62，但 cargo 解析器默认会拉最新的 0.62.2，
+# 与 tauri 生态（tao/webview2-com）锁定的 0.61.2 共存导致 trait 不兼容编译失败（IActivateAudio-
+# InterfaceCompletionHandler 等 COM 接口 trait bound 报错）。已用
+# `cargo update -p windows-core@0.62.2 --precise 0.61.2` 强制收敛到单一版本解决，不要
+# `cargo update` 时又被拉回 0.62.2（若又炸，重跑那条 precise 命令即可）。
+#
+# 坑（更大）：sherpa-onnx 默认走 static 链接模式（下载 win-x64-static-MT-Release-lib），实测
+# 本地 MSVC 14.41（VS 2022 17.11+）链接时报一堆 LNK2001/LNK2019「无法解析的外部符号」
+# （__std_find_end_1、__std_search_2 等）——这是已知的跨项目 ABI 问题：VS 2022 17.10+ 引入了
+# 新的 STL 向量化算法符号，而 sherpa-onnx 官方预编译的静态库是用更旧的 MSVC 工具集编译的，
+# 缺失这些符号。改用 `shared` feature（走动态链接，下载 win-x64-shared-MT-Release-lib，
+# 只链接 sherpa-onnx-c-api.dll + onnxruntime.dll 两个动态库，不受本地 MSVC 版本的静态符号
+# 集合影响）规避。副作用：exe 旁边需要这两个 DLL（sherpa-onnx-sys 的 build.rs 已自动 copy
+# 到 target/debug 和 target/debug/examples，release 打包时需确认 NSIS 打包脚本一并带上）。
+sherpa-onnx = { version = "1", default-features = false, features = ["shared"] }
+cpal = "0.18"
+tar = "0.4"
+# bzip2 默认 feature 就是纯 Rust 后端 libbz2-rs-sys（无需系统 C 库/编译器），不用额外指定 feature
+bzip2 = "0.6"
+pinyin = "0.11"
 
 # release 优化：thin LTO + strip 符号，减小安装包体积（需求 <15MB）
 [profile.release]
