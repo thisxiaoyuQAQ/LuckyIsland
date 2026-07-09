@@ -16,7 +16,7 @@ use sherpa_onnx::{KeywordSpotter, KeywordSpotterConfig, OnlineRecognizer, Online
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -79,6 +79,9 @@ pub struct VoiceState {
     pub listening: Arc<AtomicBool>,
     /// 模型是否正在下载中（防止重复触发下载）
     pub downloading: AtomicBool,
+    /// 监听线程的 JoinHandle，reload 时能 join() 等它真正退出再重启，
+    /// 消除 stop→start 的小竞态（旧线程还没释放麦克风、新线程已抢同设备）。
+    pub thread: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
 impl VoiceState {
@@ -86,6 +89,7 @@ impl VoiceState {
         Self {
             listening: Arc::new(AtomicBool::new(false)),
             downloading: AtomicBool::new(false),
+            thread: Mutex::new(None),
         }
     }
 }
@@ -300,11 +304,7 @@ pub fn voice_start_listening(app: AppHandle, state: tauri::State<'_, VoiceState>
     if !is_model_ready(&app, &ModelKind::Kws) {
         return Err("唤醒模型尚未下载，请先在设置里下载语音唤醒模型".to_string());
     }
-    let keyword_setting = app
-        .state::<crate::storage::Db>()
-        .setting_get("wake:keyword")
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| "小岛小岛".to_string());
+    let keyword_setting = read_keyword(&app);
 
     // 已在监听：false -> true 才继续；已经是 true 说明线程已经跑着，直接返回不重复 spawn
     if state
@@ -314,38 +314,78 @@ pub fn voice_start_listening(app: AppHandle, state: tauri::State<'_, VoiceState>
         return Ok(());
     }
 
-    let dir = model_kind_dir(&app, &ModelKind::Kws)?;
+    spawn_listen_thread(&app, state.inner(), &keyword_setting)?;
+    Ok(())
+}
+
+/// 共用的监听线程 spawn 逻辑（start_listening 与 reload_keyword 共用）。
+/// 调用方须已把 listening 置 true 占住（防重复 spawn），本函数不再 swap。
+fn spawn_listen_thread(
+    app: &AppHandle,
+    state: &VoiceState,
+    keyword_setting: &str,
+) -> Result<(), String> {
+    let dir = model_kind_dir(app, &ModelKind::Kws)?;
     let tokens_content = std::fs::read_to_string(dir.join("tokens.txt"))
         .map_err(|e| format!("读取 tokens.txt 失败：{e}"))?;
     let table = keyword::TokenTable::load(&tokens_content);
-    let encoded = keyword::encode_keyword(&keyword_setting, &table).map_err(|e| {
-        state
-            .listening
-            .store(false, Ordering::SeqCst);
+    let encoded = keyword::encode_keyword(keyword_setting, &table).map_err(|e| {
+        state.listening.store(false, Ordering::SeqCst);
         format!("唤醒词「{keyword_setting}」编码失败：{e}")
     })?;
 
     let listening_flag = state.listening.clone();
     let app_for_thread = app.clone();
-    std::thread::spawn(move || {
+    let handle = std::thread::spawn(move || {
         if let Err(e) = run_listen_loop(app_for_thread.clone(), &dir, &encoded, listening_flag.clone()) {
             let _ = app_for_thread.emit("voice://listen-error", e);
         }
         listening_flag.store(false, Ordering::SeqCst);
     });
-
+    *state.thread.lock().unwrap() = Some(handle);
     Ok(())
 }
 
-/// 停止常驻监听：只切标志位，监听线程的检测循环轮询到 false 后自行退出（见 run_listen_loop）。
-/// 已知小竞态：stop 后 200ms 内立刻 start，旧线程可能还没退出、新线程已尝试打开同一麦克风
-/// 设备（`recv_timeout` 轮询间隔 200ms）。概率低且失败模式只是瞬时报错不崩溃，暂不处理，
-/// 真机验证阶段如遇到再补一个"等待旧线程退出"的同步信号。
+/// 改唤醒词后热重载：等旧监听线程真正退出（join）→ 用新词重新 start_listening。
+/// 消除 stop→start 小竞态（旧线程还占着麦克风、新线程抢同设备报错），并让用户
+/// 改词后不用手动关再开——校验过的新词直接重载即生效。未在监听则什么都不做
+/// （新词已写库，下次开启监听时自然读到）。
+#[tauri::command]
+pub fn voice_reload_keyword(app: AppHandle, state: tauri::State<'_, VoiceState>) -> Result<(), String> {
+    if state.listening.load(Ordering::SeqCst) {
+        // 在监听中：先让旧线程退出并 join 等它真正释放麦克风，再用新词重启
+        state.listening.store(false, Ordering::SeqCst);
+        if let Some(handle) = state.thread.lock().unwrap().take() {
+            let _ = handle.join();
+        }
+        // join 后线程已把 listening 置 false；重新占住并 spawn（读库里的新词）
+        state.listening.store(true, Ordering::SeqCst);
+        if let Err(e) = spawn_listen_thread(&app, state.inner(), &read_keyword(&app)) {
+            state.listening.store(false, Ordering::SeqCst);
+            return Err(e);
+        }
+    }
+    Ok(())
+}
+
+/// 读 wake:keyword 设置，空则回退默认「小岛小岛」。
+fn read_keyword(app: &AppHandle) -> String {
+    app.state::<crate::storage::Db>()
+        .setting_get("wake:keyword")
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "小岛小岛".to_string())
+}
+
+/// 停止常驻监听：切标志位 + join 等监听线程真正释放麦克风退出。
+/// （reload_keyword 内部也用同样的 stop 逻辑；Exit 清理时不 join——进程马上退出 OS 会回收句柄。）
 #[tauri::command]
 pub fn voice_stop_listening(state: tauri::State<'_, VoiceState>) -> Result<(), String> {
     state
         .listening
         .store(false, Ordering::SeqCst);
+    if let Some(handle) = state.thread.lock().unwrap().take() {
+        let _ = handle.join();
+    }
     Ok(())
 }
 

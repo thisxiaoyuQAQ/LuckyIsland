@@ -37,6 +37,8 @@ export function VoicePanel() {
 
   // 监听开关切换中
   const [toggling, setToggling] = useState(false);
+  // 唤醒词热重载中（改词后自动 stop+用新词 start，期间显示状态）
+  const [reloading, setReloading] = useState(false);
 
   useEffect(() => {
     void (async () => {
@@ -83,7 +85,9 @@ export function VoicePanel() {
     }
   }, [modelReady, enabled, toggling]);
 
-  // 唤醒词校验（防抖：用户停下再查，避免每个字都打 RPC）
+  // 唤醒词校验（防抖：用户停下再查，避免每个字都打 RPC）。
+  // 校验通过后若监听开着，自动热重载（旧线程 join 退出 + 用新词重启），
+  // 用户改词即生效，不用手动关再开。
   useEffect(() => {
     if (!modelReady) {
       setKeywordErr(null);
@@ -95,19 +99,34 @@ export function VoicePanel() {
       setKeywordOk(false);
       return;
     }
+    let cancelled = false;
     const t = setTimeout(() => {
       void invoke<string>("voice_validate_keyword", { phrase: keyword.trim() })
-        .then(() => {
+        .then(async () => {
+          if (cancelled) return;
           setKeywordErr(null);
           setKeywordOk(true);
+          // 校验通过且正在监听 → 热重载让新词立刻生效
+          if (enabled && !toggling) {
+            setReloading(true);
+            try {
+              await invoke("voice_reload_keyword");
+            } finally {
+              if (!cancelled) setReloading(false);
+            }
+          }
         })
         .catch((e: unknown) => {
+          if (cancelled) return;
           setKeywordErr(typeof e === "string" ? e : "唤醒词无效");
           setKeywordOk(false);
         });
     }, 300);
-    return () => clearTimeout(t);
-  }, [keyword, modelReady]);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [keyword, modelReady, enabled, toggling]);
 
   const pct = useMemo(() => {
     if (!progress || progress.total <= 0) return null;
@@ -149,7 +168,7 @@ export function VoicePanel() {
     } finally {
       setToggling(false);
     }
-  };  /** 唤醒词改动：写设置；下次监听启用时后端会读取最新值（改词需关再开生效，提示用户） */
+  };  /** 唤醒词改动：写设置；若正在监听则校验通过后自动热重载（见校验 effect），无需手动关再开 */
   const changeKeyword = async (v: string) => {
     setKeyword(v);
     if (v.trim()) await settingSetEmit("wake:keyword", v.trim());
@@ -173,7 +192,7 @@ export function VoicePanel() {
 
       <Row
         label="唤醒词"
-        desc="纯中文，每个字都会被拼成声韵母喂给模型；改词后需关闭再重新开启监听才生效"
+        desc="纯中文，每个字拼成声韵母喂给模型；监听开着时改词会自动重载生效，无需手动开关"
       >
         <div className="flex flex-col items-end gap-1">
           <input
@@ -189,12 +208,17 @@ export function VoicePanel() {
               {keywordErr}
             </span>
           )}
-          {keywordOk && (
+          {reloading ? (
+            <span className="flex items-center gap-1 text-xs text-muted-foreground">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              正在用新词重载…
+            </span>
+          ) : keywordOk ? (
             <span className="flex items-center gap-1 text-xs text-emerald-500">
               <Check className="h-3 w-3" />
-              可用
+              {enabled ? "已生效" : "可用"}
             </span>
-          )}
+          ) : null}
         </div>
       </Row>
 
