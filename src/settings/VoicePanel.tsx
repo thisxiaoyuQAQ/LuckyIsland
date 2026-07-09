@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Download, Check, Loader2, AlertCircle } from "lucide-react";
@@ -6,6 +6,30 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Row, selectCls } from "./shared";
 import { settingGet, settingSetEmit } from "@/lib/settings";
+
+/** 状态小标签：圆角药丸，有边框/底色，比裸 span 更像「状态」而非散落文字 */
+function StatusPill({
+  icon,
+  children,
+  tone = "ok",
+}: {
+  icon: ReactNode;
+  children: ReactNode;
+  tone?: "ok" | "muted" | "error";
+}) {
+  const toneCls =
+    tone === "ok"
+      ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+      : tone === "error"
+        ? "border-destructive/30 bg-destructive/10 text-destructive"
+        : "border-border/70 bg-muted/50 text-muted-foreground";
+  return (
+    <span className={"inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs " + toneCls}>
+      {icon}
+      {children}
+    </span>
+  );
+}
 
 /** 下载进度事件 payload（与后端 voice::DownloadProgress 对齐） */
 interface DownloadProgress {
@@ -203,95 +227,89 @@ export function VoicePanel() {
             className={selectCls + " w-40"}
           />
           {keywordErr && (
-            <span className="flex items-center gap-1 text-xs text-destructive">
-              <AlertCircle className="h-3 w-3" />
+            <StatusPill tone="error" icon={<AlertCircle className="h-3 w-3" />}>
               {keywordErr}
-            </span>
+            </StatusPill>
           )}
           {reloading ? (
-            <span className="flex items-center gap-1 text-xs text-muted-foreground">
-              <Loader2 className="h-3 w-3 animate-spin" />
+            <StatusPill tone="muted" icon={<Loader2 className="h-3 w-3 animate-spin" />}>
               正在用新词重载…
-            </span>
+            </StatusPill>
           ) : keywordOk ? (
-            <span className="flex items-center gap-1 text-xs text-emerald-500">
-              <Check className="h-3 w-3" />
+            <StatusPill tone="ok" icon={<Check className="h-3 w-3" />}>
               {enabled ? "已生效" : "可用"}
-            </span>
+            </StatusPill>
           ) : null}
         </div>
       </Row>
 
-      <div className="flex flex-col gap-2">
-        <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 rounded-lg border border-border/60 bg-card/40 p-3">
+        <div className="flex flex-col gap-1">
+          <div className="text-sm font-medium">语音模型</div>
+          <div className="text-xs text-muted-foreground">
+            唤醒模型（必装，约 32MB）+ 问答模型（可选，约 80~100MB，体积待真机确认）。
+            国内从 GitHub 下载较慢（实测约 150KB/s，3~4 分钟），请耐心等待。
+          </div>
+        </div>
+
+        {/* 唤醒模型行 */}
+        <div className="flex items-center justify-between gap-3">
           <div className="flex flex-col gap-0.5">
-            <div className="text-sm font-medium">语音唤醒模型</div>
-            <div className="text-xs text-muted-foreground">
-              sherpa-onnx KWS zipformer wenetspeech（纯中文），约 32MB，首次需下载。
-              国内从 GitHub 下载较慢（实测约 150KB/s，3~4 分钟），请耐心等待。
-            </div>
+            <span className="text-sm">语音唤醒模型</span>
+            <span className="text-xs text-muted-foreground">sherpa-onnx KWS zipformer wenetspeech（纯中文）</span>
           </div>
           {modelReady ? (
-            <span className="flex items-center gap-1 text-xs text-emerald-500">
-              <Check className="h-3.5 w-3.5" />
+            <StatusPill tone="ok" icon={<Check className="h-3.5 w-3.5" />}>
               已就绪
-            </span>
+            </StatusPill>
           ) : (
             <Button size="sm" variant="outline" disabled={downloading} onClick={() => void download("kws")}>
               {downloading && downloadingModel === "kws" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
-              {downloading && downloadingModel === "kws" ? "下载中…" : "下载模型"}
+              {downloading && downloadingModel === "kws" ? "下载中…" : "下载"}
             </Button>
           )}
         </div>
-      </div>
 
-      <div className="flex flex-col gap-2">
-        <div className="flex items-center justify-between">
+        {/* 问答模型行 */}
+        <div className="flex items-center justify-between gap-3">
           <div className="flex flex-col gap-0.5">
-            <div className="text-sm font-medium">语音问答模型（可选）</div>
-            <div className="text-xs text-muted-foreground">
-              sherpa-onnx 流式 ASR bilingual zh-en，唤醒后说出问题自动转写并发给 AI（不用手打字）。
-              约 80~100MB（体积待真机确认）。未下载也不影响唤醒，只是无法语音提问。
-            </div>
+            <span className="text-sm">语音问答模型（可选）</span>
+            <span className="text-xs text-muted-foreground">唤醒后说出问题自动转写发送给 AI，未下载不影响唤醒</span>
           </div>
           {asrReady ? (
-            <span className="flex items-center gap-1 text-xs text-emerald-500">
-              <Check className="h-3.5 w-3.5" />
+            <StatusPill tone="ok" icon={<Check className="h-3.5 w-3.5" />}>
               已就绪
-            </span>
+            </StatusPill>
           ) : (
             <Button size="sm" variant="outline" disabled={downloading} onClick={() => void download("asr")}>
               {downloading && downloadingModel === "asr" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
-              {downloading && downloadingModel === "asr" ? "下载中…" : "下载模型"}
+              {downloading && downloadingModel === "asr" ? "下载中…" : "下载"}
             </Button>
           )}
         </div>
 
-        {(downloading || progress?.stage === "error") && (
-          <div className="rounded-lg border border-border/60 bg-card/40 px-3 py-2">
-            {progress?.stage === "downloading" && (
-              <div className="flex flex-col gap-1">
-                <div className="flex justify-between text-xs text-muted-foreground">
-                  <span>{downloadingModel === "asr" ? "问答模型下载中" : "唤醒模型下载中"}</span>
-                  <span>{pct != null ? `${pct}%` : "…"}</span>
-                </div>
-                <div className="h-1.5 w-full overflow-hidden rounded-full bg-border/60">
-                  <div className="h-full bg-primary transition-all" style={{ width: `${pct ?? 0}%` }} />
-                </div>
-              </div>
-            )}
-            {progress?.stage === "extracting" && (
-              <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                <Loader2 className="h-3 w-3 animate-spin" />
-                正在解压…
-              </div>
-            )}
-            {progress?.stage === "error" && (
-              <div className="flex items-center gap-1 text-xs text-destructive">
-                <AlertCircle className="h-3 w-3" />
-                下载失败：{progress.message || "未知错误"}
-              </div>
-            )}
+        {/* 进度条：两个模型共用，只显示当前下载中的那个 */}
+        {downloading && progress?.stage === "downloading" && (
+          <div className="flex flex-col gap-1 rounded-md bg-background/50 px-3 py-2">
+            <div className="flex justify-between text-xs text-muted-foreground">
+              <span>{downloadingModel === "asr" ? "问答模型下载中" : "唤醒模型下载中"}</span>
+              <span>{pct != null ? `${pct}%` : "…"}</span>
+            </div>
+            <div className="h-1.5 w-full overflow-hidden rounded-full bg-border/60">
+              <div className="h-full bg-primary transition-all" style={{ width: `${pct ?? 0}%` }} />
+            </div>
+          </div>
+        )}
+        {downloading && progress?.stage === "extracting" && (
+          <div className="flex items-center gap-2 rounded-md bg-background/50 px-3 py-2 text-xs text-muted-foreground">
+            <Loader2 className="h-3 w-3 animate-spin" />
+            正在解压…
+          </div>
+        )}
+        {progress?.stage === "error" && (
+          <div className="flex items-center gap-1 rounded-md bg-background/50 px-3 py-2 text-xs text-destructive">
+            <AlertCircle className="h-3 w-3" />
+            下载失败：{progress.message || "未知错误"}
           </div>
         )}
       </div>
