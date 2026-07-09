@@ -40,11 +40,13 @@ interface DownloadProgress {
 }
 
 const DEFAULT_KEYWORD = "小岛小岛";
+const DEFAULT_REPLY = "主人我在";
 
-/** 语音唤醒面板：开启开关 + 自定义唤醒词 + 模型下载（KWS 唤醒 + ASR 语音问答两套，独立下载） */
+/** 语音唤醒面板：开启开关 + 自定义唤醒词 + 唤醒应答 + 模型下载（KWS 唤醒 + ASR 语音问答两套，独立下载） */
 export function VoicePanel() {
   const [enabled, setEnabled] = useState(false);
   const [keyword, setKeyword] = useState(DEFAULT_KEYWORD);
+  const [reply, setReply] = useState(DEFAULT_REPLY);
   const [modelReady, setModelReady] = useState(false);
   const [asrReady, setAsrReady] = useState(false);
 
@@ -66,14 +68,16 @@ export function VoicePanel() {
 
   useEffect(() => {
     void (async () => {
-      const [en, kw, ready, asr] = await Promise.all([
+      const [en, kw, rep, ready, asr] = await Promise.all([
         settingGet("wake:enabled"),
         settingGet("wake:keyword"),
+        settingGet("wake:reply"),
         invoke<boolean>("voice_model_ready"),
         invoke<boolean>("voice_asr_model_ready"),
       ]);
       setEnabled(en === "true");
       setKeyword(kw && kw.trim() ? kw : DEFAULT_KEYWORD);
+      setReply(rep && rep.trim() ? rep : DEFAULT_REPLY);
       setModelReady(ready);
       setAsrReady(asr);
     })();
@@ -198,6 +202,12 @@ export function VoicePanel() {
     if (v.trim()) await settingSetEmit("wake:keyword", v.trim());
   };
 
+  /** 唤醒应答改动：写设置即可，监听循环里每次唤醒实时读 wake:reply，不需重载 */
+  const changeReply = async (v: string) => {
+    setReply(v);
+    await settingSetEmit("wake:reply", v.trim() ? v.trim() : DEFAULT_REPLY);
+  };
+
   return (
     <section className="flex flex-col gap-4">
       <div className="flex flex-col gap-1">
@@ -241,6 +251,18 @@ export function VoicePanel() {
             </StatusPill>
           ) : null}
         </div>
+      </Row>
+
+      <Row
+        label="唤醒应答"
+        desc="命中唤醒词后语音播报这句，确认在听。用 Windows 系统语音（Win11 中文版默认有 Huihui，纯英文系统会乱读）"
+      >
+        <input
+          value={reply}
+          onChange={(e) => void changeReply(e.target.value)}
+          placeholder={DEFAULT_REPLY}
+          className={selectCls + " w-40"}
+        />
       </Row>
 
       <div className="flex flex-col gap-3 rounded-lg border border-border/60 bg-card/40 p-3">

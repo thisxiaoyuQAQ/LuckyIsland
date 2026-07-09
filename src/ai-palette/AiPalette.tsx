@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { ChevronsUpDown, Check, Send, Trash2 } from "lucide-react";
+import { ChevronsUpDown, Check, Mic, Send, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   aiChat,
@@ -95,6 +95,7 @@ export default function AiPalette() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [recording, setRecording] = useState(false);
   const [provider, setProvider] = useState("claude-cli");
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -193,6 +194,25 @@ export default function AiPalette() {
     setMessages([]);
   };
 
+  // 语音输入（麦克风按钮）：录一轮 ASR 转写，文本追加进输入框（不自动发，用户可改可发）。
+  // 不走 voice://transcript 事件路径（那是唤醒后自动发送），这里 await 拿返回值，两路径分离。
+  const recordVoice = async () => {
+    if (recording) return;
+    setRecording(true);
+    try {
+      const text = await invoke<string>("voice_record_utterance");
+      const t = text.trim();
+      if (t) setInput((prev) => (prev ? prev + " " + t : t));
+    } catch (e) {
+      setMessages((m) => [
+        ...m,
+        { role: "assistant", content: `语音输入失败：${e}` },
+      ]);
+    } finally {
+      setRecording(false);
+    }
+  };
+
   return (
     <div className="flex h-screen w-screen flex-col rounded-2xl border border-border/60 bg-card/90 shadow-2xl backdrop-blur-xl">
       {/* 顶部条：deep 拖动区——点空白处或文字均可拖动窗口；除按钮/输入等 clickable 元素（drag.js 自动屏蔽） */}
@@ -240,6 +260,16 @@ export default function AiPalette() {
             rows={1}
             className="max-h-32 min-h-[36px] flex-1 resize-none rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus:border-ring focus:ring-[3px] focus:ring-ring/50"
           />
+          <Button
+            size="icon"
+            variant="outline"
+            onClick={() => void recordVoice()}
+            disabled={recording || loading}
+            aria-label="语音输入"
+            title="语音输入（说完自动停，填进输入框，不自动发送）"
+          >
+            <Mic className={recording ? "h-4 w-4 animate-pulse text-destructive" : "h-4 w-4"} />
+          </Button>
           <Button
             size="icon"
             onClick={() => void send()}

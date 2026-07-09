@@ -9,6 +9,7 @@
 //! 流式 ASR 语音问答是独立第二阶段，见 TaskList #9，尚未开始。
 
 mod keyword;
+mod tts;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use serde::Serialize;
@@ -19,6 +20,7 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
+use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
 
 /// KWS 模型下载地址（sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01，实测 32,654,866 字节）。
 /// 纯中文唤醒词模型；下载速度实测约 147KB/s（GitHub Releases 签名 URL），32.6MB 耗时约 3~4 分钟，
@@ -337,10 +339,15 @@ fn spawn_listen_thread(
     let listening_flag = state.listening.clone();
     let app_for_thread = app.clone();
     let handle = std::thread::spawn(move || {
+        // 监听线程的 COM 初始化：SAPI5 TTS（唤醒应答）和 sherpa-onnx 的底层 COM 调用
+        // 都需要线程已 CoInitialize。MTA（多线程套间）足够，cpal 纯 Rust 不碰 COM 不冲突。
+        // CoInitializeEx 返回 S_FALSE（已初始化）也算成功，忽略返回值即可。
+        let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
         if let Err(e) = run_listen_loop(app_for_thread.clone(), &dir, &encoded, listening_flag.clone()) {
             let _ = app_for_thread.emit("voice://listen-error", e);
         }
         listening_flag.store(false, Ordering::SeqCst);
+        unsafe { CoUninitialize() };
     });
     *state.thread.lock().unwrap() = Some(handle);
     Ok(())
@@ -374,6 +381,25 @@ fn read_keyword(app: &AppHandle) -> String {
         .setting_get("wake:keyword")
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| "小岛小岛".to_string())
+}
+
+/// 读 wake:reply 设置（唤醒应答语音文案），空则回退默认「主人我在」。
+fn read_wake_reply(app: &AppHandle) -> String {
+    app.state::<crate::storage::Db>()
+        .setting_get("wake:reply")
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "主人我在".to_string())
+}
+
+/// 唤醒应答：起一次性线程同步播报 wake:reply 文案。独立线程自带 CoInitializeEx/CoUninitialize，
+/// 不阻塞监听循环；且 TTS 在监听线程外播放，避免 TTS 声回灌麦克风被 ASR 当成用户输入自我对话。
+fn speak_wake_reply(app: &AppHandle) {
+    let reply = read_wake_reply(app);
+    std::thread::spawn(move || {
+        let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        let _ = tts::speak(&reply);
+        unsafe { CoUninitialize() };
+    });
 }
 
 /// 停止常驻监听：切标志位 + join 等监听线程真正释放麦克风退出。
@@ -496,6 +522,9 @@ fn run_listen_loop(
                     spotter.decode(&stream);
                     if let Some(result) = spotter.get_result(&stream) {
                         if !result.keyword.is_empty() {
+                            // 先语音应答「主人我在」（独立线程，不阻塞监听），再 emit + 弹面板。
+                            // 顺序：应答声和面板几乎同时出现，用户听到应答就知道在听了。
+                            speak_wake_reply(&app);
                             let _ = app.emit("voice://wake", &result.keyword);
                             let _ = open_ai_palette_from_voice(&app);
                             spotter.reset(&stream);
@@ -632,8 +661,7 @@ fn record_single_utterance(
 fn to_mono_f32<T: Copy>(data: &[T], channels: usize, conv: impl Fn(T) -> f32) -> Vec<f32> {
     if data.is_empty() || channels == 0 {
         return Vec::new();
-    }
-    data.chunks(channels)
+    }    data.chunks(channels)
         .map(|frame| {
             let sum: f32 = frame
                 .iter()
@@ -685,4 +713,120 @@ pub fn voice_validate_keyword(app: AppHandle, phrase: String) -> Result<String, 
         .map_err(|_| "唤醒模型尚未下载，请先在设置里下载语音唤醒模型".to_string())?;
     let table = keyword::TokenTable::load(&tokens_content);
     keyword::encode_keyword(phrase.trim(), &table).map_err(|e| e.to_string())
+}
+
+/// 按需录一轮语音转写（AI 面板麦克风按钮用）：不依赖常驻监听，开一个独立 cpal 输入流
+/// 喂 ASR，endpoint 命中或超时即结束，**返回转写文本**（不 emit 事件，前端 await 拿到后
+/// 填进输入框，不自动发送，用户可改可发）。ASR 模型未就绪时报错引导下载。
+///
+/// 用同步命令 + std::thread 是因为 cpal::Stream 必须在创建它的线程存活期间采集，
+/// Tauri 命令线程不能阻塞跑这个循环（会占住 async runtime）。所以 spawn 独立线程跑
+/// 录音+转写，主线程等 channel 拿结果返回。
+#[tauri::command]
+pub fn voice_record_utterance(app: AppHandle) -> Result<String, String> {
+    if !is_model_ready(&app, &ModelKind::Asr) {
+        return Err("语音问答模型尚未下载，请先在设置里下载语音问答模型".to_string());
+    }
+
+    let host = cpal::default_host();
+    let device = host
+        .default_input_device()
+        .ok_or("未找到麦克风设备")?;
+    let supported = device
+        .default_input_config()
+        .map_err(|e| format!("读取麦克风配置失败：{e}"))?;
+    let sample_format = supported.sample_format();
+    let stream_config = supported.config();
+    let channels = stream_config.channels as usize;
+    let sample_rate = stream_config.sample_rate as i32;
+
+    let asr = build_asr_if_ready(&app, sample_rate)?
+        .ok_or("ASR 模型未就绪")?;
+
+    let (tx, rx) = mpsc::channel::<Vec<f32>>();
+    let err_fn = |e| eprintln!("[voice] 按需录音流错误：{e:?}");
+
+    let cpal_stream = match sample_format {
+        cpal::SampleFormat::F32 => device.build_input_stream(
+            stream_config.clone(),
+            move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                let _ = tx.send(to_mono_f32(data, channels, |s| s));
+            },
+            err_fn,
+            None,
+        ),
+        cpal::SampleFormat::I16 => device.build_input_stream(
+            stream_config.clone(),
+            move |data: &[i16], _: &cpal::InputCallbackInfo| {
+                let _ = tx.send(to_mono_f32(data, channels, |s| s as f32 / i16::MAX as f32));
+            },
+            err_fn,
+            None,
+        ),
+        cpal::SampleFormat::U16 => device.build_input_stream(
+            stream_config.clone(),
+            move |data: &[u16], _: &cpal::InputCallbackInfo| {
+                let _ = tx.send(to_mono_f32(data, channels, |s| (s as f32 - 32768.0) / 32768.0));
+            },
+            err_fn,
+            None,
+        ),
+        other => return Err(format!("不支持的麦克风采样格式：{other:?}")),
+    }
+    .map_err(|e| format!("创建音频输入流失败：{e}"))?;
+
+    cpal_stream
+        .play()
+        .map_err(|e| format!("启动麦克风采集失败：{e}"))?;
+
+    // spawn 录音+转写线程；cpal_stream 必须 move 进线程并 Drop 时才停采集
+    let (result_tx, result_rx) = mpsc::channel::<Result<String, String>>();
+    let asr = std::sync::Arc::new(asr);
+    let asr_clone = asr.clone();
+    std::thread::spawn(move || {
+        let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        let result = transcribe_once(&asr_clone, &rx);
+        unsafe { CoUninitialize() };
+        drop(cpal_stream); // 显式停采集（线程结束也会 Drop，这里清楚一些）
+        let _ = result_tx.send(result);
+    });
+
+    result_rx
+        .recv()
+        .map_err(|_| "录音线程异常退出".to_string())?
+}
+
+/// 按需单轮转写：建 ASR stream，喂重采样 PCM，endpoint 或超时结束，返回转写文本。
+/// 跟常驻循环里的 record_single_utterance 区别：无 listening 标志、不 emit 事件、返回文本。
+fn transcribe_once(asr: &AsrRecognizer, rx: &mpsc::Receiver<Vec<f32>>) -> Result<String, String> {
+    let stream = asr.recognizer.create_stream();
+    let deadline = Instant::now() + ASR_UTTERANCE_TIMEOUT;
+    loop {
+        let now = Instant::now();
+        if now >= deadline && !asr.recognizer.is_ready(&stream) {
+            break;
+        }
+        let wait = deadline.saturating_duration_since(now).min(Duration::from_millis(200));
+        match rx.recv_timeout(wait) {
+            Ok(samples) => {
+                let resampled = asr.resampler.resample(&samples, false);
+                stream.accept_waveform(16000, &resampled);
+                while asr.recognizer.is_ready(&stream) {
+                    asr.recognizer.decode(&stream);
+                }
+                if asr.recognizer.is_endpoint(&stream) {
+                    let text = asr
+                        .recognizer
+                        .get_result(&stream)
+                        .map(|r| r.text.trim().to_string())
+                        .unwrap_or_default();
+                    asr.recognizer.reset(&stream);
+                    return Ok(text);
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => return Err("音频通道断开".to_string()),
+        }
+    }
+    Ok(String::new()) // 超时无 endpoint，返回空（前端不填）
 }
