@@ -34,8 +34,8 @@ use ai::{
 };
 use terminal::{term_create, term_kill, term_open_wt, term_resize, term_snapshot, term_write, TerminalRegistry};
 use voice::{
-    voice_download_model, voice_model_ready, voice_start_listening, voice_stop_listening,
-    voice_validate_keyword, VoiceState,
+    voice_asr_model_ready, voice_download_model, voice_model_ready, voice_start_listening,
+    voice_stop_listening, voice_validate_keyword, VoiceState,
 };
 
 use std::sync::atomic::AtomicBool;
@@ -207,6 +207,7 @@ pub fn run() {
             term_kill,
             term_open_wt,
             voice_model_ready,
+            voice_asr_model_ready,
             voice_download_model,
             voice_start_listening,
             voice_stop_listening,

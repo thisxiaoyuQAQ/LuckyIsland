@@ -17,37 +17,43 @@ interface DownloadProgress {
 
 const DEFAULT_KEYWORD = "小岛小岛";
 
-/** 语音唤醒面板：开启开关 + 自定义唤醒词 + 模型下载（按需，~32MB，首次开启用前必须先下载） */
+/** 语音唤醒面板：开启开关 + 自定义唤醒词 + 模型下载（KWS 唤醒 + ASR 语音问答两套，独立下载） */
 export function VoicePanel() {
   const [enabled, setEnabled] = useState(false);
   const [keyword, setKeyword] = useState(DEFAULT_KEYWORD);
   const [modelReady, setModelReady] = useState(false);
+  const [asrReady, setAsrReady] = useState(false);
 
   // 唤醒词实时校验：空闲态无错误；用户改动后再校验
   const [keywordErr, setKeywordErr] = useState<string | null>(null);
   const [keywordOk, setKeywordOk] = useState(false);
 
-  // 下载态
+  // 下载态（KWS 与 ASR 复用单个进度条：任一时刻只下一次）
   const [downloading, setDownloading] = useState(false);
   const [progress, setProgress] = useState<DownloadProgress | null>(null);
+
+  // 当前正在下的模型（"kws" | "asr"），用于进度条文案
+  const [downloadingModel, setDownloadingModel] = useState<string>("");
 
   // 监听开关切换中
   const [toggling, setToggling] = useState(false);
 
   useEffect(() => {
     void (async () => {
-      const [en, kw, ready] = await Promise.all([
+      const [en, kw, ready, asr] = await Promise.all([
         settingGet("wake:enabled"),
         settingGet("wake:keyword"),
         invoke<boolean>("voice_model_ready"),
+        invoke<boolean>("voice_asr_model_ready"),
       ]);
       setEnabled(en === "true");
       setKeyword(kw && kw.trim() ? kw : DEFAULT_KEYWORD);
       setModelReady(ready);
+      setAsrReady(asr);
     })();
   }, []);
 
-  // 监听下载进度
+  // 监听下载进度（KWS 与 ASR 共用事件通道，按当前 downloadingModel 判断刷新哪个就绪态）
   useEffect(() => {
     let un: (() => void) | undefined;
     listen<DownloadProgress>("voice://download-progress", (e) => {
@@ -55,7 +61,8 @@ export function VoicePanel() {
       setProgress(p);
       if (p.stage === "done") {
         setDownloading(false);
-        setModelReady(true);
+        if (downloadingModel === "asr") setAsrReady(true);
+        else setModelReady(true);
       } else if (p.stage === "error") {
         setDownloading(false);
       } else {
@@ -65,7 +72,7 @@ export function VoicePanel() {
       un = fn;
     });
     return () => un?.();
-  }, []);
+  }, [downloadingModel]);
 
   // 已下载就绪时同步本地开关态：避免用户在别处下载完后开关仍显示禁用文案
   useEffect(() => {
@@ -107,12 +114,13 @@ export function VoicePanel() {
     return Math.min(100, Math.round((progress.downloaded / progress.total) * 100));
   }, [progress]);
 
-  const download = async () => {
+  const download = async (model: "kws" | "asr") => {
     if (downloading) return;
+    setDownloadingModel(model);
     setDownloading(true);
     setProgress(null);
     try {
-      await invoke("voice_download_model");
+      await invoke("voice_download_model", { model });
     } catch (e) {
       setDownloading(false);
       setProgress({ downloaded: 0, total: 0, stage: "error", message: String(e) });
@@ -141,9 +149,7 @@ export function VoicePanel() {
     } finally {
       setToggling(false);
     }
-  };
-
-  /** 唤醒词改动：写设置；下次监听启用时后端会读取最新值（改词需关再开生效，提示用户） */
+  };  /** 唤醒词改动：写设置；下次监听启用时后端会读取最新值（改词需关再开生效，提示用户） */
   const changeKeyword = async (v: string) => {
     setKeyword(v);
     if (v.trim()) await settingSetEmit("wake:keyword", v.trim());
@@ -195,7 +201,7 @@ export function VoicePanel() {
       <div className="flex flex-col gap-2">
         <div className="flex items-center justify-between">
           <div className="flex flex-col gap-0.5">
-            <div className="text-sm font-medium">语音模型</div>
+            <div className="text-sm font-medium">语音唤醒模型</div>
             <div className="text-xs text-muted-foreground">
               sherpa-onnx KWS zipformer wenetspeech（纯中文），约 32MB，首次需下载。
               国内从 GitHub 下载较慢（实测约 150KB/s，3~4 分钟），请耐心等待。
@@ -207,9 +213,32 @@ export function VoicePanel() {
               已就绪
             </span>
           ) : (
-            <Button size="sm" variant="outline" disabled={downloading} onClick={() => void download()}>
-              {downloading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
-              {downloading ? "下载中…" : "下载模型"}
+            <Button size="sm" variant="outline" disabled={downloading} onClick={() => void download("kws")}>
+              {downloading && downloadingModel === "kws" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+              {downloading && downloadingModel === "kws" ? "下载中…" : "下载模型"}
+            </Button>
+          )}
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-2">
+        <div className="flex items-center justify-between">
+          <div className="flex flex-col gap-0.5">
+            <div className="text-sm font-medium">语音问答模型（可选）</div>
+            <div className="text-xs text-muted-foreground">
+              sherpa-onnx 流式 ASR bilingual zh-en，唤醒后说出问题自动转写并发给 AI（不用手打字）。
+              约 80~100MB（体积待真机确认）。未下载也不影响唤醒，只是无法语音提问。
+            </div>
+          </div>
+          {asrReady ? (
+            <span className="flex items-center gap-1 text-xs text-emerald-500">
+              <Check className="h-3.5 w-3.5" />
+              已就绪
+            </span>
+          ) : (
+            <Button size="sm" variant="outline" disabled={downloading} onClick={() => void download("asr")}>
+              {downloading && downloadingModel === "asr" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+              {downloading && downloadingModel === "asr" ? "下载中…" : "下载模型"}
             </Button>
           )}
         </div>
@@ -219,7 +248,7 @@ export function VoicePanel() {
             {progress?.stage === "downloading" && (
               <div className="flex flex-col gap-1">
                 <div className="flex justify-between text-xs text-muted-foreground">
-                  <span>下载中</span>
+                  <span>{downloadingModel === "asr" ? "问答模型下载中" : "唤醒模型下载中"}</span>
                   <span>{pct != null ? `${pct}%` : "…"}</span>
                 </div>
                 <div className="h-1.5 w-full overflow-hidden rounded-full bg-border/60">

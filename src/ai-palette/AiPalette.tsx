@@ -135,8 +135,8 @@ export default function AiPalette() {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
   }, [messages]);
 
-  const send = async () => {
-    const text = input.trim();
+  const send = async (textOverride?: string) => {
+    const text = (textOverride ?? input).trim();
     if (!text || loading) return;
     setInput("");
     const history = messages.map((m) => ({ role: m.role, content: m.content }));
@@ -168,6 +168,25 @@ export default function AiPalette() {
       setLoading(false);
     }
   };
+
+  // 语音转写（M9 ASR）：唤醒后说话，后端 emit voice://transcript，自动填进输入框并发送。
+  // 用 ref 持最新 send 引用，监听器只注册一次，不随 input/messages/loading 变化反复重建
+  // （反复重建会漏掉中途到达的事件 + 重复绑定）。
+  const sendRef = useRef(send);
+  useEffect(() => {
+    sendRef.current = send;
+  });
+  useEffect(() => {
+    let un: (() => void) | undefined;
+    listen<string>("voice://transcript", (e) => {
+      const text = e.payload?.trim();
+      if (!text) return;
+      void sendRef.current(text);
+    }).then((fn) => {
+      un = fn;
+    });
+    return () => un?.();
+  }, []);
 
   const clear = async () => {
     await aiClearHistory();
