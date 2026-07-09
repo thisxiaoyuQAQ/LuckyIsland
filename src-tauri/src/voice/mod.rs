@@ -438,12 +438,20 @@ fn run_listen_loop(
     // 重载 ASR 模型慢（几十~百 ms），建一次循环里反复用，不在唤醒时再建。
     let asr = build_asr_if_ready(&app, sample_rate)?;
 
+    // KWS 同样需要重采样：feat_config.sample_rate 默认 16000，cpal 设备多是 48000/44100，
+    // 直传设备采样率会让模型按 3x 速度吃音频→音素全错→唤醒不了（M8 真机实测唤醒失败根因）。
+    // sherpa-onnx 不在 accept_waveform 内部自动重采样（resampler.rs 是独立 API），所以自己建。
+    let kws_resampler = sherpa_onnx::LinearResampler::create(sample_rate, 16000)
+        .ok_or("创建 KWS LinearResampler 失败")?;
+
     // 检测循环：轮询 listening 标志位决定何时退出；用 recv_timeout 而非阻塞 recv，
     // 保证即使一段时间没音频数据也能定期检查退出信号，不会卡死。
     while listening.load(Ordering::SeqCst) {
         match rx.recv_timeout(Duration::from_millis(200)) {
             Ok(samples) => {
-                stream.accept_waveform(sample_rate, &samples);
+                // 重采样到 16k 再喂 KWS；flush=false（流式持续，非最后一块）
+                let resampled = kws_resampler.resample(&samples, false);
+                stream.accept_waveform(16000, &resampled);
                 while spotter.is_ready(&stream) {
                     spotter.decode(&stream);
                     if let Some(result) = spotter.get_result(&stream) {
