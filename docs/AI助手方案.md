@@ -1,8 +1,8 @@
 # LuckyIsland AI 助手方案（语音唤醒 + 命令面板 + 动作路由）
 
 > 灵动岛式 Windows 桌面助手 · 个人项目 lite 版
-> 版本：v0.1（方案） · 日期：2026-07-06
-> 状态：**方案已定，待实现**（M7–M9）
+> 版本：v0.2（可靠性增量） · 日期：2026-07-10
+> 状态：**M7–M9 已有可运行实现；按需录音提示与 Codex 联网已真机验收，Provider 状态矩阵和请求取消待真机验证**
 > 配套文档：[需求文档.md](./需求文档.md) · [技术栈规划.md](./技术栈规划.md)
 
 ---
@@ -13,8 +13,9 @@
 
 - **语音唤醒**：Porcupine 常驻低功耗检测唤醒词 → 唤起 AI 窗口（M8）
 - **AI Spotlight 窗口**：独立浮动窗口（label `ai-palette`），自然语言对话（M7）
-- **AgentProvider 抽象**：默认走本地 `claude` CLI / `codex` CLI 作 agent，支持 Claude API 与自定义 OpenAI 兼容端点
+- **AgentProvider 抽象**：默认走本地 `claude` CLI / `codex` CLI 作 agent，支持自定义 OpenAI 兼容 Chat API 端点
 - **动作路由**：AI 返回结构化动作 → 路由到现有功能页/快捷命令（打开 codex、切股票页、加待办…），复用 §3.3/§3.4/§3.5/§3.6
+- **可靠请求生命周期**：每轮携带 `requestId + provider`，支持真正取消 CLI 进程树/HTTP 工具链；旧请求不得污染新一轮 UI、历史或动作
 
 定位遵守需求文档 §1.3：**只提供入口，不替用户跑长任务**。AI 听懂意图，LuckyIsland 打开入口（终端/独立窗口/页面跳转），由用户决定是否执行。
 
@@ -59,18 +60,19 @@
          ▼
 ┌─ AI Spotlight 窗口（独立 label: "ai-palette"，M7）─┐
 │  输入框 + 对话历史 + 动作建议卡片                  │
-│  ESC 收起 / 失焦自动隐藏 / 回车发送               │
-│  顶部显示当前 provider（claude-cli / codex-cli…） │
+│  idle / running / cancelling 状态机               │
+│  provider 切换落盘完成后才允许发送                │
+│  running 时发送按钮切换为「终止」                 │
 └──────────────────────────────────────────────────┘
-         │ invoke("ai_chat", { message, history })
+         │ ai_chat(requestId, provider, message, history)
+         │ ai_cancel(requestId)
          ▼
-┌─ AgentProvider 抽象（Rust trait，M7）──────────────┐
-│  ClaudeCliProvider（默认）：spawn `claude -p`     │
-│  CodexCliProvider：spawn `codex exec`             │
-│  ClaudeApiProvider：HTTP /messages（备选）        │
-│  CustomProvider：OpenAI 兼容端点（Ollama 等）     │
-│  统一 system prompt 注入「动作清单 + JSON schema」│
-│  → 所有 provider 一致返回 `{"action":...,"args":…}`│
+┌─ AiRuntime 单活注册表 + AgentProvider（Rust）──────┐
+│  requestId 隔离；CancellationToken 贯穿全链路     │
+│  Claude/Codex CLI：spawn Child，取消时杀进程树    │
+│  Chat API：取消 HTTP future 与后续工具轮次        │
+│  provider 参数与持久化值一致后才创建 provider     │
+│  动作/历史/emit 前复查 token 与当前 requestId     │
 └──────────────────────────────────────────────────┘
          │ 解析出的结构化动作（0 或多个）
          ▼
@@ -90,6 +92,8 @@
 - Provider 是可替换的 agent 后端，默认复用用户本地 CLI（零额外费用）
 - 动作路由复用现有模块接口，AI 层只做「意图 → 动作」翻译
 - 语音链路分阶段，唤醒词先行，ASR/TTS 为增量
+- 每轮请求必须有稳定身份；取消后的旧 future 即使晚返回，也不得更新新请求或执行副作用
+- 前端显示的 provider 与后端实际使用的 provider 必须可验证，响应返回 `providerUsed` 供诊断
 
 ---
 
@@ -121,6 +125,7 @@
 - **降级**：Porcupine 不可用（无 AccessKey / 模型加载失败）时，退化为「热键呼出」并通知用户
 - **灵动岛联动**：唤醒时灵动岛紧凑态显示波纹动画 + 文字「正在听…」，2s 后或 AI 窗口聚焦后恢复
 - **误唤醒**：Porcupine 内置 sensitivity 参数可调，提供设置项
+- **按需录音事件**：`voice_record_utterance` 必须是异步 Tauri command；阻塞的 cpal/VAD/ASR 工作放入 `spawn_blocking`，录音开始/结束分别广播 `voice://listening = true/false`，避免 WebView 事件队列等到 command 返回才刷新
 
 ---
 
@@ -176,9 +181,12 @@
 
 - 回车发送 / Shift+回车换行
 - 动作执行后显示结果卡片（成功/失败 + 撤销，撤销仅对可逆动作如 add_todo）
-- provider 切换下拉：claude-cli / codex-cli / claude-api / custom
+- provider 切换下拉：claude-cli / codex-cli / chat-api
 - 失焦自动隐藏（可配置，默认开）
 - 历史记录持久化到 SQLite（`ai_conversations` 表），下次打开恢复
+- 请求运行时发送按钮切换为「终止」；取消被后端登记后，助手占位消息显示「已终止」并立即允许下一轮
+- 助手占位消息绑定自己的 `requestId/messageId`，禁止用“更新数组最后一项”的方式接收异步结果
+- provider 切换期间禁用发送；持久化失败必须回滚标签并显示错误，不允许 UI 已切换而后端仍使用旧 provider
 
 ---
 
@@ -193,9 +201,13 @@
 ```rust
 #[async_trait]
 trait AgentProvider: Send + Sync {
-    /// 发送对话，返回 provider 的原始文本输出
-    /// system_prompt 已注入「动作清单 + JSON schema」
-    async fn chat(&self, history: &[Message], system_prompt: &str) -> Result<String>;
+    /// CancellationToken 必须覆盖 provider 调用及其全部工具轮次。
+    async fn chat(
+        &self,
+        history: &[Message],
+        system_prompt: &str,
+        cancel: CancellationToken,
+    ) -> Result<String, String>;
 }
 
 struct Message {
@@ -203,26 +215,52 @@ struct Message {
     content: String,
 }
 
+struct AiRuntime {
+    active: Mutex<Option<ActiveRequest>>,
+}
+
+struct ActiveRequest {
+    id: String,
+    provider: String,
+    cancel: CancellationToken,
+}
+
 struct ClaudeCliProvider { cli_path: String, model: Option<String> }
 struct CodexCliProvider  { cli_path: String }
-struct ClaudeApiProvider { api_key: String, model: String, base_url: String }
-struct CustomProvider    { base_url: String, model: String, api_key: Option<String> }
+struct ChatApiProvider   { client: reqwest::Client, /* endpoint/model/key */ }
 ```
 
-> 第一版所有 provider 统一用「prompt 约定 JSON 动作格式」返回结构化动作，不引入原生 tool use 的复杂度。后续 `ClaudeApiProvider` 可升级到原生 tool use 提升可靠性。
+> 桌面动作仍统一用「prompt 约定 JSON 动作格式」跨 provider 返回；Chat API 仅对联网检索使用原生 function calling，工具白名单目前只有 `web_search`。
 
 ### 5.3 各 provider 实现
 
 | Provider | 调用方式 | 备注 |
 |---|---|---|
-| **ClaudeCliProvider**（默认） | spawn `claude -p "<prompt>" --output-format json` | 复用用户 Claude Code 订阅，零 API 费用；CLI 在 PATH 或配 `claude_cli_path` |
-| **CodexCliProvider** | spawn `codex exec "<prompt>"` | 复用 Codex CLI；具体子命令 M7 实测确认 |
-| **ClaudeApiProvider** | HTTP POST `/v1/messages` | 需 `ANTHROPIC_API_KEY`；备选 |
-| **CustomProvider** | OpenAI 兼容 `/v1/chat/completions` | Ollama / 本地 / 第三方 |
+| **ClaudeCliProvider**（默认） | `spawn` `claude -p "<prompt>" --output-format json` | 保留 `Child`；`kill_on_drop(true)`；取消时终止 Windows 进程树 |
+| **CodexCliProvider** | `spawn` `codex --search exec "<prompt>"` | 官方 CLI 全局 `--search` 必须位于 `exec` 前，保证天气等实时问题可联网；取消策略同 Claude |
+| **ChatApiProvider** | OpenAI 兼容 `/v1/chat/completions` + function calling | `CancellationToken` 覆盖每次 HTTP、DuckDuckGo 搜索和工具循环；参数错误显式失败，不静默空查询 |
 
-**CLI 流式输出**：第一版用 `--output-format json`（一次性返回），M7 后续可升级 `stream-json` 做流式渲染。
+**CLI 流式输出**：本轮仍用一次性输出，不扩展为流式 Actor；取消通过持有 `Child` 实现。
 
-### 5.4 动作 schema（system prompt 注入）
+### 5.4 请求身份、Provider 一致性与取消
+
+前后端命令协议：
+
+```text
+ai_chat(requestId, provider, message, history)
+  -> { reply, action, providerUsed }
+ai_cancel(requestId)
+  -> cancelled | already_finished | not_current
+```
+
+- 前端为每轮生成 UUID，并把 UI 当前 provider 显式传入；后端先校验 provider 枚举及其与持久化 `ai:provider` 的一致性，再按该参数创建 provider。任何不一致都显式报错，不得静默回退。
+- `AiRuntime` 仅登记一个活动请求。`ai_cancel` 对匹配项先触发 token、再按 requestId 移除登记并立即返回，进程树/HTTP future 可在旧任务内继续收尾；下一轮无需等待旧任务完全退出。
+- 旧任务的清理只能 `clear_if_matches(requestId)`；不得清除已登记的新请求，也不得把全局 loading 标志错误置为 false。
+- CLI 使用 `spawn()` 而非 `output()`；Windows 取消通过 `taskkill.exe /PID <pid> /T /F` 终止整棵进程树，参数逐项传递且设置 `kill_on_drop(true)` 作为兜底。
+- Chat API 在发送请求、读取响应、DuckDuckGo 搜索和每轮工具调用处检查 token；最多 4 轮工具调用，整轮请求 120 秒超时。
+- token 已取消或 requestId 已非当前时，不执行动作、不写本轮历史、不 emit action result。取消只保留当前前端会话里的用户消息和「已终止」占位，未完成轮次不持久化。
+
+### 5.5 动作 schema（system prompt 注入）
 
 所有 provider 共享一份 system prompt，约束返回格式：
 
@@ -251,11 +289,12 @@ struct CustomProvider    { base_url: String, model: String, api_key: Option<Stri
 
 **快捷命令名动态注入**：system prompt 在每次请求前拼入用户当前 `terminal.shortcuts` 的 name 列表，让 AI 知道有哪些可调用。
 
-### 5.5 解析与容错
+### 5.6 解析与容错
 
 - 严格 JSON 解析失败 → 尝试从返回文本提取第一个 `{...}` 块
 - 仍失败 → 当作 `reply` 处理（直接显示文本）
 - 动作 args 校验失败 → 回复用户「参数不对，请补充 X」
+- Chat API 的 `tool_calls[].function.arguments` 同时接受 JSON 字符串和对象；解析失败、缺少 `query` 或空 `query` 均返回带工具名的明确错误，不再退化为 `{}` 或空搜索
 
 ---
 
@@ -298,8 +337,10 @@ AI 返回 JSON 动作
 ```toml
 [ai]
 enabled = true
-provider = "claude-cli"            # claude-cli | codex-cli | claude-api | custom
+provider = "claude-cli"            # claude-cli | codex-cli | chat-api
 history_retention_days = 30
+request_timeout_seconds = 120       # 覆盖一次模型请求及全部工具轮次
+max_tool_rounds = 4                 # 防止 function calling 无限循环
 
 [ai.claude_cli]
 path = "claude"                    # 可指定绝对路径
@@ -308,15 +349,10 @@ model = ""                         # 留空用 CLI 默认
 [ai.codex_cli]
 path = "codex"
 
-[ai.claude_api]
-api_key_env = "ANTHROPIC_API_KEY"
-model = "claude-sonnet-4-6"
-base_url = "https://api.anthropic.com"
-
-[ai.custom]
+[ai.chat_api]
 base_url = "http://localhost:11434/v1"
 model = "qwen2.5"
-api_key_env = ""                   # 无鉴权时留空
+api_key = ""                       # 无鉴权时留空；日志不得输出
 
 [ai.actions]
 # 动作开关，关闭的不注入 system prompt
@@ -383,7 +419,7 @@ engine = "sapi"                    # Windows 系统 SAPI，免费本地
 
 | 里程碑 | 内容 | 依赖 | 预计 |
 |---|---|---|---|
-| M7 AI 命令面板 | 独立窗口 + AgentProvider 抽象 + 4 个 provider + 动作路由器 + Alt+Space 热键 | 02、03（部分） | 3 天 |
+| M7 AI 命令面板 | 独立窗口 + AgentProvider 抽象 + 3 个 provider（Claude/Codex CLI、Chat API）+ 动作路由器 + Alt+Space 热键 | 02、03（部分） | 3 天 |
 | M8 语音唤醒 | Porcupine 集成 + 常驻监听 + 唤起 AI 窗口 + 灵动岛联动 | M7 | 2 天 |
 | M9 语音闭环 | 本地 ASR（sherpa-onnx 中文）+ 可选 TTS（SAPI） | M8 | 2 天 |
 
@@ -415,7 +451,8 @@ src/
 src-tauri/src/
 ├── ai/
 │   ├── mod.rs                     # 模块入口 + 命令注册
-│   ├── provider.rs                # AgentProvider trait + 4 实现
+│   ├── provider.rs                # AgentProvider trait + CLI/Chat API 实现
+│   ├── runtime.rs                 # requestId 单活注册表 + CancellationToken
 │   ├── router.rs                  # ActionRouter
 │   ├── prompt.rs                  # system prompt 构建 + 动态注入
 │   └── history.rs                 # 对话历史 SQLite
@@ -443,13 +480,17 @@ src-tauri/migrations/
 | 麦克风常驻被安全软件标记 | 信任 | 明确权限引导；提供「按住说话」替代（远期） |
 | 多窗口（island + ai-palette）状态同步 | 体验 | 统一走 Rust emit 事件，前端只订阅 |
 | 误唤醒打断 | 烦扰 | sensitivity 可调；唤醒后 2s 内无输入自动取消 |
+| provider 标签与实际路由不一致 | 答非所问、诊断困难 | 切换 await/回滚；请求显式携带 provider；后端一致性校验；响应回传 `providerUsed` |
+| CLI 只杀外层 shell | 子进程继续运行、旧结果晚到 | 保留 `Child`，Windows `taskkill /T /F` 杀进程树，`kill_on_drop` 兜底 |
+| Chat API 工具参数异常或循环 | 空搜索、长期卡住 | 字符串/对象双格式解析、非空 query 校验、4 轮上限、120 秒超时 |
+| 同步录音 command 阻塞事件队列 | 「正在聆听」直到录音结束才送达 | command 改 async，阻塞录音进 `spawn_blocking`，发送 true/false 生命周期事件 |
 
 ---
 
 ## 12. 测试要点
 
 - Alt+Space / 托盘 / 唤醒词 → AI 窗口出现，ESC/失焦 → 消失
-- 切换 4 个 provider 均能对话（claude-cli 需本机装 CLI）
+- 切换 3 个 provider 均能对话（Claude/Codex CLI 需本机安装并登录）
 - 输入「打开 codex 在 E:\Code」→ 灵动岛终端页新 tab，cwd 正确
 - 输入「看股票」→ 灵动岛跳股票页并展开
 - 输入「加待办 买牛奶」→ 待办页出现该条，可撤销
@@ -457,6 +498,12 @@ src-tauri/migrations/
 - 唤醒词检测：sensitivity 调节生效，误唤醒率可接受
 - 灵动岛联动：唤醒时显示「正在听」波纹
 - 隐私：关闭语音唤醒后麦克风流确实释放
+- provider 切换失败会回滚；切换中不能发送；`AiResponse.providerUsed` 与 UI/provider 配置一致
+- Codex 实时问题的参数构造为 `codex --search exec ...`；天气请求不得只返回本地日期占位
+- Chat API 工具参数字符串/对象都能解析；坏 JSON、缺 query、空 query 明确报错；工具轮次和总超时生效
+- 运行中点击终止：CLI 进程树或 HTTP/tool future 被取消，占位变「已终止」，下一轮可立即发送
+- 取消旧请求后立刻发送新请求：旧 resolve/reject/finally 不修改新消息、不清 active、不执行动作/写历史/emit
+- 点击麦克风后，`voice://listening=true` 在录音期间可见，完成/失败后收到 false 并消失；不等待 invoke 返回才闪现
 
 ---
 
@@ -484,9 +531,9 @@ src-tauri/migrations/
 
 | 方案 | 优点 | 缺点 | 结论 |
 |---|---|---|---|
-| **Claude CLI + 多 provider** | 复用用户订阅、零 API 费、agent 能力强 | 依赖本机装 CLI | **选用** |
+| **Claude CLI + Codex CLI + Chat API** | 可复用订阅，也兼容自定义 OpenAI 端点 | CLI 依赖本机安装；API 需配置 | **选用** |
 | 仅 Claude API | 实现最简 | 消耗 API 额度、与 §1.3 略冲突 | 备选 |
-| 仅本地 Ollama | 隐私优先 | 质量依赖用户模型、部署门槛 | 作为 custom provider 支持 |
+| 仅本地 Ollama | 隐私优先 | 质量依赖用户模型、部署门槛 | 可通过 chat-api 兼容端点接入 |
 | Codex CLI 作 provider | 复用 Codex 订阅 | CLI agent 定位偏重 | 作为 provider 之一 |
 
 ### 13.4 动作路由机制
@@ -494,7 +541,7 @@ src-tauri/migrations/
 | 方案 | 优点 | 缺点 | 结论 |
 |---|---|---|---|
 | **prompt 约定 JSON 动作** | 跨 provider 统一、实现简单 | 依赖 LLM 遵守格式，需容错 | **选用**（第一版） |
-| 原生 tool use（function calling） | 结构化可靠 | CLI provider 不支持、跨 provider 不一致 | 远期 ClaudeApiProvider 升级 |
+| 原生 tool use（function calling） | 结构化可靠 | CLI provider 不支持、跨 provider 不一致 | Chat API 仅用于 `web_search`；桌面动作仍走统一 JSON |
 
 ### 13.5 语音链路
 
@@ -506,14 +553,14 @@ src-tauri/migrations/
 
 ---
 
-## 14. 开放问题（待 M7 启动确认）
+## 14. M7–M9 已确认决策
 
 1. Porcupine 唤醒词选哪个内置词？→ 默认 "computer"，设置里可换
-2. `claude -p` 在当前 CLI 版本下的输出格式与 tool use 行为？→ M7 实测，确认用 `--output-format json` 还是 `stream-json`
-3. `codex exec` 子命令的具体接口？→ M7 实测
-4. AI 窗口与灵动岛是否共用前端 bundle（index.html 路由）还是独立 ai.html？→ 倾向独立 ai.html，避免灵动岛首屏加载 AI 代码
-5. 对话历史是否跨 provider 共享？→ 倾向共享（按时间线），切换 provider 不清空
-6. 是否做「按住说话」替代常驻唤醒？→ 远期，M9 评估
+2. `claude -p` 输出？→ 使用 `--output-format json` 一次性输出；允许 WebSearch，显式禁用 Bash/写文件工具
+3. Codex CLI 接口？→ Windows 经 `cmd /C` 调 `codex --search exec ...`，`-o` 读取最终消息
+4. AI 窗口与灵动岛 bundle？→ 独立 AI 入口与 `ai-palette` 窗口，避免影响灵动岛首屏
+5. 对话历史是否跨 provider 共享？→ 共享时间线，切换 provider 不清空
+6. 是否提供按需录音？→ 已提供麦克风按钮单轮录音；常驻唤醒继续可配置
 7. 动作执行前的确认弹窗默认开还是关？→ 默认关（信任 AI + 仅预配置命令），设置可开
 
 ---
