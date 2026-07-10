@@ -74,7 +74,7 @@ impl ModelKind {
 }
 
 /// 语音功能运行时状态：模型是否已下载、监听是否开启。
-/// 仿 `AI_LOADING` 模式（见 lib.rs），用 AtomicBool 做跨线程标志位。
+/// 用 AtomicBool 保存跨线程监听状态。
 pub struct VoiceState {
     /// 监听是否正在跑；Arc 是因为监听线程要持有一份共享引用，靠它判断何时退出循环。
     /// start_listening 里从 false swap 成 true 时才真正 spawn 线程，避免重复启动。
@@ -84,6 +84,10 @@ pub struct VoiceState {
     /// 监听线程的 JoinHandle，reload 时能 join() 等它真正退出再重启，
     /// 消除 stop→start 的小竞态（旧线程还没释放麦克风、新线程已抢同设备）。
     pub thread: Mutex<Option<std::thread::JoinHandle<()>>>,
+    /// 按需录音（AI 面板麦克风按钮）进行中标志。KWS 循环看到它为 true 就暂停唤醒检测，
+    /// 避免用户对着麦克风说话时 KWS 误命中唤醒词 -> 触发唤醒应答 + 唤醒路径 ASR 自动发送，
+    /// 跟按需录音两条路径打架（真机实测：按需录音时听到"主人我在"就是 KWS 误命中）。
+    pub manual_recording: Arc<AtomicBool>,
 }
 
 impl VoiceState {
@@ -92,6 +96,31 @@ impl VoiceState {
             listening: Arc::new(AtomicBool::new(false)),
             downloading: AtomicBool::new(false),
             thread: Mutex::new(None),
+            manual_recording: Arc::new(AtomicBool::new(false)),
+        }
+    }
+}
+
+struct RecordingGuard<F: FnOnce()> {
+    manual_recording: Arc<AtomicBool>,
+    on_drop: Option<F>,
+}
+
+impl<F: FnOnce()> RecordingGuard<F> {
+    fn new(manual_recording: Arc<AtomicBool>, on_drop: F) -> Self {
+        manual_recording.store(true, Ordering::SeqCst);
+        Self {
+            manual_recording,
+            on_drop: Some(on_drop),
+        }
+    }
+}
+
+impl<F: FnOnce()> Drop for RecordingGuard<F> {
+    fn drop(&mut self) {
+        self.manual_recording.store(false, Ordering::SeqCst);
+        if let Some(on_drop) = self.on_drop.take() {
+            on_drop();
         }
     }
 }
@@ -182,18 +211,13 @@ pub async fn voice_download_model(
     if is_model_ready(&app, &kind) {
         return Ok(());
     }
-    if state
-        .downloading
-        .swap(true, Ordering::SeqCst)
-    {
+    if state.downloading.swap(true, Ordering::SeqCst) {
         return Err("已有下载任务在进行".to_string());
     }
 
     let result = download_and_extract(&app, http.inner(), &kind).await;
 
-    state
-        .downloading
-        .store(false, Ordering::SeqCst);
+    state.downloading.store(false, Ordering::SeqCst);
 
     match &result {
         Ok(()) => {
@@ -228,10 +252,7 @@ async fn download_and_extract(
     kind: &ModelKind,
 ) -> Result<(), String> {
     let dir = model_kind_dir(app, kind)?;
-    let parent = dir
-        .parent()
-        .ok_or("模型目录路径异常")?
-        .to_path_buf();
+    let parent = dir.parent().ok_or("模型目录路径异常")?.to_path_buf();
     std::fs::create_dir_all(&parent).map_err(|e| format!("创建模型目录失败：{e}"))?;
 
     let tmp_path = parent.join("voice-model.tar.bz2.tmp");
@@ -245,17 +266,14 @@ async fn download_and_extract(
     }
     let total = resp.content_length().unwrap_or(0);
 
-    let mut file = std::fs::File::create(&tmp_path).map_err(|e| format!("创建临时文件失败：{e}"))?;
+    let mut file =
+        std::fs::File::create(&tmp_path).map_err(|e| format!("创建临时文件失败：{e}"))?;
     let mut downloaded: u64 = 0;
     let mut resp = resp;
     // 逐块写盘 + emit 进度，避免大文件整体读进内存；下载慢（KWS 实测约 147KB/s，ASR 更大更久）
     // 必须让前端看到进度，不能一次性 await 到底让用户以为卡死。
     use std::io::Write;
-    while let Some(chunk) = resp
-        .chunk()
-        .await
-        .map_err(|e| format!("下载中断：{e}"))?
-    {
+    while let Some(chunk) = resp.chunk().await.map_err(|e| format!("下载中断：{e}"))? {
         file.write_all(&chunk)
             .map_err(|e| format!("写入失败：{e}"))?;
         downloaded += chunk.len() as u64;
@@ -294,29 +312,34 @@ fn extract_tar_bz2(archive: &std::path::Path, dest: &std::path::Path) -> Result<
     let file = std::fs::File::open(archive).map_err(|e| format!("打开归档失败：{e}"))?;
     let decoder = bzip2::read::BzDecoder::new(file);
     let mut ar = tar::Archive::new(decoder);
-    ar.unpack(dest)
-        .map_err(|e| format!("解压失败：{e}"))?;
+    ar.unpack(dest).map_err(|e| format!("解压失败：{e}"))?;
     Ok(())
 }
 
 /// 启动常驻监听：spawn 一个独立 OS 线程（非 tokio，因为 cpal::Stream 要在创建它的线程里
 /// 一直存活才能持续采集，且该线程要同步跑 KWS 检测循环）。已在监听中则直接返回。
 #[tauri::command]
-pub fn voice_start_listening(app: AppHandle, state: tauri::State<'_, VoiceState>) -> Result<(), String> {
-    if !is_model_ready(&app, &ModelKind::Kws) {
+pub fn voice_start_listening(
+    app: AppHandle,
+    state: tauri::State<'_, VoiceState>,
+) -> Result<(), String> {
+    start_listening_inner(&app, state.inner())
+}
+
+/// 启动监听的内部实现（命令入口与 setup 自动恢复共用）。从 managed state 取 VoiceState。
+/// setup 里 app.state::<VoiceState>() 取的是启动时 manage 的同一个实例。
+pub fn start_listening_inner(app: &AppHandle, state: &VoiceState) -> Result<(), String> {
+    if !is_model_ready(app, &ModelKind::Kws) {
         return Err("唤醒模型尚未下载，请先在设置里下载语音唤醒模型".to_string());
     }
-    let keyword_setting = read_keyword(&app);
+    let keyword_setting = read_keyword(app);
 
     // 已在监听：false -> true 才继续；已经是 true 说明线程已经跑着，直接返回不重复 spawn
-    if state
-        .listening
-        .swap(true, Ordering::SeqCst)
-    {
+    if state.listening.swap(true, Ordering::SeqCst) {
         return Ok(());
     }
 
-    spawn_listen_thread(&app, state.inner(), &keyword_setting)?;
+    spawn_listen_thread(app, state, &keyword_setting)?;
     Ok(())
 }
 
@@ -337,13 +360,20 @@ fn spawn_listen_thread(
     })?;
 
     let listening_flag = state.listening.clone();
+    let manual_flag = state.manual_recording.clone();
     let app_for_thread = app.clone();
     let handle = std::thread::spawn(move || {
         // 监听线程的 COM 初始化：SAPI5 TTS（唤醒应答）和 sherpa-onnx 的底层 COM 调用
         // 都需要线程已 CoInitialize。MTA（多线程套间）足够，cpal 纯 Rust 不碰 COM 不冲突。
         // CoInitializeEx 返回 S_FALSE（已初始化）也算成功，忽略返回值即可。
         let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
-        if let Err(e) = run_listen_loop(app_for_thread.clone(), &dir, &encoded, listening_flag.clone()) {
+        if let Err(e) = run_listen_loop(
+            app_for_thread.clone(),
+            &dir,
+            &encoded,
+            listening_flag.clone(),
+            manual_flag.clone(),
+        ) {
             let _ = app_for_thread.emit("voice://listen-error", e);
         }
         listening_flag.store(false, Ordering::SeqCst);
@@ -358,7 +388,10 @@ fn spawn_listen_thread(
 /// 改词后不用手动关再开——校验过的新词直接重载即生效。未在监听则什么都不做
 /// （新词已写库，下次开启监听时自然读到）。
 #[tauri::command]
-pub fn voice_reload_keyword(app: AppHandle, state: tauri::State<'_, VoiceState>) -> Result<(), String> {
+pub fn voice_reload_keyword(
+    app: AppHandle,
+    state: tauri::State<'_, VoiceState>,
+) -> Result<(), String> {
     if state.listening.load(Ordering::SeqCst) {
         // 在监听中：先让旧线程退出并 join 等它真正释放麦克风，再用新词重启
         state.listening.store(false, Ordering::SeqCst);
@@ -391,24 +424,47 @@ fn read_wake_reply(app: &AppHandle) -> String {
         .unwrap_or_else(|| "主人我在".to_string())
 }
 
-/// 唤醒应答：起一次性线程同步播报 wake:reply 文案。独立线程自带 CoInitializeEx/CoUninitialize，
-/// 不阻塞监听循环；且 TTS 在监听线程外播放，避免 TTS 声回灌麦克风被 ASR 当成用户输入自我对话。
+/// 唤醒应答：起一次性线程播报 wake:reply 文案（不阻塞监听循环）。
+/// 用于唤醒命中但**不**紧接着自动录音的场景（当前未用，保留备用）。
+#[allow(dead_code)]
 fn speak_wake_reply(app: &AppHandle) {
     let reply = read_wake_reply(app);
     std::thread::spawn(move || {
+        eprintln!("[voice] 唤醒应答线程启动，文案：{reply}");
         let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
-        let _ = tts::speak(&reply);
+        if let Err(_) = tts::speak(&reply) {
+            eprintln!("[voice] 唤醒应答播报失败（见上 tts 日志）");
+        }
         unsafe { CoUninitialize() };
     });
 }
 
-/// 停止常驻监听：切标志位 + join 等监听线程真正释放麦克风退出。
+/// 唤醒应答（同步版）：在当前线程同步播完 wake:reply 再返回。调用方线程须已 CoInitialize
+/// （监听线程已 init）。用于唤醒后要紧接着自动录音的场景--必须等 TTS 播完再开始录音，
+/// 否则"主人我在"的 TTS 声会被麦克风收进去转写成乱七八糟的文字（真机实测串音问题）。
+fn speak_wake_reply_sync(app: &AppHandle) {
+    let reply = read_wake_reply(app);
+    if let Err(_) = tts::speak(&reply) {
+        eprintln!("[voice] 唤醒应答同步播报失败：{reply}");
+    }
+}
+
+/// 语音提示（按需录音前播"请说"等）。独立线程播，不阻塞调用方。
+#[allow(dead_code)]
+fn speak_prompt(_app: &AppHandle, text: &str) {
+    let text = text.to_string();
+    std::thread::spawn(move || {
+        let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        if let Err(_) = tts::speak(&text) {
+            eprintln!("[voice] 提示音播报失败：{text}");
+        }
+        unsafe { CoUninitialize() };
+    });
+}
 /// （reload_keyword 内部也用同样的 stop 逻辑；Exit 清理时不 join——进程马上退出 OS 会回收句柄。）
 #[tauri::command]
 pub fn voice_stop_listening(state: tauri::State<'_, VoiceState>) -> Result<(), String> {
-    state
-        .listening
-        .store(false, Ordering::SeqCst);
+    state.listening.store(false, Ordering::SeqCst);
     if let Some(handle) = state.thread.lock().unwrap().take() {
         let _ = handle.join();
     }
@@ -423,28 +479,26 @@ fn run_listen_loop(
     model_dir: &std::path::Path,
     encoded_keyword: &str,
     listening: Arc<AtomicBool>,
+    manual_recording: Arc<AtomicBool>,
 ) -> Result<(), String> {
     let mut config = KeywordSpotterConfig::default();
-    config.model_config.transducer.encoder = Some(onnx_path_with_suffix(model_dir, "encoder-", ".int8.onnx")?);
-    config.model_config.transducer.decoder = Some(onnx_path_with_suffix(model_dir, "decoder-", ".int8.onnx")?);
-    config.model_config.transducer.joiner = Some(onnx_path_with_suffix(model_dir, "joiner-", ".int8.onnx")?);
-    config.model_config.tokens = Some(
-        model_dir
-            .join("tokens.txt")
-            .to_string_lossy()
-            .to_string(),
-    );
+    config.model_config.transducer.encoder =
+        Some(onnx_path_with_suffix(model_dir, "encoder-", ".int8.onnx")?);
+    config.model_config.transducer.decoder =
+        Some(onnx_path_with_suffix(model_dir, "decoder-", ".int8.onnx")?);
+    config.model_config.transducer.joiner =
+        Some(onnx_path_with_suffix(model_dir, "joiner-", ".int8.onnx")?);
+    config.model_config.tokens = Some(model_dir.join("tokens.txt").to_string_lossy().to_string());
     config.model_config.provider = Some("cpu".to_string());
     // 不用 keywords_file（模型自带的默认唤醒词），用运行时编码的用户自定义唤醒词
     config.keywords_buf = Some(encoded_keyword.to_string());
 
-    let spotter = KeywordSpotter::create(&config).ok_or("创建 KeywordSpotter 失败（模型文件可能损坏，尝试重新下载）")?;
+    let spotter = KeywordSpotter::create(&config)
+        .ok_or("创建 KeywordSpotter 失败（模型文件可能损坏，尝试重新下载）")?;
     let stream = spotter.create_stream();
 
     let host = cpal::default_host();
-    let device = host
-        .default_input_device()
-        .ok_or("未找到麦克风设备")?;
+    let device = host.default_input_device().ok_or("未找到麦克风设备")?;
     let supported = device
         .default_input_config()
         .map_err(|e| format!("读取麦克风配置失败：{e}"))?;
@@ -515,6 +569,10 @@ fn run_listen_loop(
     while listening.load(Ordering::SeqCst) {
         match rx.recv_timeout(Duration::from_millis(200)) {
             Ok(samples) => {
+                // 按需录音进行中时暂停 KWS 检测（不喂不 decode），避免用户说话被误命中唤醒词
+                if manual_recording.load(Ordering::SeqCst) {
+                    continue;
+                }
                 // 重采样到 16k 再喂 KWS；flush=false（流式持续，非最后一块）
                 let resampled = kws_resampler.resample(&samples, false);
                 stream.accept_waveform(16000, &resampled);
@@ -524,9 +582,12 @@ fn run_listen_loop(
                         if !result.keyword.is_empty() {
                             // 先语音应答「主人我在」（独立线程，不阻塞监听），再 emit + 弹面板。
                             // 顺序：应答声和面板几乎同时出现，用户听到应答就知道在听了。
-                            speak_wake_reply(&app);
+                            eprintln!("[voice] 唤醒命中：{}", result.keyword);
+                            // 顺序（用户要求）：先呼出 AI 助手 UI，再播"主人我在"，再进录音
                             let _ = app.emit("voice://wake", &result.keyword);
                             let _ = open_ai_palette_from_voice(&app);
+                            // 同步播"主人我在"（阻塞监听线程直到播完），避免 TTS 声被后续 ASR 录进去
+                            speak_wake_reply_sync(&app);
                             spotter.reset(&stream);
                             // 切进 ASR 单轮录制：把用户问的话转写后 emit voice://transcript。
                             // ASR 未就绪时跳过（唤醒照常能弹面板，用户手动打字）。
@@ -537,15 +598,20 @@ fn run_listen_loop(
                                 if !listening.load(Ordering::SeqCst) {
                                     break;
                                 }
-                                if let Err(e) = record_single_utterance(
-                                    &app,
-                                    asr,
-                                    &rx,
-                                    listening.clone(),
-                                ) {
+                                eprintln!("[voice] 唤醒路径进录音");
+                                // 通知前端弹"正在聆听…"提示（TTS 已播完，用户可以开口了）
+                                let _ = app.emit("voice://listening", true);
+                                if let Err(e) =
+                                    record_single_utterance(&app, asr, &rx, listening.clone())
+                                {
                                     let _ = app.emit("voice://listen-error", e);
                                 }
                             }
+                            // 唤醒处理完，break 出 while spotter.is_ready 循环，回到外层
+                            // while listening 等下一次唤醒。不 break 的话，record 期间 KWS 又
+                            // 积攒了音频，is_ready 会再 true，可能二次命中唤醒词跑第二次 record
+                            // （真机实测：唤醒后同一句话被转写发送两次就是这原因）。
+                            break;
                         }
                     }
                 }
@@ -565,21 +631,36 @@ struct AsrRecognizer {
     resampler: sherpa_onnx::LinearResampler,
 }
 
+/// 保持 transducer 默认 blank 权重；正值会压制 blank，可能增加插字和重复 token。
+const ASR_BLANK_PENALTY: f32 = 0.0;
+
 /// ASR 模型已就绪时建 recognizer；未就绪返回 None（唤醒照常弹面板，用户手动打字）。
 /// device_sample_rate 是 cpal 设备实际采样率，resampler 16k 由这路重采样得到。
-fn build_asr_if_ready(app: &AppHandle, device_sample_rate: i32) -> Result<Option<AsrRecognizer>, String> {
+fn build_asr_if_ready(
+    app: &AppHandle,
+    device_sample_rate: i32,
+) -> Result<Option<AsrRecognizer>, String> {
     if !is_model_ready(app, &ModelKind::Asr) {
         return Ok(None);
     }
     let dir = model_kind_dir(app, &ModelKind::Asr)?;
     let mut config = OnlineRecognizerConfig::default();
-    config.model_config.transducer.encoder = Some(onnx_path_with_suffix(&dir, "encoder-", ".int8.onnx")?);
-    config.model_config.transducer.decoder = Some(onnx_path_with_suffix(&dir, "decoder-", ".onnx")?);
-    config.model_config.transducer.joiner = Some(onnx_path_with_suffix(&dir, "joiner-", ".int8.onnx")?);
+    config.model_config.transducer.encoder =
+        Some(onnx_path_with_suffix(&dir, "encoder-", ".int8.onnx")?);
+    config.model_config.transducer.decoder =
+        Some(onnx_path_with_suffix(&dir, "decoder-", ".onnx")?);
+    config.model_config.transducer.joiner =
+        Some(onnx_path_with_suffix(&dir, "joiner-", ".int8.onnx")?);
     config.model_config.tokens = Some(dir.join("tokens.txt").to_string_lossy().to_string());
     config.model_config.provider = Some("cpu".to_string());
-    config.decoding_method = Some("greedy_search".to_string());
-    // 启用端点检测（内置 VAD）：rule1 短静音即结束（约 0.8s 停顿当作说完）。
+    // modified_beam_search 比 greedy_search 不易出重复字（transducer 贪心解码常重复 token，
+    // 真机实测 greedy 出"今天天是个星期几几几月月几号"这种重复，换 beam search 缓解）
+    config.decoding_method = Some("modified_beam_search".to_string());
+    config.max_active_paths = 4;
+    config.blank_penalty = ASR_BLANK_PENALTY;
+    // 端点检测配置。实测 sherpa-onnx 的 rule3（最短话语）在纯静音上不一定堵得住空 endpoint，
+    // 但 rule1（尾静音）0.8s 在用户"听到预告再说话"的前提下够用（无长静音期就不会误触发）。
+    // 真正解决"启动前说完话"靠前端录音预告（点麦克风->播提示->再开始喂 ASR），不靠调 rule。
     config.enable_endpoint = true;
     config.rule1_min_trailing_silence = 0.8;
     config.rule2_min_trailing_silence = 1.0;
@@ -604,8 +685,9 @@ fn record_single_utterance(
     rx: &mpsc::Receiver<Vec<f32>>,
     listening: Arc<AtomicBool>,
 ) -> Result<(), String> {
-    // 排空唤醒词尾音：非阻塞收掉 channel 里积压的几帧（最多 50 帧，约 0.5~1s 积压上限）
-    for _ in 0..50 {
+    // 排空唤醒词尾音 + 同步 TTS"主人我在"期间积压的音频：非阻塞收掉 channel 积压
+    // （最多 200 帧，约 2~4s 上限，足够排掉 ~1s 的 TTS 声，避免被当用户输入转写）
+    for _ in 0..200 {
         match rx.try_recv() {
             Ok(_) => {}
             Err(_) => break,
@@ -613,38 +695,70 @@ fn record_single_utterance(
     }
 
     let stream = asr.recognizer.create_stream();
-    let deadline = Instant::now() + ASR_UTTERANCE_TIMEOUT;
+    let mut deadline = Instant::now() + ASR_UTTERANCE_TIMEOUT;
+
+    // VAD 状态机（同 transcribe_once）：等开口 -> 说话 -> 静音 N 秒结束。不依赖 endpoint。
+    const VOICE_RMS: f32 = 0.012;
+    const SILENCE_END: Duration = Duration::from_millis(1200);
+    let mut speaking = false;
+    let mut last_voice = Instant::now();
 
     loop {
         if !listening.load(Ordering::SeqCst) {
-            // 退出信号：停掉当前 ASR，不再 emit，直接回 KWS 循环（外层会检测 listening 退出）
+            // 退出信号：停掉当前 ASR，不再 emit，直接回 KWS 循环
             break;
         }
-        // 超时优先于收样判断，避免 timeout 后还多收一轮
         let now = Instant::now();
-        if now >= deadline && !asr.recognizer.is_ready(&stream) {
+        if now >= deadline {
             break;
         }
         let remain = deadline.saturating_duration_since(now);
         let wait = remain.min(Duration::from_millis(200));
         match rx.recv_timeout(wait) {
             Ok(samples) => {
-                // 重采样到 16k 再喂 ASR；flush=false（不是最后一块，流式持续）
+                let rms = (samples.iter().map(|s| s * s).sum::<f32>()
+                    / samples.len().max(1) as f32)
+                    .sqrt();
                 let resampled = asr.resampler.resample(&samples, false);
+
+                if !speaking {
+                    // 等用户开口：静音期不喂 ASR
+                    if rms >= VOICE_RMS {
+                        speaking = true;
+                        last_voice = now;
+                        // 用户开口了，重置超时--给足时间把话说完
+                        deadline = now + ASR_UTTERANCE_TIMEOUT;
+                        eprintln!("[voice/唤醒ASR] 检测到开口 RMS={:.4}", rms);
+                    } else {
+                        continue;
+                    }
+                }
+
                 stream.accept_waveform(16000, &resampled);
                 while asr.recognizer.is_ready(&stream) {
                     asr.recognizer.decode(&stream);
                 }
-                if asr.recognizer.is_endpoint(&stream) {
-                    if let Some(result) = asr.recognizer.get_result(&stream) {
-                        let text = result.text.trim().to_string();
-                        if !text.is_empty() {
-                            let _ = app.emit("voice://transcript", &text);
-                        }
+
+                if rms >= VOICE_RMS {
+                    last_voice = now;
+                    // 说话中持续刷新超时，保证长句不被截断；说完后靠 SILENCE_END 终止
+                    deadline = now + ASR_UTTERANCE_TIMEOUT;
+                } else if now.duration_since(last_voice) >= SILENCE_END {
+                    // 说完。刷新模型拿稳定最终结果（不取中间假设，避免重复字）
+                    stream.input_finished();
+                    while asr.recognizer.is_ready(&stream) {
+                        asr.recognizer.decode(&stream);
                     }
-                    asr.recognizer.reset(&stream);
-                    asr.resampler.reset();
-                    break; // 一句结束，回 KWS 等下次唤醒
+                    let text = asr
+                        .recognizer
+                        .get_result(&stream)
+                        .map(|r| r.text.trim().to_string())
+                        .unwrap_or_default();
+                    eprintln!("[voice/唤醒ASR] 说完，结果：{text:?}");
+                    if !text.is_empty() {
+                        let _ = app.emit("voice://transcript", &text);
+                    }
+                    break;
                 }
             }
             Err(mpsc::RecvTimeoutError::Timeout) => continue,
@@ -661,12 +775,10 @@ fn record_single_utterance(
 fn to_mono_f32<T: Copy>(data: &[T], channels: usize, conv: impl Fn(T) -> f32) -> Vec<f32> {
     if data.is_empty() || channels == 0 {
         return Vec::new();
-    }    data.chunks(channels)
+    }
+    data.chunks(channels)
         .map(|frame| {
-            let sum: f32 = frame
-                .iter()
-                .map(|&s| conv(s))
-                .sum();
+            let sum: f32 = frame.iter().map(|&s| conv(s)).sum();
             sum / channels as f32
         })
         .collect()
@@ -716,41 +828,64 @@ pub fn voice_validate_keyword(app: AppHandle, phrase: String) -> Result<String, 
 }
 
 /// 按需录一轮语音转写（AI 面板麦克风按钮用）：不依赖常驻监听，开一个独立 cpal 输入流
-/// 喂 ASR，endpoint 命中或超时即结束，**返回转写文本**（不 emit 事件，前端 await 拿到后
-/// 填进输入框，不自动发送，用户可改可发）。ASR 模型未就绪时报错引导下载。
-///
-/// 用同步命令 + std::thread 是因为 cpal::Stream 必须在创建它的线程存活期间采集，
-/// Tauri 命令线程不能阻塞跑这个循环（会占住 async runtime）。所以 spawn 独立线程跑
-/// 录音+转写，主线程等 channel 拿结果返回。
+/// 喂 ASR，endpoint 命中或超时即结束，**返回转写文本**（不走 voice://transcript，前端 await
+/// 拿到后填进输入框，不自动发送）。阻塞的 cpal/ASR 工作放到 spawn_blocking，async command
+/// 及时让出 Tauri runtime，使录音期间的 voice://listening 事件能够送达 WebView。
 #[tauri::command]
-pub fn voice_record_utterance(app: AppHandle) -> Result<String, String> {
+pub async fn voice_record_utterance(
+    app: AppHandle,
+    state: tauri::State<'_, VoiceState>,
+) -> Result<String, String> {
     if !is_model_ready(&app, &ModelKind::Asr) {
         return Err("语音问答模型尚未下载，请先在设置里下载语音问答模型".to_string());
     }
+    let manual_recording = state.manual_recording.clone();
+    tokio::task::spawn_blocking(move || record_utterance_blocking(app, manual_recording))
+        .await
+        .map_err(|error| format!("录音任务异常退出：{error}"))?
+}
+
+fn record_utterance_blocking(
+    app: AppHandle,
+    manual_recording: Arc<AtomicBool>,
+) -> Result<String, String> {
+    let app_for_stop = app.clone();
+    let _guard = RecordingGuard::new(manual_recording, move || {
+        let _ = app_for_stop.emit("voice://listening", false);
+        eprintln!("[voice] 已 emit voice://listening=false，按需录音结束");
+    });
+
+    let com_initialized = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
+    struct ComGuard(bool);
+    impl Drop for ComGuard {
+        fn drop(&mut self) {
+            if self.0 {
+                unsafe { CoUninitialize() };
+            }
+        }
+    }
+    let _com = ComGuard(com_initialized);
 
     let host = cpal::default_host();
-    let device = host
-        .default_input_device()
-        .ok_or("未找到麦克风设备")?;
+    let device = host.default_input_device().ok_or("未找到麦克风设备")?;
     let supported = device
         .default_input_config()
-        .map_err(|e| format!("读取麦克风配置失败：{e}"))?;
+        .map_err(|error| format!("读取麦克风配置失败：{error}"))?;
     let sample_format = supported.sample_format();
     let stream_config = supported.config();
     let channels = stream_config.channels as usize;
     let sample_rate = stream_config.sample_rate as i32;
 
-    let asr = build_asr_if_ready(&app, sample_rate)?
-        .ok_or("ASR 模型未就绪")?;
+    let asr = build_asr_if_ready(&app, sample_rate)?.ok_or("ASR 模型未就绪")?;
 
     let (tx, rx) = mpsc::channel::<Vec<f32>>();
-    let err_fn = |e| eprintln!("[voice] 按需录音流错误：{e:?}");
+    let err_fn = |error| eprintln!("[voice] 按需录音流错误：{error:?}");
 
     let cpal_stream = match sample_format {
         cpal::SampleFormat::F32 => device.build_input_stream(
             stream_config.clone(),
             move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                let _ = tx.send(to_mono_f32(data, channels, |s| s));
+                let _ = tx.send(to_mono_f32(data, channels, |sample| sample));
             },
             err_fn,
             None,
@@ -758,7 +893,9 @@ pub fn voice_record_utterance(app: AppHandle) -> Result<String, String> {
         cpal::SampleFormat::I16 => device.build_input_stream(
             stream_config.clone(),
             move |data: &[i16], _: &cpal::InputCallbackInfo| {
-                let _ = tx.send(to_mono_f32(data, channels, |s| s as f32 / i16::MAX as f32));
+                let _ = tx.send(to_mono_f32(data, channels, |sample| {
+                    sample as f32 / i16::MAX as f32
+                }));
             },
             err_fn,
             None,
@@ -766,61 +903,108 @@ pub fn voice_record_utterance(app: AppHandle) -> Result<String, String> {
         cpal::SampleFormat::U16 => device.build_input_stream(
             stream_config.clone(),
             move |data: &[u16], _: &cpal::InputCallbackInfo| {
-                let _ = tx.send(to_mono_f32(data, channels, |s| (s as f32 - 32768.0) / 32768.0));
+                let _ = tx.send(to_mono_f32(data, channels, |sample| {
+                    (sample as f32 / u16::MAX as f32) * 2.0 - 1.0
+                }));
             },
             err_fn,
             None,
         ),
         other => return Err(format!("不支持的麦克风采样格式：{other:?}")),
     }
-    .map_err(|e| format!("创建音频输入流失败：{e}"))?;
+    .map_err(|error| format!("创建音频输入流失败：{error}"))?;
 
     cpal_stream
         .play()
-        .map_err(|e| format!("启动麦克风采集失败：{e}"))?;
+        .map_err(|error| format!("启动麦克风采集失败：{error}"))?;
+    app.emit("voice://listening", true)
+        .map_err(|error| format!("发送正在聆听状态失败：{error}"))?;
+    eprintln!("[voice] 已 emit voice://listening=true");
 
-    // spawn 录音+转写线程；cpal_stream 必须 move 进线程并 Drop 时才停采集
-    let (result_tx, result_rx) = mpsc::channel::<Result<String, String>>();
-    let asr = std::sync::Arc::new(asr);
-    let asr_clone = asr.clone();
-    std::thread::spawn(move || {
-        let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
-        let result = transcribe_once(&asr_clone, &rx);
-        unsafe { CoUninitialize() };
-        drop(cpal_stream); // 显式停采集（线程结束也会 Drop，这里清楚一些）
-        let _ = result_tx.send(result);
-    });
-
-    result_rx
-        .recv()
-        .map_err(|_| "录音线程异常退出".to_string())?
+    let result = transcribe_once(&asr, &rx);
+    eprintln!("[voice] 按需转写结果：{result:?}");
+    result
 }
 
-/// 按需单轮转写：建 ASR stream，喂重采样 PCM，endpoint 或超时结束，返回转写文本。
-/// 跟常驻循环里的 record_single_utterance 区别：无 listening 标志、不 emit 事件、返回文本。
+/// 按需单轮转写：建 ASR stream，喂重采样 PCM，自己用 RMS 做 VAD 门控 + 说完判定，
+/// 返回转写文本。不依赖 sherpa-onnx 的 endpoint 自动检测（实测 rule3 在纯静音上堵不住空
+/// endpoint，且 rule 行为黑盒；自己 VAD 可控：静音期不喂 ASR->不触发空 endpoint；说话
+/// 结束后静音 N 秒判定说完）。
 fn transcribe_once(asr: &AsrRecognizer, rx: &mpsc::Receiver<Vec<f32>>) -> Result<String, String> {
     let stream = asr.recognizer.create_stream();
-    let deadline = Instant::now() + ASR_UTTERANCE_TIMEOUT;
+    let mut deadline = Instant::now() + ASR_UTTERANCE_TIMEOUT;
+    let mut sample_count = 0u64;
+    let mut decoded_steps = 0u64;
+
+    // VAD 状态机：Waiting（等用户开口）-> Speaking（在说）-> 说完静音 N 秒结束
+    const VOICE_RMS: f32 = 0.012; // 超过这个算有人说话（实测静音~0.0015，说话~0.02+）
+    const SILENCE_END: Duration = Duration::from_millis(1200); // 说完后静音多久算结束
+    let mut speaking = false;
+    let mut last_voice = Instant::now();
+
     loop {
         let now = Instant::now();
-        if now >= deadline && !asr.recognizer.is_ready(&stream) {
+        if now >= deadline {
+            eprintln!("[voice] 按需转写超时（收到 {sample_count} 帧，解码 {decoded_steps} 步）");
             break;
         }
-        let wait = deadline.saturating_duration_since(now).min(Duration::from_millis(200));
+        let wait = deadline
+            .saturating_duration_since(now)
+            .min(Duration::from_millis(200));
         match rx.recv_timeout(wait) {
             Ok(samples) => {
+                sample_count += 1;
+                let rms = (samples.iter().map(|s| s * s).sum::<f32>()
+                    / samples.len().max(1) as f32)
+                    .sqrt();
+                if sample_count % 50 == 1 {
+                    eprintln!(
+                        "[voice] 帧#{sample_count} RMS={:.4} speaking={speaking}",
+                        rms
+                    );
+                }
                 let resampled = asr.resampler.resample(&samples, false);
+
+                if !speaking {
+                    // 等用户开口：静音期不喂 ASR（避免空 endpoint 干扰）
+                    if rms >= VOICE_RMS {
+                        speaking = true;
+                        last_voice = now;
+                        // 用户开口了，重置超时--给足时间把话说完，不算之前等待的时间
+                        deadline = now + ASR_UTTERANCE_TIMEOUT;
+                        eprintln!("[voice] 检测到开口，RMS={:.4}，开始喂 ASR", rms);
+                    } else {
+                        continue; // 静音，丢弃不喂
+                    }
+                }
+
+                // 已在说话：喂 ASR + 解码（不每帧取结果--中间假设未稳定，会有重复字）
                 stream.accept_waveform(16000, &resampled);
                 while asr.recognizer.is_ready(&stream) {
                     asr.recognizer.decode(&stream);
+                    decoded_steps += 1;
                 }
-                if asr.recognizer.is_endpoint(&stream) {
+
+                if rms >= VOICE_RMS {
+                    last_voice = now;
+                    // 说话中持续刷新超时，保证长句不被截断；说完后靠 SILENCE_END 终止
+                    deadline = now + ASR_UTTERANCE_TIMEOUT;
+                } else if now.duration_since(last_voice) >= SILENCE_END {
+                    // 说完后静音够久，判定结束。刷新模型拿稳定最终结果（不取中间假设）：
+                    // input_finished 通知流输入结束，把残余上下文 decode 完，再 get_result。
+                    stream.input_finished();
+                    while asr.recognizer.is_ready(&stream) {
+                        asr.recognizer.decode(&stream);
+                    }
                     let text = asr
                         .recognizer
                         .get_result(&stream)
                         .map(|r| r.text.trim().to_string())
                         .unwrap_or_default();
-                    asr.recognizer.reset(&stream);
+                    eprintln!(
+                        "[voice] 说完（静音 {}ms，{decoded_steps} 步），结果：{text:?}",
+                        now.duration_since(last_voice).as_millis()
+                    );
                     return Ok(text);
                 }
             }
@@ -828,5 +1012,57 @@ fn transcribe_once(asr: &AsrRecognizer, rx: &mpsc::Receiver<Vec<f32>>) -> Result
             Err(mpsc::RecvTimeoutError::Disconnected) => return Err("音频通道断开".to_string()),
         }
     }
-    Ok(String::new()) // 超时无 endpoint，返回空（前端不填）
+    Ok(String::new()) // 超时返回空
+}
+#[cfg(test)]
+mod tests {
+    use super::{RecordingGuard, ASR_BLANK_PENALTY};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    #[test]
+    fn asr_blank_penalty_keeps_blank_tokens_unpenalized() {
+        assert_eq!(ASR_BLANK_PENALTY, 0.0);
+    }
+
+    #[test]
+    fn recording_guard_resets_on_normal_and_error_return() {
+        for fail in [false, true] {
+            let manual = Arc::new(AtomicBool::new(false));
+            let stopped = Arc::new(AtomicUsize::new(0));
+            let result: Result<(), ()> = {
+                let stopped_for_drop = stopped.clone();
+                let _guard = RecordingGuard::new(manual.clone(), move || {
+                    stopped_for_drop.fetch_add(1, Ordering::SeqCst);
+                });
+                assert!(manual.load(Ordering::SeqCst));
+                if fail {
+                    Err(())
+                } else {
+                    Ok(())
+                }
+            };
+            assert_eq!(result.is_err(), fail);
+            assert!(!manual.load(Ordering::SeqCst));
+            assert_eq!(stopped.load(Ordering::SeqCst), 1);
+        }
+    }
+
+    #[test]
+    fn recording_guard_resets_during_unwind() {
+        let manual = Arc::new(AtomicBool::new(false));
+        let stopped = Arc::new(AtomicUsize::new(0));
+        let manual_for_panic = manual.clone();
+        let stopped_for_panic = stopped.clone();
+        assert!(std::panic::catch_unwind(move || {
+            let stopped_for_drop = stopped_for_panic.clone();
+            let _guard = RecordingGuard::new(manual_for_panic, move || {
+                stopped_for_drop.fetch_add(1, Ordering::SeqCst);
+            });
+            panic!("test unwind");
+        })
+        .is_err());
+        assert!(!manual.load(Ordering::SeqCst));
+        assert_eq!(stopped.load(Ordering::SeqCst), 1);
+    }
 }
