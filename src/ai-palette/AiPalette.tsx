@@ -1,19 +1,21 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { ChevronsUpDown, Check, Mic, Send, Trash2 } from "lucide-react";
+import { ChevronsUpDown, Check, Mic, Send, Square, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
+  aiCancel,
   aiChat,
   aiClearHistory,
   aiHistoryList,
   aiSwitchProvider,
   type Message,
+  type ProviderKind,
 } from "@/lib/ai";
 import { settingGet } from "@/lib/settings";
 import { Conversation } from "./Conversation";
 
-const PROVIDERS = [
+const PROVIDERS: ReadonlyArray<{ value: ProviderKind; label: string }> = [
   { value: "claude-cli", label: "Claude CLI" },
   { value: "codex-cli", label: "Codex CLI" },
   { value: "chat-api", label: "自定义 Chat API" },
@@ -23,13 +25,19 @@ const PROVIDERS = [
 function ProviderSelect({
   value,
   onChange,
+  disabled,
 }: {
-  value: string;
-  onChange: (v: string) => void;
+  value: ProviderKind;
+  onChange: (v: ProviderKind) => void;
+  disabled: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const current = PROVIDERS.find((p) => p.value === value);
+
+  useEffect(() => {
+    if (disabled) setOpen(false);
+  }, [disabled]);
 
   useEffect(() => {
     if (!open) return;
@@ -52,6 +60,7 @@ function ProviderSelect({
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
+        disabled={disabled}
         // 故意不带 data-tauri-drag-region：drag.js 会把 button 当 clickable 阻断拖动，正好让我们点开菜单
         className="flex items-center gap-1 rounded-full border border-border/40 bg-primary/10 px-2.5 py-0.5 text-[11px] font-medium text-primary outline-none transition-colors hover:bg-primary/20 focus-visible:ring-2 focus-visible:ring-ring/50"
         aria-haspopup="listbox"
@@ -73,6 +82,7 @@ function ProviderSelect({
                 type="button"
                 role="option"
                 aria-selected={active}
+                disabled={disabled}
                 onClick={() => {
                   onChange(p.value);
                   setOpen(false);
@@ -90,21 +100,63 @@ function ProviderSelect({
   );
 }
 
+type RequestPhase = "idle" | "running" | "cancelling";
+type AssistantStatus = "pending" | "completed" | "cancelled" | "error";
+
+interface UiMessage extends Message {
+  id: string;
+  requestId?: string;
+  status?: AssistantStatus;
+}
+
+interface ActiveRequest {
+  requestId: string;
+  assistantMessageId: string;
+}
+
+const newId = () => crypto.randomUUID();
+const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
+
 /** AI 命令面板：Alt+Space / 托盘唤起；仅 ESC 隐藏（不做失焦隐藏，避免拖动/点击顶部条时被误判失焦而关闭）；回车发送；可拖动并记忆位置（后端持久化 ai:position） */
 export default function AiPalette() {
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [messages, setMessages] = useState<UiMessage[]>([]);
   const [input, setInput] = useState("");
-  const [loading, setLoading] = useState(false);
+  const [phase, setPhase] = useState<RequestPhase>("idle");
+  const [providerSwitching, setProviderSwitching] = useState(true);
   const [recording, setRecording] = useState(false);
-  const [provider, setProvider] = useState("claude-cli");
+  const [provider, setProvider] = useState<ProviderKind>("claude-cli");
+  const activeRequestRef = useRef<ActiveRequest | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const busy = phase !== "idle" || providerSwitching;
 
-  // 加载历史 + 当前 provider
+  // 加载历史 + 当前 provider；初始化完成前禁用发送，避免默认标签与持久化 provider 不一致。
   useEffect(() => {
-    void aiHistoryList().then(setMessages);
-    void settingGet("ai:provider").then((p) => {
-      if (p === "claude-cli" || p === "codex-cli" || p === "chat-api") setProvider(p);
-    });
+    let disposed = false;
+    void Promise.all([aiHistoryList(), settingGet("ai:provider")])
+      .then(([history, persisted]) => {
+        if (disposed) return;
+        setMessages(history.map((message) => ({
+          ...message,
+          id: newId(),
+          status: "completed",
+        })));
+        if (persisted === "claude-cli" || persisted === "codex-cli" || persisted === "chat-api") {
+          setProvider(persisted);
+        }
+      })
+      .catch((error) => {
+        if (disposed) return;
+        setMessages((current) => [
+          ...current,
+          { id: newId(), role: "assistant", content: `初始化 AI 面板失败：${errorText(error)}`, status: "error" },
+        ]);
+      })
+      .finally(() => {
+        if (!disposed) setProviderSwitching(false);
+      });
+    return () => {
+      disposed = true;
+    };
   }, []);
 
   // provider 切换即时更新标签
@@ -136,42 +188,119 @@ export default function AiPalette() {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
   }, [messages]);
 
+  const updateAssistant = (id: string, patch: Partial<UiMessage>) => {
+    setMessages((current) => current.map((message) => (
+      message.id === id ? { ...message, ...patch } : message
+    )));
+  };
+
   const send = async (textOverride?: string) => {
     const text = (textOverride ?? input).trim();
-    if (!text || loading) return;
+    if (!text || phase !== "idle" || providerSwitching || activeRequestRef.current) return;
+
+    const requestId = newId();
+    const userMessageId = newId();
+    const assistantMessageId = newId();
+    const requestProvider = provider;
+    const completedRequestIds = new Set(messages
+      .filter((message) => message.role === "assistant" && message.status === "completed" && message.requestId)
+      .map((message) => message.requestId));
+    const history = messages
+      .filter((message) => !message.requestId || completedRequestIds.has(message.requestId))
+      .map(({ role, content }) => ({ role, content }));
+
+    activeRequestRef.current = { requestId, assistantMessageId };
     setInput("");
-    const history = messages.map((m) => ({ role: m.role, content: m.content }));
-    // 乐观追加 user + 占位 assistant
-    setMessages((m) => [
-      ...m,
-      { role: "user", content: text },
-      { role: "assistant", content: "…" },
+    setMessages((current) => [
+      ...current,
+      { id: userMessageId, requestId, role: "user", content: text },
+      { id: assistantMessageId, requestId, role: "assistant", content: "…", status: "pending" },
     ]);
-    setLoading(true);
+    setPhase("running");
+
     try {
-      const res = await aiChat(text, history);
-      setMessages((m) => {
-        const next = [...m];
-        next[next.length - 1] = {
-          role: "assistant",
-          content: res.reply,
-          action: res.action ?? undefined,
-        };
-        return next;
+      const response = await aiChat(requestId, requestProvider, text, history);
+      if (activeRequestRef.current?.requestId !== requestId) return;
+      if (response.providerUsed !== requestProvider) {
+        throw new Error(`Provider 响应不一致：请求=${requestProvider}，实际=${response.providerUsed}`);
+      }
+      updateAssistant(assistantMessageId, {
+        content: response.reply,
+        action: response.action ?? undefined,
+        status: "completed",
       });
-    } catch (e) {
-      setMessages((m) => {
-        const next = [...m];
-        next[next.length - 1] = { role: "assistant", content: `错误：${e}` };
-        return next;
+    } catch (error) {
+      if (activeRequestRef.current?.requestId !== requestId) return;
+      updateAssistant(assistantMessageId, {
+        content: `错误：${errorText(error)}`,
+        status: "error",
       });
     } finally {
-      setLoading(false);
+      if (activeRequestRef.current?.requestId === requestId) {
+        activeRequestRef.current = null;
+        setPhase("idle");
+      }
+    }
+  };
+
+  const cancelCurrent = async () => {
+    const active = activeRequestRef.current;
+    if (!active || phase !== "running") return;
+    setPhase("cancelling");
+    try {
+      const status = await aiCancel(active.requestId);
+      if (activeRequestRef.current?.requestId !== active.requestId) return;
+      if (status === "cancelled") {
+        updateAssistant(active.assistantMessageId, { content: "已终止", status: "cancelled" });
+        activeRequestRef.current = null;
+        setPhase("idle");
+        return;
+      }
+      if (status === "already_finished") {
+        setPhase("running");
+        return;
+      }
+      updateAssistant(active.assistantMessageId, {
+        content: "终止失败：后端当前请求与界面不一致",
+        status: "error",
+      });
+      setPhase("running");
+    } catch (error) {
+      if (activeRequestRef.current?.requestId === active.requestId) {
+        updateAssistant(active.assistantMessageId, {
+          content: `终止失败：${errorText(error)}`,
+          status: "error",
+        });
+        setPhase("running");
+      }
+    }
+  };
+
+  const switchProvider = async (next: ProviderKind) => {
+    if (next === provider || phase !== "idle" || providerSwitching) return;
+    const previous = provider;
+    setProvider(next);
+    setProviderSwitching(true);
+    try {
+      await aiSwitchProvider(next);
+    } catch (error) {
+      setProvider(previous);
+      setMessages((current) => [
+        ...current,
+        {
+          id: newId(),
+          role: "assistant",
+          content: `Provider 切换失败：${errorText(error)}`,
+          status: "error",
+        },
+      ]);
+    } finally {
+      setProviderSwitching(false);
     }
   };
 
   // 语音转写（M9 ASR）：唤醒后说话，后端 emit voice://transcript，自动填进输入框并发送。
-  // 用 ref 持最新 send 引用，监听器只注册一次，不随 input/messages/loading 变化反复重建
+  // 用 ref 持最新 send 引用，监听器只注册一次，不随输入、消息或请求阶段变化反复重建
   // （反复重建会漏掉中途到达的事件 + 重复绑定）。
   const sendRef = useRef(send);
   useEffect(() => {
@@ -182,6 +311,7 @@ export default function AiPalette() {
     listen<string>("voice://transcript", (e) => {
       const text = e.payload?.trim();
       if (!text) return;
+      setListening(false);
       void sendRef.current(text);
     }).then((fn) => {
       un = fn;
@@ -189,24 +319,67 @@ export default function AiPalette() {
     return () => un?.();
   }, []);
 
+  // 后端 true/false 是实际录音生命周期的权威状态；8 秒 timer 只防止异常漏发 false。
+  const [listening, setListening] = useState(false);
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    void listen<boolean>("voice://listening", (event) => {
+      if (disposed) return;
+      console.log("[ai-palette] 收到 voice://listening", event.payload);
+      if (timer) {
+        clearTimeout(timer);
+        timer = undefined;
+      }
+      setListening(event.payload);
+      if (event.payload) {
+        timer = setTimeout(() => {
+          timer = undefined;
+          setListening(false);
+        }, 8000);
+      }
+    }).then((fn) => {
+      if (disposed) fn();
+      else unlisten = fn;
+    }).catch((error) => {
+      console.error("[ai-palette] 监听 voice://listening 失败", error);
+    });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+      if (timer) clearTimeout(timer);
+    };
+  }, []);
+
   const clear = async () => {
-    await aiClearHistory();
-    setMessages([]);
+    if (busy) return;
+    try {
+      await aiClearHistory();
+      setMessages([]);
+    } catch (error) {
+      setMessages((current) => [
+        ...current,
+        { id: newId(), role: "assistant", content: `清空历史失败：${errorText(error)}`, status: "error" },
+      ]);
+    }
   };
 
   // 语音输入（麦克风按钮）：录一轮 ASR 转写，文本追加进输入框（不自动发，用户可改可发）。
   // 不走 voice://transcript 事件路径（那是唤醒后自动发送），这里 await 拿返回值，两路径分离。
   const recordVoice = async () => {
-    if (recording) return;
+    if (recording || busy) return;
     setRecording(true);
     try {
       const text = await invoke<string>("voice_record_utterance");
       const t = text.trim();
       if (t) setInput((prev) => (prev ? prev + " " + t : t));
     } catch (e) {
-      setMessages((m) => [
-        ...m,
-        { role: "assistant", content: `语音输入失败：${e}` },
+      setMessages((current) => [
+        ...current,
+        { id: newId(), role: "assistant", content: `语音输入失败：${errorText(e)}`, status: "error" },
       ]);
     } finally {
       setRecording(false);
@@ -214,7 +387,17 @@ export default function AiPalette() {
   };
 
   return (
-    <div className="flex h-screen w-screen flex-col rounded-2xl border border-border/60 bg-card/90 shadow-2xl backdrop-blur-xl">
+    <div className="relative flex h-screen w-screen flex-col rounded-2xl border border-border/60 bg-card/90 shadow-2xl backdrop-blur-xl">
+      {/* "正在聆听…"浮层：后端录音时 emit voice://listening 触发，自动消失 */}
+      {listening && (
+        <div className="pointer-events-none absolute left-1/2 top-12 z-50 flex -translate-x-1/2 items-center gap-1.5 rounded-full bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground shadow-lg">
+          <span className="relative flex h-2 w-2">
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary-foreground/60" />
+            <span className="relative inline-flex h-2 w-2 rounded-full bg-primary-foreground" />
+          </span>
+          正在聆听…
+        </div>
+      )}
       {/* 顶部条：deep 拖动区——点空白处或文字均可拖动窗口；除按钮/输入等 clickable 元素（drag.js 自动屏蔽） */}
       <div
         data-tauri-drag-region="deep"
@@ -223,16 +406,15 @@ export default function AiPalette() {
         <span className="text-sm font-semibold">AI 助手</span>
         <ProviderSelect
           value={provider}
-          onChange={(v) => {
-            setProvider(v);
-            void aiSwitchProvider(v);
-          }}
+          onChange={(next) => void switchProvider(next)}
+          disabled={busy}
         />
         <Button
           variant="ghost"
           size="icon-xs"
           className="ml-auto"
           onClick={() => void clear()}
+          disabled={busy}
           aria-label="清空历史"
         >
           <Trash2 />
@@ -264,7 +446,7 @@ export default function AiPalette() {
             size="icon"
             variant="outline"
             onClick={() => void recordVoice()}
-            disabled={recording || loading}
+            disabled={recording || busy}
             aria-label="语音输入"
             title="语音输入（说完自动停，填进输入框，不自动发送）"
           >
@@ -272,11 +454,13 @@ export default function AiPalette() {
           </Button>
           <Button
             size="icon"
-            onClick={() => void send()}
-            disabled={loading || !input.trim()}
-            aria-label="发送"
+            variant={phase === "idle" ? "default" : "destructive"}
+            onClick={() => phase === "idle" ? void send() : void cancelCurrent()}
+            disabled={phase === "cancelling" || providerSwitching || (phase === "idle" && !input.trim())}
+            aria-label={phase === "idle" ? "发送" : phase === "cancelling" ? "正在终止" : "终止思考"}
+            title={phase === "idle" ? "发送" : "终止思考"}
           >
-            <Send />
+            {phase === "idle" ? <Send /> : <Square className={phase === "cancelling" ? "animate-pulse" : ""} />}
           </Button>
         </div>
       </div>

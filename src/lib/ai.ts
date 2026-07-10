@@ -15,15 +15,29 @@ export interface Message {
   action?: ActionExec;
 }
 
+export type ProviderKind = "claude-cli" | "codex-cli" | "chat-api";
+
+export type AiCancelStatus = "cancelled" | "already_finished" | "not_current";
+
 export interface AiResponse {
   reply: string;
   action: ActionExec | null;
+  providerUsed: ProviderKind;
 }
 
-export async function aiChat(message: string, history: Message[]): Promise<AiResponse> {
+export async function aiChat(
+  requestId: string,
+  provider: ProviderKind,
+  message: string,
+  history: Message[],
+): Promise<AiResponse> {
   // 后端 Message 只要 role/content，多余字段被 serde 忽略
   const slim = history.map((m) => ({ role: m.role, content: m.content }));
-  return invoke<AiResponse>("ai_chat", { message, history: slim });
+  return invoke<AiResponse>("ai_chat", { requestId, provider, message, history: slim });
+}
+
+export async function aiCancel(requestId: string): Promise<AiCancelStatus> {
+  return invoke<AiCancelStatus>("ai_cancel", { requestId });
 }
 
 export async function aiHistoryList(limit = 100): Promise<Message[]> {
@@ -35,7 +49,7 @@ export async function aiClearHistory(): Promise<void> {
   await invoke("ai_clear_history");
 }
 
-export async function aiSwitchProvider(provider: string): Promise<void> {
+export async function aiSwitchProvider(provider: ProviderKind): Promise<void> {
   await invoke("ai_switch_provider", { provider });
 }
 

@@ -4,10 +4,10 @@ import { Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Row, selectCls } from "./shared";
 import { cn } from "@/lib/utils";
-import { aiClearHistory, aiHistoryList, aiResetPosition, aiSwitchProvider, type Message } from "@/lib/ai";
+import { aiClearHistory, aiHistoryList, aiResetPosition, aiSwitchProvider, type Message, type ProviderKind } from "@/lib/ai";
 import { settingGet, settingSetEmit } from "@/lib/settings";
 
-const PROVIDERS = [
+const PROVIDERS: ReadonlyArray<{ value: ProviderKind; label: string }> = [
   { value: "claude-cli", label: "Claude CLI" },
   { value: "codex-cli", label: "Codex CLI" },
   { value: "chat-api", label: "自定义 Chat API" },
@@ -23,13 +23,15 @@ const THINKING = [
 export function AiHistoryPanel() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [query, setQuery] = useState("");
-  const [provider, setProvider] = useState("claude-cli");
+  const [provider, setProvider] = useState<ProviderKind>("claude-cli");
   const [thinking, setThinking] = useState("none");
   const [chatBaseUrl, setChatBaseUrl] = useState("");
   const [chatApiKey, setChatApiKey] = useState("");
   const [chatModel, setChatModel] = useState("");
   const [loading, setLoading] = useState(true);
   const [resetting, setResetting] = useState(false);
+  const [providerSwitching, setProviderSwitching] = useState(false);
+  const [providerError, setProviderError] = useState<string | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -62,6 +64,25 @@ export function AiHistoryPanel() {
     return () => un?.();
   }, []);
 
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listen<string>("ai://provider-changed", (event) => {
+      const next = event.payload;
+      if (!disposed && (next === "claude-cli" || next === "codex-cli" || next === "chat-api")) {
+        setProvider(next);
+        setProviderError(null);
+      }
+    }).then((fn) => {
+      if (disposed) fn();
+      else unlisten = fn;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
   const filtered = useMemo(() => {
     const q = query.trim();
     if (!q) return messages;
@@ -73,10 +94,20 @@ export function AiHistoryPanel() {
     setMessages([]);
   };
 
-  const changeProvider = async (v: string) => {
+  const changeProvider = async (v: ProviderKind) => {
+    if (v === provider || providerSwitching) return;
+    const previous = provider;
     setProvider(v);
-    await settingSetEmit("ai:provider", v);
-    await aiSwitchProvider(v);
+    setProviderSwitching(true);
+    setProviderError(null);
+    try {
+      await aiSwitchProvider(v);
+    } catch (error) {
+      setProvider(previous);
+      setProviderError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setProviderSwitching(false);
+    }
   };
   const changeThinking = async (v: string) => {
     setThinking(v);
@@ -109,7 +140,8 @@ export function AiHistoryPanel() {
         <select
           className={selectCls}
           value={provider}
-          onChange={(e) => void changeProvider(e.target.value)}
+          disabled={providerSwitching}
+          onChange={(e) => void changeProvider(e.target.value as ProviderKind)}
         >
           {PROVIDERS.map((o) => (
             <option key={o.value} value={o.value}>
@@ -117,6 +149,7 @@ export function AiHistoryPanel() {
             </option>
           ))}
         </select>
+        {providerError && <p className="mt-1 text-xs text-destructive">切换失败：{providerError}</p>}
       </Row>
       <Row label="思考强度" desc="仅 claude-cli 生效；none 不思考，high 最深（更慢）">
         <select

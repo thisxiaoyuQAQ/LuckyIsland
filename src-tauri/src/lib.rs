@@ -15,6 +15,10 @@ use tauri::{
 use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
+use ai::{
+    ai_cancel, ai_chat, ai_clear_history, ai_get_position, ai_history_list, ai_reset_position,
+    ai_save_position, ai_switch_provider, hide_ai_palette, open_ai_palette, runtime::AiRuntime,
+};
 use data::calendar::calendar_month;
 use data::stock::{
     poll_loop, stock_get, stock_kline, stock_search, stock_watchlist_add, stock_watchlist_list,
@@ -27,22 +31,17 @@ use data::weather::{
 };
 use notify::{notify_create, notify_get_token, notify_list, notify_mark_read};
 use settings::{setting_get, setting_set};
-use settings_window::{autostart_get, autostart_set, open_settings, setting_set_and_emit, settings_list};
-use ai::{
-    ai_chat, ai_clear_history, ai_get_position, ai_history_list, ai_reset_position,
-    ai_save_position, ai_switch_provider, hide_ai_palette, open_ai_palette,
+use settings_window::{
+    autostart_get, autostart_set, open_settings, setting_set_and_emit, settings_list,
 };
-use terminal::{term_create, term_kill, term_open_wt, term_resize, term_snapshot, term_write, TerminalRegistry};
+use terminal::{
+    term_create, term_kill, term_open_wt, term_resize, term_snapshot, term_write, TerminalRegistry,
+};
 use voice::{
     voice_asr_model_ready, voice_download_model, voice_model_ready, voice_record_utterance,
     voice_reload_keyword, voice_start_listening, voice_stop_listening, voice_validate_keyword,
     VoiceState,
 };
-
-use std::sync::atomic::AtomicBool;
-
-/// AI 思考中标志：ai_chat 期间 true，on_window_event 据此不隐藏 ai-palette
-pub static AI_LOADING: AtomicBool = AtomicBool::new(false);
 
 const WIN_W: f64 = 720.0;
 const COMPACT_H: f64 = 80.0;
@@ -132,7 +131,10 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         // 开机自启（M7 设置面板）
-        .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
+        .plugin(tauri_plugin_autostart::init(
+            MacosLauncher::LaunchAgent,
+            None,
+        ))
         // 设置窗口点关闭改为隐藏（保持单例，避免销毁后重建）
         // ai-palette 不做失焦自动隐藏：顶部拖动区域会触发焦点变化，失焦隐藏会导致点击标题栏即关闭。
         // AI 面板改为仅 ESC / 显式 hide 关闭，拖动位置由 hide_ai_palette 保存。
@@ -189,6 +191,7 @@ pub fn run() {
             autostart_set,
             autostart_get,
             ai_chat,
+            ai_cancel,
             ai_switch_provider,
             ai_history_list,
             ai_clear_history,
@@ -271,6 +274,7 @@ pub fn run() {
                 .user_agent("Mozilla/5.0 (compatible; LuckyIsland/0.1)")
                 .build()?;
             app.manage(http);
+            app.manage(AiRuntime::default());
 
             // 股票行情后台轮询：交易时段 5s / 非交易 30s，emit stock://tick
             tauri::async_runtime::spawn(poll_loop(app.handle().clone()));
@@ -278,9 +282,23 @@ pub fn run() {
             // 终端注册表（多 tab PTY 管理）
             app.manage(TerminalRegistry::new());
 
-            // 语音唤醒/问答状态（M8/M9，默认关闭，不自动 spawn 监听任务；
-            // 常驻监听循环由用户在设置里开启后调 voice_start_listening 触发，见后续任务）
+            // 语音唤醒/问答状态（M8/M9，默认关闭）。manage 后若 wake:enabled=true 则自动恢复监听
+            // （重启软件不用再进设置开关一次）。模型未下载/编码失败时静默忽略，不阻塞启动。
             app.manage(VoiceState::new());
+            {
+                let app_for_voice = app.handle().clone();
+                let db = app.state::<crate::storage::Db>();
+                let enabled = db
+                    .setting_get("wake:enabled")
+                    .map(|v| v == "true")
+                    .unwrap_or(false);
+                if enabled {
+                    let state = app.state::<VoiceState>();
+                    if let Err(e) = voice::start_listening_inner(&app_for_voice, state.inner()) {
+                        eprintln!("[voice] 启动自动恢复监听失败：{e}");
+                    }
+                }
+            }
 
             // 本地通知 HTTP server：127.0.0.1:9753/notify
             let notify_app = app.handle().clone();
