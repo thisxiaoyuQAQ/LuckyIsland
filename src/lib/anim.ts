@@ -5,8 +5,8 @@
 /** 岛级过渡时长（ms）：height morph / 页面切换 / 通知滑入统一用此值 */
 export const ISLAND_DURATION_MS = 260;
 
-/** motion 的 cubic-bezier 控制点（等价 CSS --island-ease） */
-export const ISLAND_EASE = [0.4, 0, 0.2, 1] as const;
+/** motion 的 cubic-bezier 控制点（等价 CSS --island-ease）；4 元组以匹配 motion BezierDefinition 类型 */
+export const ISLAND_EASE: [number, number, number, number] = [0.4, 0, 0.2, 1];
 
 /**
  * 收起时延迟缩窗的等待时长（ms）。

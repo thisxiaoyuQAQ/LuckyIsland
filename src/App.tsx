@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState, type FC } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FC } from "react";
+import { AnimatePresence, motion } from "motion/react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { ChevronDown, ChevronUp, Moon, Settings, Sun } from "lucide-react";
@@ -21,7 +22,7 @@ import {
   settingSetEmit,
   type PageId,
 } from "@/lib/settings";
-import { ISLAND_WINDOW_SHRINK_DELAY_MS } from "@/lib/anim";
+import { ISLAND_DURATION_MS, ISLAND_EASE, ISLAND_WINDOW_SHRINK_DELAY_MS } from "@/lib/anim";
 
 type Theme = "light" | "dark";
 type ThemeMode = Theme | "auto";
@@ -45,6 +46,13 @@ const ALL_PAGES: PageMeta[] = [
 
 const PAGE_BY_ID = Object.fromEntries(ALL_PAGES.map((p) => [p.id, p])) as Record<PageId, PageMeta>;
 
+/** 页面切换横向滑入/滑出变体；方向由 custom={direction} 决定（+1 新页从右滑入、-1 从左滑入） */
+const pageVariants = {
+  enter: (dir: number) => ({ x: dir > 0 ? "100%" : "-100%", opacity: 0 }),
+  center: { x: 0, opacity: 1 },
+  exit: (dir: number) => ({ x: dir > 0 ? "-100%" : "100%", opacity: 0 }),
+};
+
 function getSystemTheme(): Theme {
   if (typeof window === "undefined") return "light";
   return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
@@ -65,6 +73,8 @@ function App() {
   const [pageIndex, setPageIndex] = useState(0);
   const [pagesEnabled, setPagesEnabled] = useState(parsePagesEnabled(null));
   const [pagesOrder, setPagesOrder] = useState(parsePagesOrder(null));
+  const [direction, setDirection] = useState(1);
+  const prevIndexRef = useRef(0);
 
   const pages = useMemo(() => {
     const ordered = pagesOrder.map((id) => PAGE_BY_ID[id]).filter(Boolean);
@@ -91,7 +101,18 @@ function App() {
 
   const setPage = useCallback(
     (i: number) => {
-      setPageIndex((((i % pages.length) + pages.length) % pages.length));
+      const n = pages.length;
+      if (n === 0) return;
+      const next = (((i % n) + n) % n);
+      const prev = prevIndexRef.current;
+      if (next !== prev) {
+        // 取旋转最短方向：Alt+-> / 滚轮向下为 +1，Alt+<- 为 -1；跳转（Alt+数字）取较短旋转
+        const forward = (next - prev + n) % n;
+        const backward = (prev - next + n) % n;
+        setDirection(forward <= backward ? 1 : -1);
+        prevIndexRef.current = next;
+      }
+      setPageIndex(next);
     },
     [pages.length],
   );
@@ -133,7 +154,10 @@ function App() {
 
   // 页面列表变化后，当前 index 超界则回到第一个可见页。
   useEffect(() => {
-    if (pageIndex >= pages.length) setPageIndex(0);
+    if (pageIndex >= pages.length) {
+      setPageIndex(0);
+      prevIndexRef.current = 0;
+    }
   }, [pageIndex, pages.length]);
 
   // 主题：写入 data-theme。
@@ -255,8 +279,20 @@ function App() {
           )}
 
           {!expanded && (
-            <div className="ml-1">
-              <CurrentPage compact />
+            <div className="relative ml-1 overflow-hidden">
+              <AnimatePresence mode="popLayout" custom={direction} initial={false}>
+                <motion.div
+                  key={pageIndex}
+                  custom={direction}
+                  variants={pageVariants}
+                  initial="enter"
+                  animate="center"
+                  exit="exit"
+                  transition={{ duration: ISLAND_DURATION_MS / 1000, ease: ISLAND_EASE }}
+                >
+                  <CurrentPage compact />
+                </motion.div>
+              </AnimatePresence>
             </div>
           )}
 
@@ -299,8 +335,21 @@ function App() {
 
         {/* 展开内容 */}
         {expanded && (
-          <div className="flex-1 overflow-hidden px-2 pb-1">
-            <CurrentPage compact={false} />
+          <div className="relative flex-1 overflow-hidden px-2 pb-1">
+            <AnimatePresence mode="popLayout" custom={direction} initial={false}>
+              <motion.div
+                key={pageIndex}
+                custom={direction}
+                variants={pageVariants}
+                initial="enter"
+                animate="center"
+                exit="exit"
+                transition={{ duration: ISLAND_DURATION_MS / 1000, ease: ISLAND_EASE }}
+                className="h-full"
+              >
+                <CurrentPage compact={false} />
+              </motion.div>
+            </AnimatePresence>
           </div>
         )}
       </div>
