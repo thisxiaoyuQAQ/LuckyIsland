@@ -38,6 +38,7 @@ export function GeneralPanel() {
   const [autostart, setAutostart] = useState(false);
   const [defaultState, setDefaultState] = useState<IslandState>("compact");
   const [toast, setToast] = useState(true);
+  const [blur, setBlur] = useState(true);
   const [theme, setTheme] = useState<Theme>("auto");
   const [monitors, setMonitors] = useState<MonitorInfo[]>([]);
   const [monitorState, setMonitorState] = useState<MonitorSelectionState>({
@@ -64,17 +65,19 @@ export function GeneralPanel() {
           }
         });
 
-      const [auto, ds, t, th] = await Promise.all([
+      const [auto, ds, t, th, b] = await Promise.all([
         autostartGet().catch(() => false),
         settingGet(KEYS.defaultState),
         settingGet(KEYS.toast),
         settingGet(KEYS.theme),
+        settingGet(KEYS.blur),
       ]);
       if (disposed) return;
       setAutostart(auto);
       if (ds === "compact" || ds === "expanded" || ds === "hidden") setDefaultState(ds);
       setToast(parseBool(t, true));
       if (th === "light" || th === "dark" || th === "auto") setTheme(th);
+      setBlur(parseBool(b, true));
       await monitorLoad;
       if (!disposed) setLoading(false);
     })().catch((error) => {
@@ -107,6 +110,11 @@ export function GeneralPanel() {
   const toggleToast = async (v: boolean) => {
     setToast(v);
     await settingSetEmit(KEYS.toast, v ? "true" : "false");
+  };
+
+  const toggleBlur = async (v: boolean) => {
+    setBlur(v);
+    await settingSetEmit(KEYS.blur, v ? "true" : "false");
   };
 
   const changeTheme = async (v: Theme) => {
@@ -218,6 +226,10 @@ export function GeneralPanel() {
 
       <Row label="Windows 通知弹窗" desc="通知到达时是否弹出系统 toast">
         <Switch checked={toast} onCheckedChange={toggleToast} />
+      </Row>
+
+      <Row label="毛玻璃效果" desc="关闭后灵动岛改用实色背景，降低 GPU 开销（部分显卡驱动掉帧或卡顿时用）">
+        <Switch checked={blur} onCheckedChange={toggleBlur} />
       </Row>
 
       <Row label="主题模式" desc="亮色 / 暗色 / 跟随系统">

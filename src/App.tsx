@@ -16,6 +16,7 @@ import {
   KEYS,
   onSettingsChanged,
   openSettings,
+  parseBool,
   parsePagesEnabled,
   parsePagesOrder,
   settingGet,
@@ -70,6 +71,7 @@ function App() {
   const [themeMode, setThemeMode] = useState<ThemeMode>("auto");
   const [systemTheme, setSystemTheme] = useState<Theme>(getSystemTheme);
   const [islandState, setIslandState] = useState<IslandState>("compact");
+  const [blur, setBlur] = useState(true);
   const [pageIndex, setPageIndex] = useState(0);
   const [pagesEnabled, setPagesEnabled] = useState(parsePagesEnabled(null));
   const [pagesOrder, setPagesOrder] = useState(parsePagesOrder(null));
@@ -125,15 +127,17 @@ function App() {
   // settings KV 初始化：页面显隐/顺序、主题模式、启动默认态。
   useEffect(() => {
     (async () => {
-      const [enabledRaw, orderRaw, themeRaw, defaultStateRaw] = await Promise.all([
+      const [enabledRaw, orderRaw, themeRaw, defaultStateRaw, blurRaw] = await Promise.all([
         settingGet(KEYS.pagesEnabled),
         settingGet(KEYS.pagesOrder),
         settingGet(KEYS.theme),
         settingGet(KEYS.defaultState),
+        settingGet(KEYS.blur),
       ]);
       setPagesEnabled(parsePagesEnabled(enabledRaw));
       setPagesOrder(parsePagesOrder(orderRaw));
       setThemeMode(normalizeThemeMode(themeRaw) ?? "auto");
+      setBlur(parseBool(blurRaw, true));
       const initialState = normalizeIslandState(defaultStateRaw);
       if (initialState) setIslandState(initialState);
     })();
@@ -146,6 +150,7 @@ function App() {
       if (key === KEYS.pagesEnabled) setPagesEnabled(parsePagesEnabled(value));
       if (key === KEYS.pagesOrder) setPagesOrder(parsePagesOrder(value));
       if (key === KEYS.theme) setThemeMode(normalizeThemeMode(value) ?? "auto");
+      if (key === KEYS.blur) setBlur(parseBool(value, true));
     }).then((fn) => {
       un = fn;
     });
@@ -229,8 +234,9 @@ function App() {
     <div className="flex h-screen w-screen items-start justify-center pt-3">
       <motion.div
         className={cn(
-          "flex w-full max-w-[700px] flex-col rounded-2xl border border-border/60 bg-card/70 px-4 shadow-2xl backdrop-blur-xl transition-[height] duration-[var(--island-duration)] ease-[var(--island-ease)]",
+          "flex w-full max-w-[700px] flex-col rounded-2xl border border-border/60 px-4 shadow-2xl transition-[height] duration-[var(--island-duration)] ease-[var(--island-ease)]",
           expanded ? "h-[380px] py-3" : "h-14 py-0",
+          blur ? "bg-card/70 backdrop-blur-xl" : "bg-card",
         )}
         animate={{ opacity: islandState === "hidden" ? 0 : 1 }}
         transition={{ duration: ISLAND_DURATION_MS / 1000, ease: ISLAND_EASE }}

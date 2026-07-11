@@ -224,8 +224,9 @@ pub fn run() {
             let show_item = MenuItem::with_id(app, "show", "显示/隐藏", true, None::<&str>)?;
             let settings_item = MenuItem::with_id(app, "settings", "设置...", true, None::<&str>)?;
             let ai_item = MenuItem::with_id(app, "ai", "AI 助手", true, None::<&str>)?;
+            let restart_item = MenuItem::with_id(app, "restart", "重启", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show_item, &settings_item, &ai_item, &quit_item])?;
+            let menu = Menu::with_items(app, &[&show_item, &settings_item, &ai_item, &restart_item, &quit_item])?;
             TrayIconBuilder::new()
                 .icon(
                     app.default_window_icon()
@@ -240,6 +241,7 @@ pub fn run() {
                         let _ = open_settings(app.clone());
                     }
                     "ai" => toggle_ai_palette(app),
+                    "restart" => app.request_restart(),
                     "quit" => app.exit(0),
                     _ => {}
                 })
