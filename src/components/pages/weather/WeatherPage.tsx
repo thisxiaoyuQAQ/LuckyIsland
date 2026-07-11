@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import {
   Loader2, RefreshCw, AlertTriangle, MapPin, LocateFixed, Plus, X, Pin,
 } from "lucide-react";
@@ -146,6 +147,26 @@ export function WeatherPage({ compact }: { compact: boolean }) {
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // 07a 配置导入会全量覆盖天气城市表；导入完成后立即重读，避免当前页面保留旧城市。
+  useEffect(() => {
+    let un: (() => void) | undefined;
+    void listen("config://imported", () => {
+      void (async () => {
+        const list = await loadCities();
+        setCities(list);
+        const nextActive = list.includes(active) ? active : (list[0] ?? "");
+        const nextCompact = list.includes(compactCity) ? compactCity : (list[0] ?? "");
+        setActive(nextActive);
+        setCompactCity(nextCompact);
+        if (nextActive) await fetchWeather(nextActive);
+        if (nextCompact && nextCompact !== nextActive) void fetchWeather(nextCompact);
+      })();
+    }).then((fn) => {
+      un = fn;
+    });
+    return () => un?.();
+  }, [active, compactCity, fetchWeather, loadCities]);
 
   const switchCity = (c: string) => {
     if (c === active) return;

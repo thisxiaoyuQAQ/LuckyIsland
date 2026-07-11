@@ -32,12 +32,13 @@ use data::weather::{
 };
 use monitor::{
     monitor_get_selection, monitor_list, monitor_select, restore_island_monitor,
-    start_runtime_watch, ISLAND_WIDTH_LOGICAL,
+    start_runtime_watch, window_offset_apply, ISLAND_WIDTH_LOGICAL,
 };
 use notify::{notify_create, notify_get_token, notify_list, notify_mark_read};
 use settings::{setting_get, setting_set};
 use settings_window::{
-    autostart_get, autostart_set, open_settings, setting_set_and_emit, settings_list,
+    autostart_get, autostart_set, config_export, config_import, open_settings,
+    setting_set_and_emit, settings_list,
 };
 use terminal::{
     term_create, term_kill, term_open_wt, term_resize, term_snapshot, term_write, TerminalRegistry,
@@ -121,6 +122,7 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_dialog::init())
         // 开机自启（M7 设置面板）
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
@@ -157,6 +159,9 @@ pub fn run() {
             monitor_list,
             monitor_get_selection,
             monitor_select,
+            window_offset_apply,
+            config_export,
+            config_import,
             todo_list,
             todo_create,
             todo_update,

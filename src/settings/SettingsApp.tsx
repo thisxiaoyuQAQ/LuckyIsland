@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { AppearancePanel } from "./AppearancePanel";
 import { GeneralPanel } from "./GeneralPanel";
 import { PageManagerPanel } from "./PageManagerPanel";
 import { NotifyPanel } from "./NotifyPanel";
@@ -9,10 +10,11 @@ import { AiHistoryPanel } from "./AiHistoryPanel";
 import { VoicePanel } from "./VoicePanel";
 import { cn } from "@/lib/utils";
 
-type Tab = "general" | "pages" | "notify" | "terminal" | "weather" | "stock" | "ai" | "voice";
+type Tab = "general" | "appearance" | "pages" | "notify" | "terminal" | "weather" | "stock" | "ai" | "voice";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "general", label: "总体" },
+  { id: "appearance", label: "外观" },
   { id: "pages", label: "页面管理" },
   { id: "notify", label: "通知" },
   { id: "terminal", label: "终端" },
@@ -52,6 +54,8 @@ function SettingsApp() {
       <main className="flex-1 overflow-auto p-6">
         {tab === "general" ? (
           <GeneralPanel />
+        ) : tab === "appearance" ? (
+          <AppearancePanel />
         ) : tab === "pages" ? (
           <PageManagerPanel />
         ) : tab === "notify" ? (

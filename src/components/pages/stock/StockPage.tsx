@@ -30,11 +30,18 @@ export function StockPage({ compact }: { compact: boolean }) {
     void invoke<string | null>("setting_get", { key: COMPACT_KEY }).then((s) => {
       if (s) setCompactSymbol(s);
     });
-    let un: (() => void) | undefined;
-    listen<Quote[]>("stock://tick", (e) => setQuotes(e.payload)).then((fn) => {
-      un = fn;
+    const unlisteners: Array<() => void> = [];
+    void listen<Quote[]>("stock://tick", (e) => setQuotes(e.payload)).then((fn) => {
+      unlisteners.push(fn);
     });
-    return () => un?.();
+    // 07a 配置导入会全量覆盖自选股表；导入完成后立即重读，避免当前页面保留旧列表。
+    void listen("config://imported", () => {
+      setSelected(null);
+      void refresh();
+    }).then((fn) => {
+      unlisteners.push(fn);
+    });
+    return () => unlisteners.forEach((un) => un());
   }, [refresh]);
 
   // 红涨绿跌方向：读 settings + 监听即时生效

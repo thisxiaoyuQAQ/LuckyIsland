@@ -155,6 +155,166 @@ impl Db {
             .map_err(|e| e.to_string())?;
         Ok(())
     }
+
+    // ---- 07a 配置导入导出：读三表 / 全量覆盖三表 ----
+
+    /// settings 中可安全跨机迁移的用户配置。
+    /// 明确排除 notify:http_token、ai:chat_api_key、weather:last/stock:last 缓存、
+    /// ai:position 等机器或运行时数据，避免把密钥写进导出文件或导入时删掉本机 token。
+    fn is_portable_setting(key: &str) -> bool {
+        key.starts_with("pages:")
+            || key.starts_with("general:")
+            || key.starts_with("terminal:")
+            || key.starts_with("window:")
+            || key.starts_with("wake:")
+            || matches!(
+                key,
+                "notify:filter_sources"
+                    | "weather:refresh_min"
+                    | "weather:city"
+                    | "weather:compact_city"
+                    | "stock:red_up"
+                    | "ai:provider"
+                    | "ai:thinking"
+                    | "ai:claude_cli_path"
+                    | "ai:claude_cli_model"
+                    | "ai:codex_cli_path"
+                    | "ai:chat_api_base_url"
+                    | "ai:chat_api_model"
+            )
+    }
+
+    /// 可安全迁移的 settings → (key, value) 列表（配置导入导出用）。
+    pub fn settings_portable(&self) -> Result<Vec<(String, String)>, String> {
+        Ok(self
+            .settings_all()?
+            .into_iter()
+            .filter(|(key, _)| Self::is_portable_setting(key))
+            .collect())
+    }
+
+    /// settings 全表 → (key, value) 列表（仅用于内部比较/保留非迁移数据）。
+    pub fn settings_all(&self) -> Result<Vec<(String, String)>, String> {
+        let conn = self.0.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT key, value FROM settings")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(|e| e.to_string())?);
+        }
+        Ok(out)
+    }
+
+    /// 导出用：stock_watchlist 全表 → (symbol, sort, added_at)
+    pub fn watchlist_all(&self) -> Result<Vec<(String, i64, i64)>, String> {
+        let conn = self.0.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT symbol, sort, added_at FROM stock_watchlist ORDER BY sort ASC, added_at ASC")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(|e| e.to_string())?);
+        }
+        Ok(out)
+    }
+
+    /// 导出用：weather_cities 全表 → (city, sort, added_at)
+    pub fn weather_cities_all(&self) -> Result<Vec<(String, i64, i64)>, String> {
+        let conn = self.0.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT city, sort, added_at FROM weather_cities ORDER BY sort ASC, added_at ASC")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(|e| e.to_string())?);
+        }
+        Ok(out)
+    }
+
+    /// 导入用：在一个事务内覆盖「可迁移 settings」+ 全量覆盖 stock_watchlist/weather_cities。
+    /// 本机密钥、token、缓存等非迁移 settings 原样保留；迁移配置先删后写，任一步失败回滚整批。
+    pub fn config_replace_all(
+        &self,
+        settings: &[(String, String)],
+        watchlist: &[(String, i64, i64)],
+        cities: &[(String, i64, i64)],
+    ) -> Result<(), String> {
+        if settings
+            .iter()
+            .any(|(key, _)| !Self::is_portable_setting(key))
+        {
+            return Err("配置文件包含不允许导入的设置项".to_string());
+        }
+        let mut conn = self.0.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let existing_keys = {
+            let mut stmt = tx
+                .prepare("SELECT key FROM settings")
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(|e| e.to_string())?;
+            let mut keys = Vec::new();
+            for row in rows {
+                keys.push(row.map_err(|e| e.to_string())?);
+            }
+            keys
+        };
+        for key in existing_keys
+            .into_iter()
+            .filter(|key| Self::is_portable_setting(key))
+        {
+            tx.execute("DELETE FROM settings WHERE key=?1", params![key])
+                .map_err(|e| e.to_string())?;
+        }
+        tx.execute_batch("DELETE FROM stock_watchlist; DELETE FROM weather_cities;")
+            .map_err(|e| e.to_string())?;
+        for (k, v) in settings {
+            tx.execute(
+                "INSERT INTO settings (key, value) VALUES (?1, ?2)",
+                params![k, v],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        for (symbol, sort, added_at) in watchlist {
+            tx.execute(
+                "INSERT INTO stock_watchlist (symbol, sort, added_at) VALUES (?1, ?2, ?3)",
+                params![symbol, sort, added_at],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        for (city, sort, added_at) in cities {
+            tx.execute(
+                "INSERT INTO weather_cities (city, sort, added_at) VALUES (?1, ?2, ?3)",
+                params![city, sort, added_at],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(())
+    }
 }
 
 fn now_ts() -> i64 {

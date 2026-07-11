@@ -17,6 +17,12 @@ export const KEYS = {
   terminalFontSize: "terminal:font_size",
   terminalShortcuts: "terminal:shortcuts",
   windowMonitor: "window:monitor",
+  /** 07a 窗口外观：岛容器 CSS 背景透明度（0.10~1.00）。 */
+  windowOpacity: "window:opacity",
+  /** 07a 窗口外观：相对默认顶部居中位置的横向物理像素偏移。 */
+  windowOffsetX: "window:offset_x",
+  /** 07a 窗口外观：纵向物理像素偏移（负=上移，正=下移）。 */
+  windowOffsetY: "window:offset_y",
 } as const;
 
 /** 全部页面 id（与 App.tsx PAGES 对齐） */
@@ -38,6 +44,10 @@ export const DEFAULTS = {
   terminalShell: "default",
   terminalFontSize: "13",
   terminalShortcuts: "",
+  /** 07a 窗口外观默认值：透明度 0.7（对齐原 bg-card/70 视觉）、偏移 0/0（默认顶部居中）。 */
+  windowOpacity: "0.7",
+  windowOffsetX: "0",
+  windowOffsetY: "0",
 } as const;
 
 export interface MonitorPoint {
@@ -157,6 +167,20 @@ export function parseFontSize(v: string | null | undefined): number {
   return Math.min(n, 72);
 }
 
+/** 07a 岛容器背景透明度：0.1~1.0，无效回退 0.7（保持原 bg-card/70 视觉）。 */
+export function parseOpacity(v: string | null | undefined): number {
+  const n = v == null ? 0.7 : parseFloat(v);
+  if (Number.isNaN(n)) return 0.7;
+  return Math.min(1, Math.max(0.1, n));
+}
+
+/** 07a 偏移值（整数像素，可为负）：无效回退 0。 */
+export function parseOffset(v: string | null | undefined): number {
+  const n = v == null ? 0 : parseInt(v, 10);
+  if (Number.isNaN(n)) return 0;
+  return n;
+}
+
 /** 终端快捷命令 */
 export interface Shortcut {
   name: string;
@@ -228,6 +252,36 @@ export async function autostartSet(enabled: boolean): Promise<void> {
 /** 打开设置窗口（岛内按钮调用） */
 export async function openSettings(): Promise<void> {
   await invoke("open_settings");
+}
+
+/** 07a 实时应用偏移（不切屏）：写 window:offset_x/y + 让灵动岛窗口真正 set_position。
+ * 返回 clamp 后实际落盘的 (offsetX, offsetY)，UI 据此回显真实值（用户调超大值会被拉回屏内）。 */
+export async function windowOffsetApply(
+  offsetX: number,
+  offsetY: number,
+): Promise<[number, number]> {
+  return invoke<[number, number]>("window_offset_apply", {
+    offsetX,
+    offsetY,
+  });
+}
+
+/** 07a 配置导入结果摘要（与后端 ImportSummary 对齐，camelCase）。 */
+export interface ImportSummary {
+  settings: number;
+  watchlist: number;
+  cities: number;
+  needsOffsetApply: boolean;
+}
+
+/** 07a 导出配置到 path（exportedAt 由前端拼好传入）。 */
+export async function configExport(path: string, exportedAt: string): Promise<void> {
+  await invoke("config_export", { path, exportedAt });
+}
+
+/** 07a 从 path 导入配置（全量覆盖三表 + 广播 settings://changed）。 */
+export async function configImport(path: string): Promise<ImportSummary> {
+  return invoke<ImportSummary>("config_import", { path });
 }
 
 /** 监听 settings://changed，返回取消监听函数 */

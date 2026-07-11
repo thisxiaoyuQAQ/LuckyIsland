@@ -17,6 +17,7 @@ import {
   onSettingsChanged,
   openSettings,
   parseBool,
+  parseOpacity,
   parsePagesEnabled,
   parsePagesOrder,
   settingGet,
@@ -72,6 +73,7 @@ function App() {
   const [systemTheme, setSystemTheme] = useState<Theme>(getSystemTheme);
   const [islandState, setIslandState] = useState<IslandState>("compact");
   const [blur, setBlur] = useState(true);
+  const [opacity, setOpacity] = useState(0.7);
   const [pageIndex, setPageIndex] = useState(0);
   const [pagesEnabled, setPagesEnabled] = useState(parsePagesEnabled(null));
   const [pagesOrder, setPagesOrder] = useState(parsePagesOrder(null));
@@ -127,17 +129,20 @@ function App() {
   // settings KV 初始化：页面显隐/顺序、主题模式、启动默认态。
   useEffect(() => {
     (async () => {
-      const [enabledRaw, orderRaw, themeRaw, defaultStateRaw, blurRaw] = await Promise.all([
-        settingGet(KEYS.pagesEnabled),
-        settingGet(KEYS.pagesOrder),
-        settingGet(KEYS.theme),
-        settingGet(KEYS.defaultState),
-        settingGet(KEYS.blur),
-      ]);
+      const [enabledRaw, orderRaw, themeRaw, defaultStateRaw, blurRaw, opacityRaw] =
+        await Promise.all([
+          settingGet(KEYS.pagesEnabled),
+          settingGet(KEYS.pagesOrder),
+          settingGet(KEYS.theme),
+          settingGet(KEYS.defaultState),
+          settingGet(KEYS.blur),
+          settingGet(KEYS.windowOpacity),
+        ]);
       setPagesEnabled(parsePagesEnabled(enabledRaw));
       setPagesOrder(parsePagesOrder(orderRaw));
       setThemeMode(normalizeThemeMode(themeRaw) ?? "auto");
       setBlur(parseBool(blurRaw, true));
+      setOpacity(parseOpacity(opacityRaw));
       const initialState = normalizeIslandState(defaultStateRaw);
       if (initialState) setIslandState(initialState);
     })();
@@ -151,6 +156,7 @@ function App() {
       if (key === KEYS.pagesOrder) setPagesOrder(parsePagesOrder(value));
       if (key === KEYS.theme) setThemeMode(normalizeThemeMode(value) ?? "auto");
       if (key === KEYS.blur) setBlur(parseBool(value, true));
+      if (key === KEYS.windowOpacity) setOpacity(parseOpacity(value));
     }).then((fn) => {
       un = fn;
     });
@@ -236,8 +242,14 @@ function App() {
         className={cn(
           "flex w-full max-w-[700px] flex-col rounded-2xl border border-border/60 px-4 shadow-2xl transition-[height] duration-[var(--island-duration)] ease-[var(--island-ease)]",
           expanded ? "h-[380px] py-3" : "h-14 py-0",
-          blur ? "bg-card/70 backdrop-blur-xl" : "bg-card",
+          blur && "backdrop-blur-xl",
         )}
+        style={{
+          // 07a 窗口外观：背景透明度由 window:opacity 控制，不改窗口 transparent 标志、
+          // 不动 motion 的 opacity（那是 hidden 态淡出动画）。color-mix 在 oklch 通道上把
+          // var(--card) 与 transparent 混合，亮度/色度保留、只调 alpha，亮暗主题都生效。
+          backgroundColor: `color-mix(in oklch, var(--card) ${(opacity * 100).toFixed(0)}%, transparent)`,
+        }}
         animate={{ opacity: islandState === "hidden" ? 0 : 1 }}
         transition={{ duration: ISLAND_DURATION_MS / 1000, ease: ISLAND_EASE }}
       >
