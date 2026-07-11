@@ -553,10 +553,10 @@ fn run_listen_loop(
         .play()
         .map_err(|e| format!("启动麦克风采集失败：{e}"))?;
 
-    // cpal 设备采样率确定后、循环开始前懒建 ASR recognizer（若 ASR 模型已就绪）。
-    // 命中唤醒词后切进单轮录制，endpoint 命中即 emit voice://transcript。
-    // 重载 ASR 模型慢（几十~百 ms），建一次循环里反复用，不在唤醒时再建。
-    let asr = build_asr_if_ready(&app, sample_rate)?;
+    // ASR 改为唤醒命中时懒建（见下方 wake 处理），不在监听启动时预建常驻。
+    // 原预建方案让 ASR decoder（非 int8 全精度）整个监听会话常驻 ~260MB，
+    // 而它只在唤醒后 8s 录音窗口用到。这里只记就绪状态，唤醒时再并发建、录完即释。
+    let asr_ready = is_model_ready(&app, &ModelKind::Asr);
 
     // KWS 同样需要重采样：feat_config.sample_rate 默认 16000，cpal 设备多是 48000/44100，
     // 直传设备采样率会让模型按 3x 速度吃音频→音素全错→唤醒不了（M8 真机实测唤醒失败根因）。
@@ -586,6 +586,21 @@ fn run_listen_loop(
                             // 顺序（用户要求）：先呼出 AI 助手 UI，再播"主人我在"，再进录音
                             let _ = app.emit("voice://wake", &result.keyword);
                             let _ = open_ai_palette_from_voice(&app);
+                            // ASR 懒建：唤醒命中后才建，与"主人我在"TTS 并发跑（ASR 构建几十~百 ms，
+                            // 远短于 ~1s 的 TTS，TTS 播完 ASR 也就绪），录完即释，不常驻 ~260MB。
+                            // ASR 未就绪则不建、跳过录音（唤醒照常弹面板，用户手动打字）。
+                            // sherpa-onnx 底层走 COM，构建线程需自己 CoInitialize（OnlineRecognizer: Send）。
+                            let asr_build = if asr_ready {
+                                let app_for_build = app.clone();
+                                Some(std::thread::spawn(move || {
+                                    let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+                                    let r = build_asr_if_ready(&app_for_build, sample_rate);
+                                    unsafe { CoUninitialize() };
+                                    r
+                                }))
+                            } else {
+                                None
+                            };
                             // 同步播"主人我在"（阻塞监听线程直到播完），避免 TTS 声被后续 ASR 录进去
                             speak_wake_reply_sync(&app);
                             spotter.reset(&stream);
@@ -594,17 +609,33 @@ fn run_listen_loop(
                             // 命中唤醒到 ASR 录制期间继续排空音频通道，但此线程同步等 endpoint，
                             // 麦克风仍在采集、PCM 在 channel 里缓冲——record_single_utterance 会
                             // 先排空积压再开始喂 ASR，避免唤醒词自身尾音被当成问题录进去。
-                            if let Some(asr) = &asr {
+                            if let Some(handle) = asr_build {
                                 if !listening.load(Ordering::SeqCst) {
                                     break;
                                 }
                                 eprintln!("[voice] 唤醒路径进录音");
                                 // 通知前端弹"正在聆听…"提示（TTS 已播完，用户可以开口了）
                                 let _ = app.emit("voice://listening", true);
-                                if let Err(e) =
-                                    record_single_utterance(&app, asr, &rx, listening.clone())
-                                {
-                                    let _ = app.emit("voice://listen-error", e);
+                                match handle.join() {
+                                    Ok(Ok(Some(asr))) => {
+                                        if let Err(e) =
+                                            record_single_utterance(&app, &asr, &rx, listening.clone())
+                                        {
+                                            let _ = app.emit("voice://listen-error", e);
+                                        }
+                                    }
+                                    Ok(Ok(None)) => {
+                                        eprintln!("[voice] 唤醒后 ASR 未就绪，跳过录音");
+                                    }
+                                    Ok(Err(e)) => {
+                                        let _ = app.emit("voice://listen-error", e);
+                                    }
+                                    Err(_) => {
+                                        let _ = app.emit(
+                                            "voice://listen-error",
+                                            "ASR 构建线程异常".to_string(),
+                                        );
+                                    }
                                 }
                             }
                             // 唤醒处理完，break 出 while spotter.is_ready 循环，回到外层
