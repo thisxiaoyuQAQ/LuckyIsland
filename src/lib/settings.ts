@@ -15,6 +15,7 @@ export const KEYS = {
   terminalShell: "terminal:shell",
   terminalFontSize: "terminal:font_size",
   terminalShortcuts: "terminal:shortcuts",
+  windowMonitor: "window:monitor",
 } as const;
 
 /** 全部页面 id（与 App.tsx PAGES 对齐） */
@@ -36,6 +37,42 @@ export const DEFAULTS = {
   terminalFontSize: "13",
   terminalShortcuts: "",
 } as const;
+
+export interface MonitorPoint {
+  x: number;
+  y: number;
+}
+
+export interface MonitorSize {
+  width: number;
+  height: number;
+}
+
+export interface MonitorInfo {
+  id: string;
+  label: string;
+  isPrimary: boolean;
+  position: MonitorPoint;
+  size: MonitorSize;
+}
+
+export interface MonitorSelectionState {
+  selected: string;
+  resolved: string;
+  fallback: boolean;
+}
+
+export async function monitorList(): Promise<MonitorInfo[]> {
+  return invoke<MonitorInfo[]>("monitor_list");
+}
+
+export async function monitorGetSelection(): Promise<MonitorSelectionState> {
+  return invoke<MonitorSelectionState>("monitor_get_selection");
+}
+
+export async function monitorSelect(selection: string): Promise<MonitorSelectionState> {
+  return invoke<MonitorSelectionState>("monitor_select", { selection });
+}
 
 function isPageId(v: string): v is PageId {
   return (PAGE_IDS as readonly string[]).includes(v);
