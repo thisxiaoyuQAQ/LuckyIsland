@@ -294,7 +294,7 @@ pub fn restore_island_monitor(app: &AppHandle, db: &Db) -> Result<MonitorSelecti
 ///
 /// 选中「主显示器」时不做任何事——主屏若消失应用本身已无法正常显示。
 pub fn start_runtime_watch(app: AppHandle) {
-    tokio::spawn(async move {
+    tauri::async_runtime::spawn(async move {
         let mut fell_back = false;
         loop {
             tokio::time::sleep(RUNTIME_WATCH_INTERVAL).await;
