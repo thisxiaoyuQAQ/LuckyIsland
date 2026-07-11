@@ -21,6 +21,7 @@ import {
   settingSetEmit,
   type PageId,
 } from "@/lib/settings";
+import { ISLAND_WINDOW_SHRINK_DELAY_MS } from "@/lib/anim";
 
 type Theme = "light" | "dark";
 type ThemeMode = Theme | "auto";
@@ -82,7 +83,7 @@ function App() {
       // 避免窗口先变小、容器仍大被窗口方形边界裁剪出无圆角的方框
       window.setTimeout(() => {
         void invoke("set_island_state", { state: s });
-      }, 300);
+      }, ISLAND_WINDOW_SHRINK_DELAY_MS);
     } else {
       void invoke("set_island_state", { state: s });
     }
@@ -204,7 +205,7 @@ function App() {
     <div className="flex h-screen w-screen items-start justify-center pt-3">
       <div
         className={cn(
-          "flex w-full max-w-[700px] flex-col rounded-2xl border border-border/60 bg-card/70 px-4 shadow-2xl backdrop-blur-xl transition-[height] duration-300 ease-out",
+          "flex w-full max-w-[700px] flex-col rounded-2xl border border-border/60 bg-card/70 px-4 shadow-2xl backdrop-blur-xl transition-[height] duration-[var(--island-duration)] ease-[var(--island-ease)]",
           expanded ? "h-[380px] py-3" : "h-14 py-0",
         )}
       >

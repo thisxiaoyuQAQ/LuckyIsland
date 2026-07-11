@@ -6,6 +6,9 @@
 
 :root {
   --radius: 0.625rem;
+  /* 灵动岛动画统一时长与缓动（需求文档 §6.3：200–280ms，cubic-bezier(0.4,0,0.2,1)） */
+  --island-duration: 260ms;
+  --island-ease: cubic-bezier(0.4, 0, 0.2, 1);
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
   --card: oklch(1 0 0);
