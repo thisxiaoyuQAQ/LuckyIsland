@@ -1,5 +1,6 @@
 mod ai;
 mod data;
+mod monitor;
 mod notify;
 mod settings;
 mod settings_window;
