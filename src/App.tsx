@@ -227,11 +227,13 @@ function App() {
 
   return (
     <div className="flex h-screen w-screen items-start justify-center pt-3">
-      <div
+      <motion.div
         className={cn(
           "flex w-full max-w-[700px] flex-col rounded-2xl border border-border/60 bg-card/70 px-4 shadow-2xl backdrop-blur-xl transition-[height] duration-[var(--island-duration)] ease-[var(--island-ease)]",
           expanded ? "h-[380px] py-3" : "h-14 py-0",
         )}
+        animate={{ opacity: islandState === "hidden" ? 0 : 1 }}
+        transition={{ duration: ISLAND_DURATION_MS / 1000, ease: ISLAND_EASE }}
       >
         {/* 顶部条 */}
         <div data-tauri-drag-region className="flex h-14 shrink-0 items-center gap-3">
@@ -352,7 +354,7 @@ function App() {
             </AnimatePresence>
           </div>
         )}
-      </div>
+      </motion.div>
     </div>
   );
 }
