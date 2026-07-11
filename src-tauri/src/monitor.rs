@@ -319,20 +319,18 @@ pub fn restore_island_monitor(app: &AppHandle, db: &Db) -> Result<MonitorSelecti
 
 /// 运行时显示器变化监听：周期性检查已保存的具体显示器是否还在线。
 ///
-/// - 副屏断开：立即把灵动岛临时移到主屏（不改持久化选择），emit `monitor://changed`
+/// - 副屏断开：Windows 会把窗口移到 (-32000,-32000) 并缩到 160x28（最小化到屏外），
+///   `recover_island_to_monitor` 恢复尺寸并迁移到主屏；emit `monitor://changed`
 ///   携带 `fallback=true`，让设置页显示「当前不可用，暂用主显示器」。
-/// - 副屏恢复：不自动把窗口跳回副屏（用户要求需重启或手动重选），但 emit
-///   `fallback=false` 让设置页移除回退提示；同时复位 fell_back 标志，
-///   以便再次断开时能重新触发回退。
+/// - 副屏恢复：Windows 自动把窗口移回原屏（OS 行为，无需我们处理）；这里只复位
+///   `fell_back` 标志并 emit `fallback=false` 让设置页移除回退提示。
 ///
 /// 选中「主显示器」时不做任何事——主屏若消失应用本身已无法正常显示。
 pub fn start_runtime_watch(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let mut fell_back = false;
-        let mut tick = 0u32;
         loop {
             tokio::time::sleep(RUNTIME_WATCH_INTERVAL).await;
-            tick += 1;
             let Some(set) = capture_monitors(&app).ok() else {
                 continue;
             };
@@ -340,18 +338,6 @@ pub fn start_runtime_watch(app: AppHandle) {
                 let db = app.state::<Db>();
                 current_selection(db.inner())
             };
-            let (win_pos, win_vis) = app
-                .get_webview_window("island")
-                .map(|w| {
-                    let p = w.outer_position().map(|p| (p.x, p.y)).unwrap_or((0, 0));
-                    let v = w.is_visible().unwrap_or(false);
-                    (p, v)
-                })
-                .unwrap_or(((0, 0), false));
-            eprintln!(
-                "[monitor] tick={tick} saved={saved:?} available={:?} win_pos={win_pos:?} win_vis={win_vis} fell_back={fell_back}",
-                set.monitors.iter().map(|m| m.info.id.as_str()).collect::<Vec<_>>()
-            );
 
             // 选中主显示器：无需运行时回退，复位标志即可。
             if saved == PRIMARY_SELECTION {
