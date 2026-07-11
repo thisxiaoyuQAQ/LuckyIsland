@@ -1,6 +1,6 @@
 # BUG-20260710-02 修复：Provider 状态与实时问答
 
-> 状态：代码与自动化已完成，Codex 天气已验收；Provider 切换与取消真机验证待执行；纳入 2026-07-11 收尾提交
+> 状态：✅ 代码、自动化、Codex 联网与 Provider 三轮状态矩阵均已验收完成（2026-07-11）
 
 ## 需要先读
 - [项目备忘录.md](../项目备忘录.md)
@@ -47,7 +47,7 @@
 | 1. 复现 | ✅ 用户提供“无锡天气”答非所问样本；当前运行态可确认实际数据库为 chat-api，但不能证明该日志与截图样本是同一请求。 | 2026-07-10 |
 | 2. 定位 | ✅ 静态定位 provider 切换竞态、请求不携带 provider、响应不可观测、Codex 未开 search、Chat 工具参数静默退化五个缺口。 | 2026-07-10 |
 | 3. 修复 | ✅ 方案 A 已实现：Codex 搜索、Provider 三方一致性、Chat 工具严格校验/上限/超时、切换事务与取消贯通。 | 2026-07-10 |
-| 4. 验证 | 🚧 自动化已通过：AI 10/10、cargo check、TS、diff check；Codex/Chat API 无锡天气与切换成功/失败真机待执行。 | 2026-07-10 |
+| 4. 验证 | ✅ 自动化通过；Codex 联网天气已验收；设置页→AI 面板、AI 面板→设置页双向切换，以及重启持久化三轮 Provider 矩阵均于 2026-07-11 真机通过。 | 2026-07-11 |
 
 ## 验收标准
 - 切换 provider 失败时标签回滚且可见错误；切换 pending 时不能发送。
@@ -56,6 +56,13 @@
 - Chat 参数异常、工具轮次超限和总超时均有明确诊断，不泄露密钥。
 - 取消后旧请求不得继续工具调用、执行动作、写历史或 emit。
 
+## 真机验收结果（2026-07-11）
+- 设置页依次切换 Claude CLI、Codex CLI、自定义 Chat API 时，AI 面板标签同步更新；每个 Provider 探针均由当前标签对应路由正常回答，未出现 `Provider 状态不一致` 或 `Provider 响应不一致`。
+- AI 面板依次切换三个 Provider 时，设置页标签同步更新，双窗口状态始终一致。
+- 完全退出并重启 LuckyIsland 后，设置页和 AI 面板均恢复最后选择的 Provider；重启后的实际请求仍走对应路由，持久化一致性通过。
+- 此前 Codex 实时天气、Chat API HTTP/tool 取消与三类 Provider 请求取消均已验收；未观察到密钥泄露、错误路由或旧请求副作用。
+- 验收结论：request provider、持久化 provider、`providerUsed` 和两处 UI 标签的一致性链路通过，BUG-20260710-02 可以关闭。
+
 ## 自动化验证结果
 - `cargo test --manifest-path src-tauri/Cargo.toml ai:: -- --nocapture`：10 passed，0 failed。
 - `cargo check --manifest-path src-tauri/Cargo.toml`：通过。
@@ -63,7 +70,7 @@
 - `git diff --check`：通过，仅有 LF→CRLF 提示，无 whitespace error。
 - 静态扫描确认 `--search`、`provider_used`、`ai_cancel`、`MAX_TOOL_ROUNDS` 存在；旧 `current_provider`、`Command::output`、`.output()` 不存在。
 
-## 待真机验证
-- 逐个切换 Codex CLI / Chat API，发送“今天无锡天气怎么样”，核对 UI 标签、`providerUsed`、诊断日志和真实天气内容。
-- 切换 pending 期间确认无法发送；模拟持久化失败时确认标签回滚并显示错误。
-- 取消 CLI/Chat API A 后立即发送 B，确认 A 不再进入工具/副作用链路且 late result 不污染 B。
+## 已完成的真机验证
+- 三类 Provider 的设置页→AI 面板同步、AI 面板→设置页同步和重启持久化均已通过。
+- Claude CLI、Codex CLI、自定义 Chat API 探针均由当前标签对应路由完成，无状态/响应不一致错误。
+- Codex 联网天气和 08a 跨 Provider 取消竞态已分别验收完成。
