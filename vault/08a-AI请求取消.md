@@ -1,6 +1,6 @@
 # 08a-AI 请求取消与单活生命周期
 
-> 状态：实现与自动化验证已完成；真机取消竞态待验证；纳入 2026-07-11 收尾提交
+> 状态：✅ 实现、自动化与三类 Provider 真机验收均已完成（2026-07-11）
 
 ## 模块做啥（1 行）
 为 AI 面板增加 requestId 单活请求管理和真正跨 provider 取消，保证终止后立即开始下一轮且旧结果永不污染新状态。
@@ -91,13 +91,19 @@ type AssistantStatus = "pending" | "completed" | "cancelled" | "error";
 - `src/settings/AiHistoryPanel.tsx`
 
 
+## 真机验收结果（2026-07-11）
+- **Codex CLI**：运行中点击终止后约 1 秒显示“已终止”，可立即发送 B；B 正常完成，等待后无 A 晚返回，A 的清理未误清 B。补测确认本次新增 Codex PID 及其子进程在取消后消失，后端无错误日志。
+- **Chat API / HTTP 工具链**：在日志出现 `[web-search] DDG 返回 202 Accepted，HTML 14570 字节`、即响应读取/工具链阶段点击终止；约 1 秒显示“已终止”，取消后无 A 的后续工具或模型日志。B 可立即发送并正常完成，无晚返回；取消轮次未写历史，B 历史正常。
+- **Claude CLI**：运行中点击终止后约 1 秒显示“已终止”，取消前记录的本次 Claude PID 在取消后消失；B 可立即发送并正常完成，无 A 晚返回、状态污染或错误日志，历史符合预期。
+- 验收结论：跨 Provider 真取消、取消后立即复用单活槽位、requestId/messageId 隔离、旧请求清理保护、CLI 进程树释放、HTTP/tool future 停止和历史副作用保护全部通过，08a 可以关闭。
+
 ## 实现与验证状态（2026-07-10）
 - Rust 已新增 `ProviderKind`、`ProviderError`、`CancelStatus`、`AiRuntime` 和可取消 CLI 子进程运行器；Windows 使用 `taskkill /T /F` 终止进程树并保留 `Child::kill` 兜底。
 - `ai_chat` 显式接收 requestId/provider，`ai_cancel` 返回三态；副作用均受 current-request guard 约束，取消 A 后可立即登记 B。
 - 前端已使用稳定 messageId/requestId 与 `idle/running/cancelling` 状态机；运行时按钮切换为红色终止按钮，旧请求的 late resolve/reject/finally 不再修改新一轮。
 - Provider 切换期间禁用发送/录音/历史操作；持久化失败回滚并显示错误，设置页和 AI 面板通过事件同步。
 - 新鲜自动化证据：AI 测试 10/10、voice 测试 7/7、`cargo check`、`npx tsc --noEmit`、`git diff --check` 全部通过。
-- 待真机：分别取消 Claude/Codex CLI 与 Chat API/tool 请求；验证取消 A 后立即发送 B、进程树退出、HTTP 不再进入下一轮且旧结果不污染 B。
+- 真机验收已于 2026-07-11 完成：Claude CLI、Codex CLI 与 Chat API/tool 请求均可真正取消；取消 A 后可立即发送 B，进程树/HTTP 链路正确释放，旧结果不污染 B。详见上方验收结果。
 
 ## 提交约束
 实现阶段按用户要求保持 unstaged；2026-07-11 用户改为要求统一收尾提交。提交时不得回滚或遗漏现有业务文件及 ASR 已验证改动。
