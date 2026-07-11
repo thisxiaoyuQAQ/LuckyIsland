@@ -20,10 +20,6 @@ use ai::{
     ai_cancel, ai_chat, ai_clear_history, ai_get_position, ai_history_list, ai_reset_position,
     ai_save_position, ai_switch_provider, hide_ai_palette, open_ai_palette, runtime::AiRuntime,
 };
-use monitor::{
-    monitor_get_selection, monitor_list, monitor_select, restore_island_monitor,
-    ISLAND_WIDTH_LOGICAL,
-};
 use data::calendar::calendar_month;
 use data::stock::{
     poll_loop, stock_get, stock_kline, stock_search, stock_watchlist_add, stock_watchlist_list,
@@ -33,6 +29,10 @@ use data::todo::{todo_create, todo_delete, todo_list, todo_update};
 use data::weather::{
     weather_cities_add, weather_cities_list, weather_cities_remove, weather_cities_reorder,
     weather_get, weather_get_city, weather_locate, weather_set_city,
+};
+use monitor::{
+    monitor_get_selection, monitor_list, monitor_select, restore_island_monitor,
+    ISLAND_WIDTH_LOGICAL,
 };
 use notify::{notify_create, notify_get_token, notify_list, notify_mark_read};
 use settings::{setting_get, setting_set};
@@ -302,7 +302,9 @@ pub fn run() {
 
             // 恢复所选显示器位置，再按设置面板的启动默认态显示。
             // 已保存的具体显示器缺失时只临时回退主屏，不覆盖用户选择。
-            if let Err(error) = restore_island_monitor(app.handle(), app.state::<storage::Db>().inner()) {
+            if let Err(error) =
+                restore_island_monitor(app.handle(), app.state::<storage::Db>().inner())
+            {
                 eprintln!("[monitor] 启动恢复显示器失败：{error}");
             }
             if let Some(window) = app.get_webview_window("island") {

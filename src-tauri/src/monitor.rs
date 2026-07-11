@@ -272,10 +272,7 @@ pub fn monitor_select(
     Ok(state)
 }
 
-pub fn restore_island_monitor(
-    app: &AppHandle,
-    db: &Db,
-) -> Result<MonitorSelectionState, String> {
+pub fn restore_island_monitor(app: &AppHandle, db: &Db) -> Result<MonitorSelectionState, String> {
     let set = capture_monitors(app)?;
     let state = selection_state(&set, &current_selection(db))?;
     let target = resolved_monitor(&set, &state)?;
@@ -287,14 +284,7 @@ pub fn restore_island_monitor(
 mod tests {
     use super::*;
 
-    fn info(
-        id: &str,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-        is_primary: bool,
-    ) -> MonitorInfo {
+    fn info(id: &str, x: i32, y: i32, width: u32, height: u32, is_primary: bool) -> MonitorInfo {
         MonitorInfo {
             id: id.to_string(),
             label: format!("{id} · {width}×{height}"),
@@ -325,7 +315,10 @@ mod tests {
         assert_eq!(
             fallback_monitor_id(
                 &MonitorPoint { x: -1920, y: 0 },
-                &MonitorSize { width: 1920, height: 1080 },
+                &MonitorSize {
+                    width: 1920,
+                    height: 1080
+                },
             ),
             "display:-1920:0:1920:1080"
         );
@@ -388,10 +381,7 @@ mod tests {
             MonitorPoint { x: 600, y: 16 }
         );
         assert_eq!(
-            top_center_position(
-                &info("LEFT", -2560, -200, 2560, 1440, false),
-                1080,
-            ),
+            top_center_position(&info("LEFT", -2560, -200, 2560, 1440, false), 1080,),
             MonitorPoint { x: -1820, y: -184 }
         );
     }
