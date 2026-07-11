@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { Switch } from "@/components/ui/switch";
 import {
   KEYS,
@@ -127,6 +128,27 @@ export function GeneralPanel() {
       setMonitorSwitching(false);
     }
   };
+
+  // 后端运行时显示器变化（副屏热插拔）emit monitor://changed，
+  // 同步更新本页的回退提示与可用显示器列表。
+  useEffect(() => {
+    let disposed = false;
+    let un: (() => void) | undefined;
+    void listen<MonitorSelectionState>("monitor://changed", (event) => {
+      if (disposed) return;
+      setMonitorState(event.payload);
+      void monitorList().then((list) => {
+        if (!disposed) setMonitors(list);
+      });
+    }).then((fn) => {
+      if (disposed) fn();
+      else un = fn;
+    });
+    return () => {
+      disposed = true;
+      un?.();
+    };
+  }, []);
 
   const primaryMonitor = monitors.find((monitor) => monitor.isPrimary);
   const selectedMonitorAvailable = monitors.some(

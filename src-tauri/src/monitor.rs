@@ -1,5 +1,7 @@
+use std::time::Duration;
+
 use serde::Serialize;
-use tauri::{AppHandle, Manager, Monitor, PhysicalPosition, State};
+use tauri::{AppHandle, Emitter, Manager, Monitor, PhysicalPosition, State};
 
 use crate::storage::Db;
 
@@ -7,6 +9,8 @@ pub const MONITOR_SETTING_KEY: &str = "window:monitor";
 pub const PRIMARY_SELECTION: &str = "primary";
 pub const ISLAND_WIDTH_LOGICAL: f64 = 720.0;
 pub const TOP_GAP_PHYSICAL: i32 = 16;
+/// 运行时显示器变化轮询间隔。副屏断开后最多延迟此时间即临时跳回主屏。
+const RUNTIME_WATCH_INTERVAL: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -278,6 +282,73 @@ pub fn restore_island_monitor(app: &AppHandle, db: &Db) -> Result<MonitorSelecti
     let target = resolved_monitor(&set, &state)?;
     move_island_to_monitor(app, target)?;
     Ok(state)
+}
+
+/// 运行时显示器变化监听：周期性检查已保存的具体显示器是否还在线。
+///
+/// - 副屏断开：立即把灵动岛临时移到主屏（不改持久化选择），emit `monitor://changed`
+///   携带 `fallback=true`，让设置页显示「当前不可用，暂用主显示器」。
+/// - 副屏恢复：不自动把窗口跳回副屏（用户要求需重启或手动重选），但 emit
+///   `fallback=false` 让设置页移除回退提示；同时复位 fell_back 标志，
+///   以便再次断开时能重新触发回退。
+///
+/// 选中「主显示器」时不做任何事——主屏若消失应用本身已无法正常显示。
+pub fn start_runtime_watch(app: AppHandle) {
+    tokio::spawn(async move {
+        let mut fell_back = false;
+        loop {
+            tokio::time::sleep(RUNTIME_WATCH_INTERVAL).await;
+            let Some(set) = capture_monitors(&app).ok() else {
+                continue;
+            };
+            let saved = {
+                let db = app.state::<Db>();
+                current_selection(db.inner())
+            };
+
+            // 选中主显示器：无需运行时回退，复位标志即可。
+            if saved == PRIMARY_SELECTION {
+                fell_back = false;
+                continue;
+            }
+
+            let still_available = set.monitors.iter().any(|m| m.info.id == saved);
+            if still_available {
+                // 副屏恢复：不自动跳回窗口，但复位标志并通知前端移除回退提示。
+                if fell_back {
+                    let _ = app.emit(
+                        "monitor://changed",
+                        MonitorSelectionState {
+                            selected: saved.clone(),
+                            resolved: saved,
+                            fallback: false,
+                        },
+                    );
+                }
+                fell_back = false;
+                continue;
+            }
+
+            // 副屏断开：每个断开周期只移动+通知一次，避免反复 set_position。
+            if fell_back {
+                continue;
+            }
+            let Some(primary) = set.monitors.iter().find(|m| m.info.id == set.primary_id) else {
+                continue;
+            };
+            if move_island_to_monitor(&app, primary).is_ok() {
+                fell_back = true;
+                let _ = app.emit(
+                    "monitor://changed",
+                    MonitorSelectionState {
+                        selected: saved,
+                        resolved: set.primary_id.clone(),
+                        fallback: true,
+                    },
+                );
+            }
+        }
+    });
 }
 
 #[cfg(test)]

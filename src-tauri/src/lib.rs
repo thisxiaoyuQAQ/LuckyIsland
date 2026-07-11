@@ -32,7 +32,7 @@ use data::weather::{
 };
 use monitor::{
     monitor_get_selection, monitor_list, monitor_select, restore_island_monitor,
-    ISLAND_WIDTH_LOGICAL,
+    start_runtime_watch, ISLAND_WIDTH_LOGICAL,
 };
 use notify::{notify_create, notify_get_token, notify_list, notify_mark_read};
 use settings::{setting_get, setting_set};
@@ -310,6 +310,9 @@ pub fn run() {
             if let Some(window) = app.get_webview_window("island") {
                 let _ = apply_state(&window, &default_state);
             }
+
+            // 运行时显示器变化监听：副屏断开时立即临时跳回主屏（不改持久化选择）。
+            start_runtime_watch(app.handle().clone());
 
             Ok(())
         })
