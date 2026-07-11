@@ -1,4 +1,7 @@
 use serde::Serialize;
+use tauri::{AppHandle, Manager, Monitor, PhysicalPosition, State};
+
+use crate::storage::Db;
 
 pub const MONITOR_SETTING_KEY: &str = "window:monitor";
 pub const PRIMARY_SELECTION: &str = "primary";
@@ -100,6 +103,184 @@ fn top_center_position(monitor: &MonitorInfo, window_width: u32) -> MonitorPoint
         x: monitor.position.x + (monitor.size.width as i32 - window_width as i32) / 2,
         y: monitor.position.y + TOP_GAP_PHYSICAL,
     }
+}
+
+struct RuntimeMonitor {
+    raw: Monitor,
+    info: MonitorInfo,
+}
+
+struct MonitorSet {
+    monitors: Vec<RuntimeMonitor>,
+    primary_id: String,
+}
+
+fn monitor_point(monitor: &Monitor) -> MonitorPoint {
+    MonitorPoint {
+        x: monitor.position().x,
+        y: monitor.position().y,
+    }
+}
+
+fn monitor_size(monitor: &Monitor) -> MonitorSize {
+    MonitorSize {
+        width: monitor.size().width,
+        height: monitor.size().height,
+    }
+}
+
+fn monitor_id(monitor: &Monitor) -> String {
+    let position = monitor_point(monitor);
+    let size = monitor_size(monitor);
+    monitor
+        .name()
+        .map(|name| name.trim())
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| fallback_monitor_id(&position, &size))
+}
+
+fn same_monitor(left: &Monitor, right: &Monitor) -> bool {
+    left.name() == right.name()
+        && left.position() == right.position()
+        && left.size() == right.size()
+}
+
+fn capture_monitors(app: &AppHandle) -> Result<MonitorSet, String> {
+    let primary = app
+        .primary_monitor()
+        .map_err(|error| format!("读取主显示器失败：{error}"))?
+        .ok_or_else(|| "无法识别当前主显示器".to_string())?;
+    let primary_id = monitor_id(&primary);
+    let mut monitors = app
+        .available_monitors()
+        .map_err(|error| format!("枚举显示器失败：{error}"))?
+        .into_iter()
+        .map(|monitor| {
+            let position = monitor_point(&monitor);
+            let size = monitor_size(&monitor);
+            let id = monitor_id(&monitor);
+            RuntimeMonitor {
+                info: MonitorInfo {
+                    label: format!("{id} · {}×{}", size.width, size.height),
+                    id,
+                    is_primary: same_monitor(&monitor, &primary),
+                    position,
+                    size,
+                },
+                raw: monitor,
+            }
+        })
+        .collect::<Vec<_>>();
+    if monitors.is_empty() {
+        return Err("系统未返回可用显示器".to_string());
+    }
+    monitors.sort_by(|left, right| {
+        left.info
+            .position
+            .x
+            .cmp(&right.info.position.x)
+            .then(left.info.position.y.cmp(&right.info.position.y))
+            .then(left.info.id.cmp(&right.info.id))
+    });
+    Ok(MonitorSet {
+        monitors,
+        primary_id,
+    })
+}
+
+fn current_selection(db: &Db) -> String {
+    normalize_selection(db.setting_get(MONITOR_SETTING_KEY).as_deref())
+}
+
+fn selection_state(set: &MonitorSet, selected: &str) -> Result<MonitorSelectionState, String> {
+    let infos = set
+        .monitors
+        .iter()
+        .map(|monitor| monitor.info.clone())
+        .collect::<Vec<_>>();
+    resolve_selection(&infos, &set.primary_id, selected)
+}
+
+fn resolved_monitor<'a>(
+    set: &'a MonitorSet,
+    state: &MonitorSelectionState,
+) -> Result<&'a RuntimeMonitor, String> {
+    set.monitors
+        .iter()
+        .find(|monitor| monitor.info.id == state.resolved)
+        .ok_or_else(|| format!("无法找到已解析显示器：{}", state.resolved))
+}
+
+fn move_island_to_monitor(app: &AppHandle, monitor: &RuntimeMonitor) -> Result<(), String> {
+    let window = app
+        .get_webview_window("island")
+        .ok_or_else(|| "找不到灵动岛窗口".to_string())?;
+    let width = physical_window_width(ISLAND_WIDTH_LOGICAL, monitor.raw.scale_factor());
+    let position = top_center_position(&monitor.info, width);
+    window
+        .set_position(PhysicalPosition::new(position.x, position.y))
+        .map_err(|error| format!("移动灵动岛窗口失败：{error}"))
+}
+
+#[tauri::command]
+pub fn monitor_list(app: AppHandle) -> Result<Vec<MonitorInfo>, String> {
+    Ok(capture_monitors(&app)?
+        .monitors
+        .into_iter()
+        .map(|monitor| monitor.info)
+        .collect())
+}
+
+#[tauri::command]
+pub fn monitor_get_selection(
+    app: AppHandle,
+    db: State<'_, Db>,
+) -> Result<MonitorSelectionState, String> {
+    let set = capture_monitors(&app)?;
+    selection_state(&set, &current_selection(db.inner()))
+}
+
+#[tauri::command]
+pub fn monitor_select(
+    app: AppHandle,
+    db: State<'_, Db>,
+    selection: String,
+) -> Result<MonitorSelectionState, String> {
+    let selection = normalize_selection(Some(&selection));
+    let set = capture_monitors(&app)?;
+    let infos = set
+        .monitors
+        .iter()
+        .map(|monitor| monitor.info.clone())
+        .collect::<Vec<_>>();
+    validate_selection(&selection, &infos)?;
+    let state = selection_state(&set, &selection)?;
+    let target = resolved_monitor(&set, &state)?;
+    let window = app
+        .get_webview_window("island")
+        .ok_or_else(|| "找不到灵动岛窗口".to_string())?;
+    let previous_position = window
+        .outer_position()
+        .map_err(|error| format!("读取灵动岛窗口位置失败：{error}"))?;
+
+    move_island_to_monitor(&app, target)?;
+    if let Err(error) = db.setting_set(MONITOR_SETTING_KEY, &selection) {
+        let _ = window.set_position(previous_position);
+        return Err(format!("保存显示器选择失败：{error}"));
+    }
+    Ok(state)
+}
+
+pub fn restore_island_monitor(
+    app: &AppHandle,
+    db: &Db,
+) -> Result<MonitorSelectionState, String> {
+    let set = capture_monitors(app)?;
+    let state = selection_state(&set, &current_selection(db))?;
+    let target = resolved_monitor(&set, &state)?;
+    move_island_to_monitor(app, target)?;
+    Ok(state)
 }
 
 #[cfg(test)]
@@ -213,5 +394,25 @@ mod tests {
             ),
             MonitorPoint { x: -1820, y: -184 }
         );
+    }
+
+    #[test]
+    fn monitor_dtos_serialize_with_frontend_camel_case_fields() {
+        let monitor = info("DISPLAY1", 0, 0, 1920, 1080, true);
+        let value = serde_json::to_value(monitor).unwrap();
+        assert_eq!(value["id"], "DISPLAY1");
+        assert_eq!(value["isPrimary"], true);
+        assert_eq!(value["position"]["x"], 0);
+        assert_eq!(value["size"]["width"], 1920);
+
+        let state = serde_json::to_value(MonitorSelectionState {
+            selected: "primary".to_string(),
+            resolved: "DISPLAY1".to_string(),
+            fallback: false,
+        })
+        .unwrap();
+        assert_eq!(state["selected"], "primary");
+        assert_eq!(state["resolved"], "DISPLAY1");
+        assert_eq!(state["fallback"], false);
     }
 }

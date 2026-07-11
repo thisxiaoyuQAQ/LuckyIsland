@@ -11,7 +11,7 @@ mod voice;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Emitter, LogicalSize, Manager, PhysicalPosition, Size, WindowEvent,
+    Emitter, LogicalSize, Manager, Size, WindowEvent,
 };
 use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
@@ -19,6 +19,10 @@ use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut,
 use ai::{
     ai_cancel, ai_chat, ai_clear_history, ai_get_position, ai_history_list, ai_reset_position,
     ai_save_position, ai_switch_provider, hide_ai_palette, open_ai_palette, runtime::AiRuntime,
+};
+use monitor::{
+    monitor_get_selection, monitor_list, monitor_select, restore_island_monitor,
+    ISLAND_WIDTH_LOGICAL,
 };
 use data::calendar::calendar_month;
 use data::stock::{
@@ -44,22 +48,8 @@ use voice::{
     VoiceState,
 };
 
-const WIN_W: f64 = 720.0;
 const COMPACT_H: f64 = 80.0;
 const EXPANDED_H: f64 = 400.0;
-
-/// 把窗口定位到当前显示器顶部居中（顶部留 16px）
-fn position_top_center(window: &tauri::WebviewWindow) -> tauri::Result<()> {
-    if let Some(monitor) = window.current_monitor()? {
-        let msize = monitor.size();
-        let mpos = monitor.position();
-        let wsize = window.outer_size()?;
-        let x = mpos.x + ((msize.width as i32 - wsize.width as i32) / 2);
-        let y = mpos.y + 16;
-        window.set_position(PhysicalPosition { x, y })?;
-    }
-    Ok(())
-}
 
 /// 应用状态：调整窗口尺寸与可见性
 fn apply_state(window: &tauri::WebviewWindow, state: &str) -> tauri::Result<()> {
@@ -67,7 +57,7 @@ fn apply_state(window: &tauri::WebviewWindow, state: &str) -> tauri::Result<()> 
         "hidden" => window.hide()?,
         "compact" => {
             window.set_size(Size::Logical(LogicalSize {
-                width: WIN_W,
+                width: ISLAND_WIDTH_LOGICAL,
                 height: COMPACT_H,
             }))?;
             window.show()?;
@@ -75,7 +65,7 @@ fn apply_state(window: &tauri::WebviewWindow, state: &str) -> tauri::Result<()> 
         }
         "expanded" => {
             window.set_size(Size::Logical(LogicalSize {
-                width: WIN_W,
+                width: ISLAND_WIDTH_LOGICAL,
                 height: EXPANDED_H,
             }))?;
             window.show()?;
@@ -164,6 +154,9 @@ pub fn run() {
         )
         .invoke_handler(tauri::generate_handler![
             set_island_state,
+            monitor_list,
+            monitor_get_selection,
+            monitor_select,
             todo_list,
             todo_create,
             todo_update,
@@ -307,9 +300,12 @@ pub fn run() {
                 notify::server::start(notify_app).await;
             });
 
-            // 定位到顶部居中，并按设置面板的启动默认态显示
+            // 恢复所选显示器位置，再按设置面板的启动默认态显示。
+            // 已保存的具体显示器缺失时只临时回退主屏，不覆盖用户选择。
+            if let Err(error) = restore_island_monitor(app.handle(), app.state::<storage::Db>().inner()) {
+                eprintln!("[monitor] 启动恢复显示器失败：{error}");
+            }
             if let Some(window) = app.get_webview_window("island") {
-                let _ = position_top_center(&window);
                 let _ = apply_state(&window, &default_state);
             }
 
