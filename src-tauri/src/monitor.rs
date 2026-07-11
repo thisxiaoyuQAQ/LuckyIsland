@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager, Monitor, PhysicalPosition, State};
+use tauri::{AppHandle, Emitter, LogicalSize, Manager, Monitor, PhysicalPosition, Size, State};
 
 use crate::storage::Db;
 
@@ -9,6 +9,8 @@ pub const MONITOR_SETTING_KEY: &str = "window:monitor";
 pub const PRIMARY_SELECTION: &str = "primary";
 pub const ISLAND_WIDTH_LOGICAL: f64 = 720.0;
 pub const TOP_GAP_PHYSICAL: i32 = 16;
+/// 回退时恢复的紧凑态高度（与 lib.rs COMPACT_H 一致）
+const ISLAND_COMPACT_HEIGHT: f64 = 80.0;
 /// 运行时显示器变化轮询间隔。副屏断开后最多延迟此时间即临时跳回主屏。
 const RUNTIME_WATCH_INTERVAL: Duration = Duration::from_secs(2);
 
@@ -227,6 +229,37 @@ fn move_island_to_monitor(app: &AppHandle, monitor: &RuntimeMonitor) -> Result<(
         .map_err(|error| format!("移动灵动岛窗口失败：{error}"))
 }
 
+/// 把灵动岛恢复并迁移到目标显示器（运行时副屏断开回退专用）。
+///
+/// Windows 在显示器断开时会把窗口移到 (-32000,-32000) 并缩到 160x28（最小化到屏外）。
+/// 此时单纯的 `set_position` 不生效——必须先 `set_size` 恢复正常尺寸、`unminimize`
+/// 解除最小化，再 `set_position`，最后 `show` + `set_focus` 保证可见。
+/// 回退态固定用紧凑尺寸（与默认启动态一致）。
+fn recover_island_to_monitor(app: &AppHandle, monitor: &RuntimeMonitor) -> Result<(), String> {
+    let window = app
+        .get_webview_window("island")
+        .ok_or_else(|| "找不到灵动岛窗口".to_string())?;
+    let width = physical_window_width(ISLAND_WIDTH_LOGICAL, monitor.raw.scale_factor());
+    let position = top_center_position(&monitor.info, width);
+    window
+        .set_size(Size::Logical(LogicalSize {
+            width: ISLAND_WIDTH_LOGICAL,
+            height: ISLAND_COMPACT_HEIGHT,
+        }))
+        .map_err(|error| format!("恢复窗口尺寸失败：{error}"))?;
+    let _ = window.unminimize();
+    window
+        .set_position(PhysicalPosition::new(position.x, position.y))
+        .map_err(|error| format!("移动灵动岛窗口失败：{error}"))?;
+    window
+        .show()
+        .map_err(|error| format!("显示窗口失败：{error}"))?;
+    window
+        .set_focus()
+        .map_err(|error| format!("聚焦窗口失败：{error}"))?;
+    Ok(())
+}
+
 #[tauri::command]
 pub fn monitor_list(app: AppHandle) -> Result<Vec<MonitorInfo>, String> {
     Ok(capture_monitors(&app)?
@@ -296,8 +329,10 @@ pub fn restore_island_monitor(app: &AppHandle, db: &Db) -> Result<MonitorSelecti
 pub fn start_runtime_watch(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let mut fell_back = false;
+        let mut tick = 0u32;
         loop {
             tokio::time::sleep(RUNTIME_WATCH_INTERVAL).await;
+            tick += 1;
             let Some(set) = capture_monitors(&app).ok() else {
                 continue;
             };
@@ -305,6 +340,18 @@ pub fn start_runtime_watch(app: AppHandle) {
                 let db = app.state::<Db>();
                 current_selection(db.inner())
             };
+            let (win_pos, win_vis) = app
+                .get_webview_window("island")
+                .map(|w| {
+                    let p = w.outer_position().map(|p| (p.x, p.y)).unwrap_or((0, 0));
+                    let v = w.is_visible().unwrap_or(false);
+                    (p, v)
+                })
+                .unwrap_or(((0, 0), false));
+            eprintln!(
+                "[monitor] tick={tick} saved={saved:?} available={:?} win_pos={win_pos:?} win_vis={win_vis} fell_back={fell_back}",
+                set.monitors.iter().map(|m| m.info.id.as_str()).collect::<Vec<_>>()
+            );
 
             // 选中主显示器：无需运行时回退，复位标志即可。
             if saved == PRIMARY_SELECTION {
@@ -336,7 +383,7 @@ pub fn start_runtime_watch(app: AppHandle) {
             let Some(primary) = set.monitors.iter().find(|m| m.info.id == set.primary_id) else {
                 continue;
             };
-            if move_island_to_monitor(&app, primary).is_ok() {
+            if recover_island_to_monitor(&app, primary).is_ok() {
                 fell_back = true;
                 let _ = app.emit(
                     "monitor://changed",
