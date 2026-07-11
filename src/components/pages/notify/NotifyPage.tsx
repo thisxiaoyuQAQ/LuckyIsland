@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { AnimatePresence, motion } from "motion/react";
 import { Bell } from "lucide-react";
 import { NotifyCard, type NotificationItem } from "./NotifyCard";
 import { KEYS, onSettingsChanged, parseFilterSources, settingGet, type NotifySource } from "@/lib/settings";
+import { ISLAND_DURATION_MS, ISLAND_EASE } from "@/lib/anim";
 
 export function NotifyPage({ compact }: { compact: boolean }) {
   const [items, setItems] = useState<NotificationItem[]>([]);
@@ -68,9 +70,20 @@ export function NotifyPage({ compact }: { compact: boolean }) {
           </div>
         ) : (
           <div className="space-y-2">
-            {items.map((item) => (
-              <NotifyCard key={item.id} item={item} />
-            ))}
+            <AnimatePresence initial={false}>
+              {items.map((item) => (
+                <motion.div
+                  key={item.id}
+                  layout
+                  initial={{ opacity: 0, y: -12 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -12 }}
+                  transition={{ duration: ISLAND_DURATION_MS / 1000, ease: ISLAND_EASE }}
+                >
+                  <NotifyCard item={item} />
+                </motion.div>
+              ))}
+            </AnimatePresence>
           </div>
         )}
       </div>
