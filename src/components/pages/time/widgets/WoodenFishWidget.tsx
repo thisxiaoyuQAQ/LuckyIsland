@@ -7,22 +7,22 @@ import { rolloverMerit, applyMeritClick, isCrazyThursday, localDateKey, type Mer
 import { thursdayLine } from "./thursdayContent";
 
 const DATA_KEY = "time:data:wooden_fish";
+const SOUND_URL = "/sound_1.mp3";
+const FISH_URL = "/WoodenFish.svg";
 const reduceMotion = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-let audioCtx: AudioContext | null = null;
+// 3 元素循环池：允许快速连击叠音，同时限制并发音效数量避免失控。
+const audioPool: HTMLAudioElement[] = [];
+let poolIdx = 0;
 function playKnock(volume: number) {
-  if (!audioCtx) audioCtx = new AudioContext();
-  const ctx = audioCtx;
-  const o = ctx.createOscillator();
-  const g = ctx.createGain();
-  o.type = "sine";
-  o.frequency.setValueAtTime(220, ctx.currentTime);
-  o.frequency.exponentialRampToValueAtTime(80, ctx.currentTime + 0.08);
-  g.gain.setValueAtTime(volume, ctx.currentTime);
-  g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.18);
-  o.connect(g).connect(ctx.destination);
-  o.start();
-  o.stop(ctx.currentTime + 0.2);
+  if (audioPool.length < 3) audioPool.push(new Audio(SOUND_URL));
+  const a = audioPool[poolIdx % audioPool.length];
+  poolIdx++;
+  a.volume = volume;
+  a.currentTime = 0;
+  void a.play().catch(() => {
+    /* 忽略：快速重启导致的 interrupt */
+  });
 }
 
 interface FloatItem {
@@ -76,13 +76,7 @@ export function WoodenFishWidget() {
     const { state: next, crossed } = applyMeritClick(state);
     setState(next);
     schedulePersist(next);
-    if (cfg.sound) {
-      try {
-        playKnock(cfg.volume);
-      } catch {
-        /* 忽略音频失败 */
-      }
-    }
+    if (cfg.sound) playKnock(cfg.volume);
     if (!reduceMotion() && cfg.animation) {
       const id = ++floatId.current;
       setFloats((f) => [...f, { id, text: "+1" }]);
@@ -110,13 +104,7 @@ export function WoodenFishWidget() {
         transition={{ duration: 0.15 }}
         className="select-none"
       >
-        <svg width="52" height="36" viewBox="0 0 56 40" fill="none" aria-hidden>
-          <ellipse cx="28" cy="20" rx="24" ry="14" fill="#8b5e34" />
-          <ellipse cx="28" cy="20" rx="24" ry="14" stroke="#5a3a1f" strokeWidth="1.5" />
-          <path d="M10 20 Q28 10 46 20" stroke="#5a3a1f" strokeWidth="1" fill="none" />
-          <circle cx="20" cy="18" r="1.5" fill="#3a2410" />
-          <circle cx="36" cy="18" r="1.5" fill="#3a2410" />
-        </svg>
+        <img src={FISH_URL} alt="木鱼" className="h-14 w-auto" draggable={false} />
       </motion.button>
       <AnimatePresence>
         {floats.map((f) => (
@@ -126,7 +114,7 @@ export function WoodenFishWidget() {
             animate={{ opacity: 0, y: -24 }}
             exit={{ opacity: 0 }}
             transition={{ duration: 0.7 }}
-            className="pointer-events-none absolute top-10 text-xs text-primary"
+            className="pointer-events-none absolute top-12 text-xs text-primary"
           >
             {f.text}
           </motion.span>
