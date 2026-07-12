@@ -1,0 +1,51 @@
+# ===== 工具/缓存目录（用户指定忽略）=====
+.claude/
+.rustup/
+.cargo/
+.omc/
+.cursor/
+.idea/
+
+# ===== Node =====
+node_modules/
+dist/
+dist-ssr/
+.vite/
+*.local
+
+# ===== Rust / Tauri =====
+src-tauri/target/
+src-tauri/gen/schemas/
+target/
+# Cargo.lock 保留（应用项目锁版本）
+
+# ===== 构建产物 =====
+build/
+*.msi
+*.exe
+*.app
+*.dmg
+*.nsis
+
+# ===== 日志与环境 =====
+*.log
+logs/
+.env
+.env.*
+!.env.example
+
+# ===== OS =====
+.DS_Store
+Thumbs.db
+desktop.ini
+ehthumbs.db
+
+# ===== IDE =====
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+
+# ===== 临时 =====
+*.tmp
+*.bak
+.tmp-*/

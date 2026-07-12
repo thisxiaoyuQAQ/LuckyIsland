@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "description": "Capability for the settings window (M7/07a)：含配置导入导出对话框",
+  "identifier": "settings",
+  "permissions": ["core:default", "dialog:default"],
+  "windows": ["settings"]
+}

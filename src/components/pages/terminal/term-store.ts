@@ -1,0 +1,84 @@
+import { invoke } from "@tauri-apps/api/core";
+import { KEYS, settingGet } from "@/lib/settings";
+
+export interface Tab {
+  id: string;
+  title: string;
+}
+
+// 模块级 store：终端 tab 列表在 compact↔expanded 切换（CurrentPage 重挂载）时
+// 保留，避免每次重挂都新建 PTY 造成孤儿进程。PTY 本身由后端 registry 持有。
+let tabs: Tab[] = [];
+let activeId = "";
+const listeners = new Set<() => void>();
+function emit() {
+  listeners.forEach((l) => l());
+}
+
+export function getTabs(): Tab[] {
+  return tabs;
+}
+export function getActive(): string {
+  return activeId;
+}
+export function subscribe(l: () => void): () => void {
+  listeners.add(l);
+  return () => {
+    listeners.delete(l);
+  };
+}
+
+export async function addTab(opts?: { cwd?: string; command?: string; title?: string }): Promise<string> {
+  // 读 terminal:shell：default → null（后端走 default_shell），否则传可执行名
+  const shellSetting = await settingGet(KEYS.terminalShell);
+  const shell = shellSetting && shellSetting !== "default" ? shellSetting : null;
+  const id = await invoke<string>("term_create", {
+    cwd: opts?.cwd ?? null,
+    command: opts?.command ?? null,
+    shell,
+  });
+  const title = opts?.title ?? `终端 ${tabs.length + 1}`;
+  tabs = [...tabs, { id, title }];
+  activeId = id;
+  emit();
+  return id;
+}
+
+export function setActive(id: string) {
+  if (id === activeId) return;
+  activeId = id;
+  emit();
+}
+
+export function renameTab(id: string, title: string) {
+  const t = title.trim();
+  if (!t) return;
+  tabs = tabs.map((tab) => (tab.id === id ? { ...tab, title: t } : tab));
+  emit();
+}
+
+export function reorderTabs(next: Tab[]) {
+  tabs = next;
+  emit();
+}
+
+export async function closeTab(id: string) {
+  try {
+    await invoke("term_kill", { termId: id });
+  } catch {
+    /* ignore */
+  }
+  tabs = tabs.filter((t) => t.id !== id);
+  if (activeId === id) activeId = tabs[0]?.id ?? "";
+  emit();
+}
+
+let ensuring = false;
+export function ensureFirstTab() {
+  // addTab 异步：compact/expanded 重挂载 + StrictMode 下多次调用会并发建多个 tab，用 ensuring 互斥
+  if (tabs.length > 0 || ensuring) return;
+  ensuring = true;
+  void addTab().finally(() => {
+    ensuring = false;
+  });
+}

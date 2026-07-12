@@ -1,0 +1,86 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "LuckyIsland",
+  "version": "0.2.1",
+  "identifier": "com.luckyisland.app",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "island",
+        "title": "LuckyIsland",
+        "width": 720,
+        "height": 80,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "shadow": false,
+        "visible": false,
+        "hiddenTitle": true,
+        "dragDropEnabled": false,
+        "url": "index.html"
+      },
+      {
+        "label": "settings",
+        "title": "LuckyIsland 设置",
+        "url": "settings.html",
+        "width": 720,
+        "height": 640,
+        "minWidth": 560,
+        "minHeight": 480,
+        "resizable": true,
+        "visible": false,
+        "decorations": true,
+        "dragDropEnabled": false
+      },
+      {
+        "label": "ai-palette",
+        "title": "LuckyIsland AI",
+        "url": "ai.html",
+        "width": 640,
+        "height": 480,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "shadow": false,
+        "visible": false,
+        "hiddenTitle": true,
+        "dragDropEnabled": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": {
+      "target/release/sherpa-onnx-c-api.dll": "sherpa-onnx-c-api.dll",
+      "target/release/sherpa-onnx-cxx-api.dll": "sherpa-onnx-cxx-api.dll",
+      "target/release/onnxruntime.dll": "onnxruntime.dll",
+      "target/release/onnxruntime_providers_shared.dll": "onnxruntime_providers_shared.dll"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
+  }
+}
