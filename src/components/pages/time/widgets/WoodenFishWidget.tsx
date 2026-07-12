@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { motion, AnimatePresence } from "motion/react";
+import { motion, AnimatePresence, useAnimationControls } from "motion/react";
 import { useTimeSetting } from "../useTimeConfig";
 import { settingGet, settingSet, timeWidgetKey } from "@/lib/settings";
 import { parseWoodenFishConfig, DEFAULT_WOODEN_FISH } from "../widgetConfig";
@@ -46,6 +46,7 @@ export function WoodenFishWidget() {
   const [thursday, setThursday] = useState<string | null>(null);
   const persistTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const floatId = useRef(0);
+  const controls = useAnimationControls();
 
   useEffect(() => {
     (async () => {
@@ -78,6 +79,8 @@ export function WoodenFishWidget() {
     schedulePersist(next);
     if (cfg.sound) playKnock(cfg.volume);
     if (!reduceMotion() && cfg.animation) {
+      // 每次敲击重新触发：放大再缩回。controls.start 会打断上一次动画，连击也能逐次播放。
+      void controls.start({ scale: [1, 1.18, 1], transition: { duration: 0.22, ease: "easeOut" } });
       const id = ++floatId.current;
       setFloats((f) => [...f, { id, text: "+1" }]);
       setTimeout(() => setFloats((f) => f.filter((x) => x.id !== id)), 700);
@@ -100,8 +103,7 @@ export function WoodenFishWidget() {
         type="button"
         onClick={knock}
         aria-label="敲击木鱼"
-        animate={reduceMotion() || !cfg.animation ? {} : { scale: [1, 0.92, 1] }}
-        transition={{ duration: 0.15 }}
+        animate={controls}
         className="select-none"
       >
         <img src={FISH_URL} alt="木鱼" className="h-14 w-auto" draggable={false} />
