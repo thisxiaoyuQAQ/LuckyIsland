@@ -23,6 +23,10 @@ export const KEYS = {
   windowOffsetX: "window:offset_x",
   /** 07a 窗口外观：纵向物理像素偏移（负=上移，正=下移）。 */
   windowOffsetY: "window:offset_y",
+  /** 时间页：布局 JSON（clockRegion + widgets）。 */
+  timeLayout: "time:layout",
+  /** 时间页：外观 JSON（颜色/渐变/字号/制式）。 */
+  timeAppearance: "time:appearance",
 } as const;
 
 /** 全部页面 id（与 App.tsx PAGES 对齐） */
@@ -291,4 +295,14 @@ export function onSettingsChanged(
   return listen<{ key: string; value: string | null }>("settings://changed", (e) =>
     cb(e.payload.key, e.payload.value),
   );
+}
+
+/** 时间页组件配置 key：time:widget:<id> */
+export function timeWidgetKey(id: string): string {
+  return `time:widget:${id}`;
+}
+
+/** 写 setting 不广播（用于 time:data:* 运行数据）。 */
+export async function settingSet(key: string, value: string | null): Promise<void> {
+  await invoke("setting_set", { key, value });
 }
