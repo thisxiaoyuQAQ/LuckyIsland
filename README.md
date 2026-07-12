@@ -4,84 +4,6 @@
 
 LuckyIsland 把 macOS 灵动岛的形态搬到了 Windows：一个常驻屏幕顶部中央的透明小条，平时只占一行高度显示时钟；鼠标悬停或热键展开成一块「单页画布」，在时间 / 日历 / 天气 / 股票 / 待办 / 终端 / 通知之间秒切。还能通过本地 HTTP 端点接收 Claude / Codex 的完成通知，用 Windows toast 弹给你。
 
-## 界面画廊
-
-### 灵动岛状态
-
-<p align="center">
-  <img src="./public/pictures/island-compact.png" alt="LuckyIsland 紧凑状态" width="100%" />
-  <br />
-  <sub>紧凑状态</sub>
-</p>
-
-<p align="center">
-  <img src="./public/pictures/island-compact2.png" alt="LuckyIsland 紧凑状态（另一主题）" width="100%" />
-  <br />
-  <sub>紧凑状态 · 另一主题</sub>
-</p>
-
-
-### 主题预览
-
-<p align="center">
-  <img src="./public/pictures/theme1.png" alt="LuckyIsland 主题预览 1" width="100%" />
-  <br /><sub>主题预览 · 一</sub>
-</p>
-
-<p align="center">
-  <img src="./public/pictures/theme2.png" alt="LuckyIsland 主题预览 2" width="100%" />
-  <br /><sub>主题预览 · 二</sub>
-</p>
-
-<p align="center">
-  <img src="./public/pictures/theme3.png" alt="LuckyIsland 主题预览 3" width="100%" />
-  <br /><sub>主题预览 · 三</sub>
-</p>
-
-### 展开界面与功能页面
-
-<table>
-  <tr>
-    <td align="center" width="50%">
-      <img src="./public/pictures/island-expanded.png" alt="LuckyIsland 展开界面" />
-      <br /><sub>展开界面</sub>
-    </td>
-    <td align="center" width="50%">
-      <img src="./public/pictures/island-expanded2.png" alt="LuckyIsland 展开界面 2" />
-      <br /><sub>展开界面 · 主题二</sub>
-    </td>
-  </tr>
-  <tr>
-    <td align="center" width="50%">
-      <img src="./public/pictures/island-expanded3.png" alt="LuckyIsland 展开界面 3" />
-      <br /><sub>展开界面 · 主题三</sub>
-    </td>
-    <td align="center" width="50%">
-      <img src="./public/pictures/island-expanded4.png" alt="LuckyIsland 展开界面 4" />
-      <br /><sub>展开界面 · 主题四</sub>
-    </td>
-  </tr>
-  <tr>
-    <td align="center" width="50%">
-      <img src="./public/pictures/island-expanded5.png" alt="LuckyIsland 展开界面 5" />
-      <br /><sub>展开界面 · 主题五</sub>
-    </td>
-    <td align="center" width="50%">
-      <img src="./public/pictures/todo-page.png" alt="LuckyIsland 待办页面" />
-      <br /><sub>待办页面</sub>
-    </td>
-  </tr>
-  <tr>
-    <td align="center" width="50%">
-      <img src="./public/pictures/notification-page.png" alt="LuckyIsland 通知页面" />
-      <br /><sub>通知页面</sub>
-    </td>
-    <td align="center" width="50%">
-      <img src="./public/pictures/settings-window.png" alt="LuckyIsland 设置窗口" />
-      <br /><sub>设置窗口</sub>
-    </td>
-  </tr>
-</table>
 
 ## 它能做什么
 
@@ -165,7 +87,84 @@ curl -X POST http://127.0.0.1:9753/notify \
 ```
 
 仓库自带 `lucky-notify` CLI 和 Claude Code / Codex 的 hook 配置示例，详见 [docs/Claude-Codex-hook配置.md](docs/Claude-Codex-hook配置.md)。
+## 界面画廊
 
+### 灵动岛状态
+
+<p align="center">
+  <img src="./public/pictures/island-compact.png" alt="LuckyIsland 紧凑状态" width="100%" />
+  <br />
+  <sub>紧凑状态</sub>
+</p>
+
+<p align="center">
+  <img src="./public/pictures/island-compact2.png" alt="LuckyIsland 紧凑状态（另一主题）" width="100%" />
+  <br />
+  <sub>紧凑状态 · 另一主题</sub>
+</p>
+
+
+### 主题预览
+
+<p align="center">
+  <img src="./public/pictures/theme1.png" alt="LuckyIsland 主题预览 1" width="100%" />
+  <br /><sub>主题预览 · 一</sub>
+</p>
+
+<p align="center">
+  <img src="./public/pictures/theme2.png" alt="LuckyIsland 主题预览 2" width="100%" />
+  <br /><sub>主题预览 · 二</sub>
+</p>
+
+<p align="center">
+  <img src="./public/pictures/theme3.png" alt="LuckyIsland 主题预览 3" width="100%" />
+  <br /><sub>主题预览 · 三</sub>
+</p>
+
+### 展开界面与功能页面
+
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <img src="./public/pictures/island-expanded.png" alt="LuckyIsland 展开界面" />
+      <br /><sub>展开界面</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="./public/pictures/island-expanded2.png" alt="LuckyIsland 展开界面 2" />
+      <br /><sub>展开界面 · 主题二</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="50%">
+      <img src="./public/pictures/island-expanded3.png" alt="LuckyIsland 展开界面 3" />
+      <br /><sub>展开界面 · 主题三</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="./public/pictures/island-expanded4.png" alt="LuckyIsland 展开界面 4" />
+      <br /><sub>展开界面 · 主题四</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="50%">
+      <img src="./public/pictures/island-expanded5.png" alt="LuckyIsland 展开界面 5" />
+      <br /><sub>展开界面 · 主题五</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="./public/pictures/todo-page.png" alt="LuckyIsland 待办页面" />
+      <br /><sub>待办页面</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="50%">
+      <img src="./public/pictures/notification-page.png" alt="LuckyIsland 通知页面" />
+      <br /><sub>通知页面</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="./public/pictures/settings-window.png" alt="LuckyIsland 设置窗口" />
+      <br /><sub>设置窗口</sub>
+    </td>
+  </tr>
+</table>
 ## 项目结构
 
 ```
