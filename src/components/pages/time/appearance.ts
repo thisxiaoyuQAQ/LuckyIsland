@@ -103,27 +103,34 @@ export interface AppearancePreset {
   apply: (a: TimeAppearance) => TimeAppearance;
 }
 
+function gradientTheme(
+  name: string,
+  c1: string,
+  c2: string,
+  direction: GradientDirection,
+  dateColor: string,
+  weekdayColor: string,
+): AppearancePreset {
+  return {
+    name,
+    apply: (a) => ({
+      ...a,
+      clock: { visible: true, mode: "gradient", color1: c1, color2: c2, direction },
+      date: { ...a.date, mode: "solid", color1: dateColor },
+      weekday: { ...a.weekday, mode: "solid", color1: weekdayColor },
+    }),
+  };
+}
+
 export const APPEARANCE_PRESETS: AppearancePreset[] = [
-  {
-    name: "极光",
-    apply: (a) => ({
-      ...a,
-      clock: { visible: true, mode: "gradient", color1: "#34d399", color2: "#3b82f6", direction: "tl-br" },
-      date: { ...a.date, mode: "solid", color1: "#34d399" },
-      weekday: { ...a.weekday, mode: "solid", color1: "#3b82f6" },
-    }),
-  },
-  {
-    name: "日落",
-    apply: (a) => ({
-      ...a,
-      clock: { visible: true, mode: "gradient", color1: "#f59e0b", color2: "#ef4444", direction: "horizontal" },
-      date: { ...a.date, mode: "solid", color1: "#f59e0b" },
-      weekday: { ...a.weekday, mode: "solid", color1: "#ef4444" },
-    }),
-  },
-  {
-    name: "默认",
-    apply: () => DEFAULT_APPEARANCE,
-  },
+  gradientTheme("极光", "#34d399", "#3b82f6", "tl-br", "#34d399", "#3b82f6"),
+  gradientTheme("日落", "#f59e0b", "#ef4444", "horizontal", "#f59e0b", "#ef4444"),
+  gradientTheme("樱花", "#f9a8d4", "#ec4899", "horizontal", "#f9a8d4", "#ec4899"),
+  gradientTheme("海洋", "#22d3ee", "#1e3a8a", "tl-br", "#22d3ee", "#60a5fa"),
+  gradientTheme("紫罗", "#a855f7", "#ec4899", "tr-bl", "#a855f7", "#c084fc"),
+  gradientTheme("森林", "#4ade80", "#166534", "vertical", "#4ade80", "#86efac"),
+  gradientTheme("熔岩", "#f97316", "#7f1d1d", "vertical", "#f97316", "#fca5a5"),
+  gradientTheme("星空", "#6366f1", "#a855f7", "tl-br", "#818cf8", "#c084fc"),
+  gradientTheme("金辉", "#fde047", "#f59e0b", "horizontal", "#fde047", "#fbbf24"),
+  { name: "默认", apply: () => DEFAULT_APPEARANCE },
 ];

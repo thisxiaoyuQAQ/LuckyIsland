@@ -45,8 +45,8 @@ export function ClockBlock({ compact }: { compact?: boolean }) {
         style={textStyleCss(a.clock)}
       >
         {hh}:{mm}
-        {a.showSeconds && <span className="text-2xl opacity-70">:{ss}</span>}
-        {suffix && <span className="text-xl opacity-70">{suffix}</span>}
+        {a.showSeconds && <span className="text-2xl">:{ss}</span>}
+        {suffix && <span className="text-xl">{suffix}</span>}
       </div>
       <div className="text-xs" style={textStyleCss(a.date)}>
         {now.getFullYear()}年{now.getMonth() + 1}月{now.getDate()}日
