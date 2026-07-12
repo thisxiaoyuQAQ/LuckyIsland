@@ -30,6 +30,7 @@ use data::weather::{
     weather_cities_add, weather_cities_list, weather_cities_remove, weather_cities_reorder,
     weather_get, weather_get_city, weather_locate, weather_set_city,
 };
+use data::time_api::{time_programmer_history_get, time_saying_get};
 use monitor::{
     monitor_get_selection, monitor_list, monitor_select, restore_island_monitor,
     start_runtime_watch, window_offset_apply, ISLAND_WIDTH_LOGICAL,
@@ -175,6 +176,8 @@ pub fn run() {
             weather_cities_add,
             weather_cities_remove,
             weather_cities_reorder,
+            time_saying_get,
+            time_programmer_history_get,
             stock_get,
             stock_search,
             stock_kline,
