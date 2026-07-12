@@ -167,6 +167,7 @@ impl Db {
             || key.starts_with("terminal:")
             || key.starts_with("window:")
             || key.starts_with("wake:")
+            || (key.starts_with("time:") && !key.starts_with("time:data:"))
             || matches!(
                 key,
                 "notify:filter_sources"
@@ -323,4 +324,19 @@ fn now_ts() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64
+}
+
+#[cfg(test)]
+mod portable_tests {
+    use crate::storage::Db;
+
+    #[test]
+    fn time_settings_portable_but_data_not() {
+        assert!(Db::is_portable_setting("time:layout"));
+        assert!(Db::is_portable_setting("time:appearance"));
+        assert!(Db::is_portable_setting("time:widget:saying"));
+        assert!(!Db::is_portable_setting("time:data:saying:last"));
+        assert!(!Db::is_portable_setting("time:data:wooden_fish"));
+        assert!(!Db::is_portable_setting("time:data:mood:2026-07-12"));
+    }
 }
