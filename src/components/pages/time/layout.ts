@@ -128,7 +128,8 @@ export function reorderWidgets(layout: TimeLayout, orderedIds: WidgetId[]): Time
 }
 
 export function widgetsByRegion(layout: TimeLayout): Record<Region, WidgetPlacement[]> {
-  const out = Object.fromEntries(REGIONS.map((r) => [r, []])) as Record<Region, WidgetPlacement[]>;
+  const out = {} as Record<Region, WidgetPlacement[]>;
+  for (const r of REGIONS) out[r] = [];
   for (const w of layout.widgets) {
     if (w.enabled && w.region !== layout.clockRegion) out[w.region].push(w);
   }

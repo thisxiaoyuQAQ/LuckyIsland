@@ -6,6 +6,7 @@ import {
   meritMilestoneCrossed,
   rolloverMerit,
   applyMeritClick,
+  type MoodLevel,
 } from "../date";
 
 describe("localDateKey", () => {
@@ -16,19 +17,19 @@ describe("localDateKey", () => {
 
 describe("moodStreak", () => {
   it("连续 3 天含今天", () => {
-    const rec = { "2026-07-10": "good", "2026-07-11": "good", "2026-07-12": "good" };
+    const rec: Record<string, MoodLevel> = { "2026-07-10": "good", "2026-07-11": "good", "2026-07-12": "good" };
     expect(moodStreak(rec, "2026-07-12")).toBe(3);
   });
   it("漏记一天中断", () => {
-    const rec = { "2026-07-09": "good", "2026-07-11": "good", "2026-07-12": "good" };
+    const rec: Record<string, MoodLevel> = { "2026-07-09": "good", "2026-07-11": "good", "2026-07-12": "good" };
     expect(moodStreak(rec, "2026-07-12")).toBe(2);
   });
   it("今天未记则从昨天起算", () => {
-    const rec = { "2026-07-10": "good", "2026-07-11": "good" };
+    const rec: Record<string, MoodLevel> = { "2026-07-10": "good", "2026-07-11": "good" };
     expect(moodStreak(rec, "2026-07-12")).toBe(2);
   });
   it("今天修改不重复增加连续", () => {
-    const rec = { "2026-07-12": "good" };
+    const rec: Record<string, MoodLevel> = { "2026-07-12": "good" };
     expect(moodStreak(rec, "2026-07-12")).toBe(1);
   });
 });
