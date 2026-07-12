@@ -49,9 +49,16 @@ function SettingsApp() {
     <div className="flex h-screen w-screen bg-background text-foreground">
       {/* 侧栏 */}
       <nav className="flex w-44 shrink-0 flex-col gap-1 border-r border-border/60 bg-card/40 p-3">
-        <h1 className="mb-3 px-2 text-sm font-semibold tracking-wide text-foreground/80">
-          LuckyIsland 设置
-        </h1>
+        <div className="mb-3 flex items-center gap-2 px-2">
+          <img
+            src="/logo.png"
+            alt="LuckyIsland"
+            className="h-7 w-7 rounded-md object-cover"
+          />
+          <h1 className="text-sm font-semibold tracking-wide text-foreground/80">
+            LuckyIsland 设置
+          </h1>
+        </div>
         {TABS.map((t) => (
           <button
             key={t.id}
