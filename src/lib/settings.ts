@@ -306,3 +306,111 @@ export function timeWidgetKey(id: string): string {
 export async function settingSet(key: string, value: string | null): Promise<void> {
   await invoke("setting_set", { key, value });
 }
+
+// ---- 自定义全局热键 ----
+
+/** 热键动作列表项（hotkeys_list 返回） */
+export interface HotkeyEntry {
+  /** 动作 id：toggle_island / toggle_ai */
+  action: string;
+  /** 中文标签 */
+  label: string;
+  /** 当前生效绑定（规范形，如 "alt+KeyX"；DB 无值则为默认） */
+  binding: string;
+  /** 默认绑定 */
+  default: string;
+}
+
+/** 应用结果（hotkeys_apply / hotkeys_reset 返回，每动作一条） */
+export interface HotkeyResult {
+  action: string;
+  binding: string;
+  ok: boolean;
+  error: string | null;
+}
+
+/** 列出全部动作 + 当前/默认绑定（设置面板初始化用） */
+export async function hotkeysList(): Promise<HotkeyEntry[]> {
+  return invoke<HotkeyEntry[]>("hotkeys_list");
+}
+
+/** 批量保存绑定并重新注册。bindings: [action_id, binding][]，返回每动作结果。 */
+export async function hotkeysApply(
+  bindings: [string, string][],
+): Promise<HotkeyResult[]> {
+  return invoke<HotkeyResult[]>("hotkeys_apply", { bindings });
+}
+
+/** 全部恢复默认并重新注册 */
+export async function hotkeysReset(): Promise<HotkeyResult[]> {
+  return invoke<HotkeyResult[]>("hotkeys_reset");
+}
+
+/** 暂停所有热键注册（录制新组合键时避免按下已注册键触发动作） */
+export async function hotkeysSuspend(): Promise<void> {
+  await invoke("hotkeys_suspend");
+}
+
+/** 按 DB 当前绑定重新注册（录制结束/取消时恢复） */
+export async function hotkeysReload(): Promise<void> {
+  await invoke("hotkeys_reload");
+}
+
+const MODIFIER_CODES = new Set([
+  "ControlLeft",
+  "ControlRight",
+  "ShiftLeft",
+  "ShiftRight",
+  "AltLeft",
+  "AltRight",
+  "MetaLeft",
+  "MetaRight",
+]);
+
+/** 从 KeyboardEvent 构造绑定字符串。
+ * - 返回 { binding }：有效组合（含 ≥1 修饰键，或主键为 F1-F12）
+ * - 返回 { modifierOnly: true }：只按了修饰键，等主键
+ * - 返回 null：无效（无修饰键且非功能键），调用方应提示 */
+export function bindingFromEvent(
+  e: KeyboardEvent,
+): { binding: string } | { modifierOnly: true } | null {
+  if (MODIFIER_CODES.has(e.code)) return { modifierOnly: true };
+  const mods: string[] = [];
+  if (e.shiftKey) mods.push("shift");
+  if (e.ctrlKey) mods.push("control");
+  if (e.altKey) mods.push("alt");
+  if (e.metaKey) mods.push("super");
+  // 主键用 e.code 大写化，与 global_hotkey 的 Code 变体名一致（KEYX/SPACE/F1/ARROWUP）
+  const main = e.code.toUpperCase();
+  const isFn = /^F\d{1,2}$/.test(main);
+  if (mods.length === 0 && !isFn) return null;
+  return { binding: [...mods, main].join("+") };
+}
+
+/** 把规范绑定字符串 "alt+KeyX" 转成展示用 "Alt + X"。空串返回"未设置"。 */
+export function formatBinding(binding: string): string {
+  if (!binding) return "未设置";
+  const parts = binding.split("+");
+  const out: string[] = [];
+  for (const p of parts) {
+    const lower = p.toLowerCase();
+    if (lower === "shift") out.push("Shift");
+    else if (lower === "control") out.push("Ctrl");
+    else if (lower === "alt") out.push("Alt");
+    else if (lower === "super") out.push("Win");
+    else out.push(formatKeyCode(p));
+  }
+  return out.join(" + ");
+}
+
+function formatKeyCode(code: string): string {
+  const upper = code.toUpperCase();
+  if (/^KEY[A-Z]$/.test(upper)) return upper[3]; // KeyX -> X
+  if (upper.startsWith("DIGIT")) return upper.slice(5); // Digit0 -> 0
+  if (upper === "ARROWUP") return "↑";
+  if (upper === "ARROWDOWN") return "↓";
+  if (upper === "ARROWLEFT") return "←";
+  if (upper === "ARROWRIGHT") return "→";
+  if (upper.startsWith("NUMPAD")) return "Num " + upper.slice(6); // Numpad0 -> Num 0
+  return code; // Space / Enter / Tab / F1-F12 / 等
+}

@@ -211,6 +211,8 @@ pub fn config_import(
         || old_keys.contains(OFFSET_Y_KEY)
         || new_keys.contains(OFFSET_X_KEY)
         || new_keys.contains(OFFSET_Y_KEY);
+    let needs_hotkeys_apply = old_keys.iter().any(|k| k.starts_with("hotkeys:"))
+        || new_keys.iter().any(|k| k.starts_with("hotkeys:"));
 
     let settings_count = settings_vec.len();
     let watchlist_count = watchlist_vec.len();
@@ -246,5 +248,17 @@ pub fn config_import(
         needs_offset_apply,
     };
     let _ = app.emit("config://imported", summary.clone());
+
+    // 热键绑定可能被导入覆盖：spawn 到 worker 线程重新注册。apply 内部 marshal 到
+    // 主线程，不能在本 sync 命令的主线程上下文直接调（会死锁）；worker 线程阻塞等
+    // 主线程执行即可。未触及 hotkeys: 时不做无谓重注册。
+    if needs_hotkeys_apply {
+        let hk_app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            let db = hk_app.state::<crate::storage::Db>();
+            let _ = crate::hotkeys::apply(&hk_app, db.inner());
+        });
+    }
+
     Ok(summary)
 }

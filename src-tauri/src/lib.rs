@@ -1,5 +1,6 @@
 mod ai;
 mod data;
+mod hotkeys;
 mod monitor;
 mod notify;
 mod settings;
@@ -14,7 +15,7 @@ use tauri::{
     Emitter, LogicalSize, Manager, Size, WindowEvent,
 };
 use tauri_plugin_autostart::MacosLauncher;
-use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+use tauri_plugin_global_shortcut::ShortcutState;
 
 use ai::{
     ai_cancel, ai_chat, ai_clear_history, ai_get_position, ai_history_list, ai_reset_position,
@@ -31,6 +32,9 @@ use data::weather::{
     weather_get, weather_get_city, weather_locate, weather_set_city,
 };
 use data::time_api::{time_programmer_history_get, time_saying_get};
+use hotkeys::{
+    hotkeys_apply, hotkeys_list, hotkeys_reload, hotkeys_reset, hotkeys_suspend, HotkeyMap,
+};
 use monitor::{
     monitor_get_selection, monitor_list, monitor_select, restore_island_monitor,
     start_runtime_watch, window_offset_apply, ISLAND_WIDTH_LOGICAL,
@@ -141,16 +145,27 @@ pub fn run() {
             }
             _ => {}
         })
-        // 全局热键
+        // 全局热键：handler 用 HotKey::id() 反查 HotkeyMap 得到动作并分发，
+        // 具体绑定由 hotkeys::apply 按设置面板的 hotkeys:<id> KV 注册（支持自定义）。
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, shortcut, event| {
-                    if event.state == ShortcutState::Pressed {
-                        if shortcut == &Shortcut::new(Some(Modifiers::ALT), Code::Space) {
-                            toggle_ai_palette(app);
-                        } else {
-                            toggle_visibility(app);
-                        }
+                    if event.state != ShortcutState::Pressed {
+                        return;
+                    }
+                    let Some(action) = app
+                        .try_state::<HotkeyMap>()
+                        .and_then(|m| {
+                            m.0.lock()
+                                .ok()
+                                .and_then(|g| g.get(&shortcut.id()).copied())
+                        })
+                    else {
+                        return;
+                    };
+                    match action {
+                        hotkeys::Action::ToggleIsland => toggle_visibility(app),
+                        hotkeys::Action::ToggleAi => toggle_ai_palette(app),
                     }
                 })
                 .build(),
@@ -219,15 +234,14 @@ pub fn run() {
             voice_stop_listening,
             voice_reload_keyword,
             voice_record_utterance,
-            voice_validate_keyword
+            voice_validate_keyword,
+            hotkeys_list,
+            hotkeys_apply,
+            hotkeys_reset,
+            hotkeys_suspend,
+            hotkeys_reload
         ])
         .setup(|app| {
-            // 注册全局热键：Alt+X 切换灵动岛，Alt+Space 唤起 AI 面板
-            app.global_shortcut()
-                .register(Shortcut::new(Some(Modifiers::ALT), Code::KeyX))?;
-            app.global_shortcut()
-                .register(Shortcut::new(Some(Modifiers::ALT), Code::Space))?;
-
             // 系统托盘
             let show_item = MenuItem::with_id(app, "show", "显示/隐藏", true, None::<&str>)?;
             let settings_item = MenuItem::with_id(app, "settings", "设置...", true, None::<&str>)?;
@@ -272,6 +286,20 @@ pub fn run() {
                 .filter(|s| matches!(s.as_str(), "hidden" | "compact" | "expanded"))
                 .unwrap_or_else(|| "compact".to_string());
             app.manage(db);
+
+            // 自定义全局热键：按用户绑定注册（DB 无值则默认 alt+KeyX / alt+Space）。
+            // HotkeyMap 供插件 handler 用 HotKey::id() 反查动作分发。
+            app.manage(HotkeyMap::default());
+            let app_handle = app.handle();
+            for r in hotkeys::apply(&app_handle, app.state::<storage::Db>().inner()) {
+                if !r.ok {
+                    eprintln!(
+                        "[hotkeys] 启动注册失败 {:?}: {}",
+                        r.action,
+                        r.error.as_deref().unwrap_or("?")
+                    );
+                }
+            }
 
             // 共享 HTTP 客户端（天气 / 股票拉取复用）
             let http = reqwest::Client::builder()

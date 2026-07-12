@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { AppearancePanel } from "./AppearancePanel";
 import { GeneralPanel } from "./GeneralPanel";
+import { HotkeysPanel } from "./HotkeysPanel";
 import { PageManagerPanel } from "./PageManagerPanel";
 import { NotifyPanel } from "./NotifyPanel";
 import { WeatherPanel } from "./WeatherPanel";
@@ -12,7 +13,19 @@ import { TimeAppearancePanel } from "./TimeAppearancePanel";
 import { TimeWidgetsPanel } from "./TimeWidgetsPanel";
 import { cn } from "@/lib/utils";
 
-type Tab = "general" | "appearance" | "pages" | "notify" | "terminal" | "weather" | "stock" | "ai" | "voice" | "time_widgets" | "time_appearance";
+type Tab =
+  | "general"
+  | "appearance"
+  | "pages"
+  | "notify"
+  | "terminal"
+  | "weather"
+  | "stock"
+  | "ai"
+  | "voice"
+  | "hotkeys"
+  | "time_widgets"
+  | "time_appearance";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "general", label: "总体" },
@@ -24,6 +37,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: "stock", label: "股票" },
   { id: "ai", label: "AI" },
   { id: "voice", label: "语音" },
+  { id: "hotkeys", label: "快捷键" },
   { id: "time_widgets", label: "时间组件" },
   { id: "time_appearance", label: "时间外观" },
 ];
@@ -72,6 +86,8 @@ function SettingsApp() {
           <StockPanel />
         ) : tab === "ai" ? (
           <AiHistoryPanel />
+        ) : tab === "hotkeys" ? (
+          <HotkeysPanel />
         ) : tab === "time_widgets" ? (
           <TimeWidgetsPanel />
         ) : tab === "time_appearance" ? (

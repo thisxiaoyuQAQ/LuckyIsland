@@ -167,6 +167,7 @@ impl Db {
             || key.starts_with("terminal:")
             || key.starts_with("window:")
             || key.starts_with("wake:")
+            || key.starts_with("hotkeys:")
             || (key.starts_with("time:") && !key.starts_with("time:data:"))
             || matches!(
                 key,
@@ -338,5 +339,14 @@ mod portable_tests {
         assert!(!Db::is_portable_setting("time:data:saying:last"));
         assert!(!Db::is_portable_setting("time:data:wooden_fish"));
         assert!(!Db::is_portable_setting("time:data:mood:2026-07-12"));
+    }
+
+    #[test]
+    fn hotkeys_settings_portable() {
+        // 自定义热键随配置导出/导入；密钥/运行时数据仍被排除。
+        assert!(Db::is_portable_setting("hotkeys:toggle_island"));
+        assert!(Db::is_portable_setting("hotkeys:toggle_ai"));
+        assert!(!Db::is_portable_setting("notify:http_token"));
+        assert!(!Db::is_portable_setting("ai:chat_api_key"));
     }
 }
