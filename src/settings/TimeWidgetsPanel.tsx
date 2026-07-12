@@ -25,6 +25,7 @@ import {
   DEFAULT_MOOD,
 } from "@/components/pages/time/widgetConfig";
 import { Row, selectCls } from "./shared";
+import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import { GripVertical } from "lucide-react";
 
@@ -51,13 +52,13 @@ function WidgetRow({
 }) {
   const w = layout.widgets.find((x) => x.id === id)!;
   return (
-    <div className="flex flex-col gap-2 rounded-lg border border-border/60 p-3">
+    <div className="flex flex-col gap-3 rounded-lg border border-border/50 p-4">
       <div className="flex items-center gap-2">
         <GripVertical className="h-4 w-4 cursor-grab text-muted-foreground" aria-hidden />
         <span className="flex-1 text-sm font-medium">{LABELS[id]}</span>
-        <input type="checkbox" checked={w.enabled} onChange={(e) => onToggle(e.target.checked)} aria-label={`启用${LABELS[id]}`} />
+        <Switch checked={w.enabled} onCheckedChange={onToggle} size="sm" aria-label={`启用${LABELS[id]}`} />
       </div>
-      <Row label="区域" desc="组件不能与时钟同区">
+      <Row label="区域" desc="上方/下方为满行；左右为窄列">
         <select
           value={w.region}
           onChange={(e) => onRegion(e.target.value as Region)}
@@ -71,13 +72,29 @@ function WidgetRow({
           ))}
         </select>
       </Row>
-      {w.enabled && children}
+      {w.enabled && <div className="flex flex-col gap-2 border-t border-border/40 pt-3">{children}</div>}
     </div>
   );
 }
 
 function useWidgetConfig<T>(id: WidgetId, parse: (v: string | null) => T, fallback: T) {
   return useTimeSetting(timeWidgetKey(id), parse, fallback);
+}
+
+function Toggle({
+  label,
+  checked,
+  on,
+}: {
+  label: string;
+  checked: boolean;
+  on: (v: boolean) => void;
+}) {
+  return (
+    <Row label={label}>
+      <Switch checked={checked} onCheckedChange={on} size="sm" />
+    </Row>
+  );
 }
 
 export function TimeWidgetsPanel() {
@@ -119,67 +136,48 @@ export function TimeWidgetsPanel() {
           onToggle={(enabled) => toggle(id, enabled)}
         >
           {id === "saying" && (
-            <div className="flex flex-col gap-1 text-xs text-muted-foreground">
-              <label className="flex items-center gap-1">
-                <input
-                  type="checkbox"
-                  checked={saying.value.refreshOnEnter}
-                  onChange={(e) => saying.set({ ...saying.value, refreshOnEnter: e.target.checked })}
-                />
-                进入页面时刷新
-              </label>
-              <label className="flex items-center gap-1">
-                <input
-                  type="checkbox"
-                  checked={saying.value.clickToRefresh}
-                  onChange={(e) => saying.set({ ...saying.value, clickToRefresh: e.target.checked })}
-                />
-                点击换一句
-              </label>
-            </div>
+            <>
+              <Toggle
+                label="进入页面时刷新"
+                checked={saying.value.refreshOnEnter}
+                on={(v) => saying.set({ ...saying.value, refreshOnEnter: v })}
+              />
+              <Toggle
+                label="点击换一句"
+                checked={saying.value.clickToRefresh}
+                on={(v) => saying.set({ ...saying.value, clickToRefresh: v })}
+              />
+            </>
           )}
           {id === "programmer_history" && (
-            <div className="flex flex-col gap-1 text-xs text-muted-foreground">
-              <label className="flex items-center gap-1">
-                <input
-                  type="checkbox"
-                  checked={history.value.showCategory}
-                  onChange={(e) => history.set({ ...history.value, showCategory: e.target.checked })}
-                />
-                显示分类
-              </label>
-              <label className="flex items-center gap-1">
-                <input
-                  type="checkbox"
-                  checked={history.value.autoRotate}
-                  onChange={(e) => history.set({ ...history.value, autoRotate: e.target.checked })}
-                />
-                自动轮换事件
-              </label>
-            </div>
+            <>
+              <Toggle
+                label="显示分类"
+                checked={history.value.showCategory}
+                on={(v) => history.set({ ...history.value, showCategory: v })}
+              />
+              <Toggle
+                label="自动轮换事件"
+                checked={history.value.autoRotate}
+                on={(v) => history.set({ ...history.value, autoRotate: v })}
+              />
+            </>
           )}
           {id === "fortune" && (
-            <label className="flex items-center gap-1 text-xs text-muted-foreground">
-              <input
-                type="checkbox"
-                checked={fortune.value.animation}
-                onChange={(e) => fortune.set({ ...fortune.value, animation: e.target.checked })}
-              />
-              抽取动画
-            </label>
+            <Toggle
+              label="抽取动画"
+              checked={fortune.value.animation}
+              on={(v) => fortune.set({ ...fortune.value, animation: v })}
+            />
           )}
           {id === "wooden_fish" && (
-            <div className="flex flex-col gap-1 text-xs text-muted-foreground">
-              <label className="flex items-center gap-1">
-                <input
-                  type="checkbox"
-                  checked={wooden.value.sound}
-                  onChange={(e) => wooden.set({ ...wooden.value, sound: e.target.checked })}
-                />
-                音效
-              </label>
-              <label className="flex items-center gap-1">
-                音量
+            <>
+              <Toggle
+                label="音效"
+                checked={wooden.value.sound}
+                on={(v) => wooden.set({ ...wooden.value, sound: v })}
+              />
+              <Row label="音量">
                 <input
                   type="range"
                   min={0}
@@ -187,35 +185,27 @@ export function TimeWidgetsPanel() {
                   step={0.1}
                   value={wooden.value.volume}
                   onChange={(e) => wooden.set({ ...wooden.value, volume: Number(e.target.value) })}
+                  className="w-28"
                 />
-              </label>
-              <label className="flex items-center gap-1">
-                <input
-                  type="checkbox"
-                  checked={wooden.value.animation}
-                  onChange={(e) => wooden.set({ ...wooden.value, animation: e.target.checked })}
-                />
-                动画
-              </label>
-              <label className="flex items-center gap-1">
-                <input
-                  type="checkbox"
-                  checked={wooden.value.crazyThursday}
-                  onChange={(e) => wooden.set({ ...wooden.value, crazyThursday: e.target.checked })}
-                />
-                疯狂星期四文案
-              </label>
-            </div>
+              </Row>
+              <Toggle
+                label="动画"
+                checked={wooden.value.animation}
+                on={(v) => wooden.set({ ...wooden.value, animation: v })}
+              />
+              <Toggle
+                label="疯狂星期四文案"
+                checked={wooden.value.crazyThursday}
+                on={(v) => wooden.set({ ...wooden.value, crazyThursday: v })}
+              />
+            </>
           )}
           {id === "mood" && (
-            <label className="flex items-center gap-1 text-xs text-muted-foreground">
-              <input
-                type="checkbox"
-                checked={mood.value.showStreak}
-                onChange={(e) => mood.set({ ...mood.value, showStreak: e.target.checked })}
-              />
-              显示连续天数
-            </label>
+            <Toggle
+              label="显示连续天数"
+              checked={mood.value.showStreak}
+              on={(v) => mood.set({ ...mood.value, showStreak: v })}
+            />
           )}
         </WidgetRow>
       </div>
@@ -226,9 +216,9 @@ export function TimeWidgetsPanel() {
     <section className="flex flex-col gap-4">
       <div className="flex flex-col gap-1">
         <h2 className="text-base font-semibold">时间组件</h2>
-        <p className="text-sm text-muted-foreground">启用/关闭、放置区域与排序；同一区域可拖拽排序。</p>
+        <p className="text-sm text-muted-foreground">启用/关闭、放置区域与排序；上方/下方为满行，左右为窄列。</p>
       </div>
-      <div className="flex flex-col gap-2">{ordered.map((id, i) => rowFor(id, i))}</div>
+      <div className="flex flex-col gap-3">{ordered.map((id, i) => rowFor(id, i))}</div>
     </section>
   );
 }

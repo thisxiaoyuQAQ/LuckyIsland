@@ -46,24 +46,24 @@ export function MoodWidget() {
   };
 
   return (
-    <div className="flex w-full flex-col gap-1 rounded-lg border border-border/60 bg-card/40 p-2">
+    <div className="flex w-full flex-col gap-1 rounded-lg border border-border/40 bg-card/20 px-3 py-2">
       <div className="flex items-center justify-between text-[10px] text-muted-foreground">
         <span>今日心情</span>
-        {cfg.showStreak && <span>连续 {streak} 天</span>}
+        {cfg.showStreak && <span className="tabular-nums">连续 {streak} 天</span>}
       </div>
-      <div className="flex justify-between gap-1">
+      <div className="flex justify-between gap-0.5">
         {LEVELS.map((l) => (
           <button
             key={l.id}
             type="button"
             onClick={() => void pick(l.id)}
             aria-label={l.label}
-            className={`flex flex-1 flex-col items-center rounded-md py-1 text-base transition-colors ${
-              today === l.id ? "bg-primary/15" : "hover:bg-accent"
+            title={l.label}
+            className={`flex flex-1 flex-col items-center rounded-md py-0.5 text-base transition-colors ${
+              today === l.id ? "bg-primary/15 ring-1 ring-primary/40" : "hover:bg-accent"
             }`}
           >
             <span>{l.emoji}</span>
-            <span className="text-[9px] text-muted-foreground">{l.label}</span>
           </button>
         ))}
       </div>

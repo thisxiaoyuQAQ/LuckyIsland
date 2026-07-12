@@ -95,10 +95,10 @@ export function WoodenFishWidget() {
   };
 
   return (
-    <div className="relative flex w-full flex-col items-center gap-1 rounded-lg border border-border/60 bg-card/40 p-2">
+    <div className="relative flex w-full flex-col items-center gap-1 rounded-lg border border-border/40 bg-card/20 px-3 py-2">
       <div className="flex w-full items-center justify-between text-[10px] text-muted-foreground">
         <span>电子木鱼</span>
-        <span>
+        <span className="tabular-nums">
           今日 {state.todayCount} · 累计 {state.totalCount}
         </span>
       </div>
@@ -110,8 +110,7 @@ export function WoodenFishWidget() {
         transition={{ duration: 0.15 }}
         className="select-none"
       >
-        {/* 原创木鱼矢量图 */}
-        <svg width="56" height="40" viewBox="0 0 56 40" fill="none" aria-hidden>
+        <svg width="52" height="36" viewBox="0 0 56 40" fill="none" aria-hidden>
           <ellipse cx="28" cy="20" rx="24" ry="14" fill="#8b5e34" />
           <ellipse cx="28" cy="20" rx="24" ry="14" stroke="#5a3a1f" strokeWidth="1.5" />
           <path d="M10 20 Q28 10 46 20" stroke="#5a3a1f" strokeWidth="1" fill="none" />
@@ -127,7 +126,7 @@ export function WoodenFishWidget() {
             animate={{ opacity: 0, y: -24 }}
             exit={{ opacity: 0 }}
             transition={{ duration: 0.7 }}
-            className="pointer-events-none absolute top-8 text-xs text-primary"
+            className="pointer-events-none absolute top-10 text-xs text-primary"
           >
             {f.text}
           </motion.span>

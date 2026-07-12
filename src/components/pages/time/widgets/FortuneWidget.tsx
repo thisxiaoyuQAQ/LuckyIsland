@@ -9,9 +9,9 @@ const DATA_KEY = "time:data:fortune";
 
 function Stars({ n }: { n: number }) {
   return (
-    <span className="text-[10px] tracking-tight">
+    <span className="text-[10px] tracking-tight text-amber-500">
       {"★".repeat(n)}
-      {"☆".repeat(5 - n)}
+      <span className="text-muted-foreground/40">{"☆".repeat(5 - n)}</span>
     </span>
   );
 }
@@ -57,11 +57,15 @@ export function FortuneWidget() {
   };
 
   if (!fortune) {
-    return <div className="rounded-lg border border-border/60 p-2 text-xs text-muted-foreground">今日运势……</div>;
+    return (
+      <div className="rounded-lg border border-border/40 bg-card/20 px-3 py-2 text-xs text-muted-foreground">
+        今日运势……
+      </div>
+    );
   }
 
   return (
-    <div className="flex w-full flex-col gap-1 rounded-lg border border-border/60 bg-card/40 p-2">
+    <div className="flex w-full flex-col gap-1 rounded-lg border border-border/40 bg-card/20 px-3 py-2">
       <div className="flex items-center justify-between text-[10px] text-muted-foreground">
         <span>今日运势 · 仅供娱乐</span>
         <button onClick={redraw} className="text-primary hover:underline" aria-label="再抽一次">
@@ -69,14 +73,13 @@ export function FortuneWidget() {
         </button>
       </div>
       <div className={`flex items-center gap-2 ${flipping ? "opacity-30 transition-opacity" : ""}`}>
-        <span className="text-lg font-semibold">{fortune.level}</span>
+        <span className="text-base font-semibold">{fortune.level}</span>
         <Stars n={fortune.stars} />
       </div>
-      <p className="line-clamp-2 text-xs leading-relaxed">{fortune.blessing}</p>
+      <p className="truncate text-[11px] text-muted-foreground">{fortune.blessing}</p>
       <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
         <span>幸运数字 {fortune.luckyNumber}</span>
         <span className="flex items-center gap-1">
-          幸运色
           <span
             className="inline-block h-2.5 w-2.5 rounded-full border border-border"
             style={{ background: fortune.luckyColor.hex }}

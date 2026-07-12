@@ -5,7 +5,7 @@ import { parseAppearance, textStyleCss, DEFAULT_APPEARANCE } from "./appearance"
 
 const WEEKDAYS = ["星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"];
 
-const SIZE_CLASS = { sm: "text-4xl", md: "text-5xl", lg: "text-6xl" } as const;
+const SIZE_CLASS = { sm: "text-3xl", md: "text-4xl", lg: "text-5xl" } as const;
 const WEIGHT_CLASS = { normal: "font-normal", bold: "font-bold" } as const;
 
 export function ClockBlock({ compact }: { compact?: boolean }) {
@@ -39,19 +39,19 @@ export function ClockBlock({ compact }: { compact?: boolean }) {
   }
 
   return (
-    <div className="flex h-full flex-col items-center justify-center gap-2">
+    <div className="flex h-full flex-col items-center justify-center gap-1.5">
       <div
-        className={`tabular-nums ${SIZE_CLASS[a.fontSize]} ${WEIGHT_CLASS[a.fontWeight]}`}
+        className={`tabular-nums leading-none ${SIZE_CLASS[a.fontSize]} ${WEIGHT_CLASS[a.fontWeight]}`}
         style={textStyleCss(a.clock)}
       >
         {hh}:{mm}
-        {a.showSeconds && <span className="text-3xl opacity-70">:{ss}</span>}
-        {suffix && <span className="text-2xl opacity-70">{suffix}</span>}
+        {a.showSeconds && <span className="text-2xl opacity-70">:{ss}</span>}
+        {suffix && <span className="text-xl opacity-70">{suffix}</span>}
       </div>
-      <div className="text-sm" style={textStyleCss(a.date)}>
+      <div className="text-xs" style={textStyleCss(a.date)}>
         {now.getFullYear()}年{now.getMonth() + 1}月{now.getDate()}日
       </div>
-      <div className="text-sm" style={textStyleCss(a.weekday)}>
+      <div className="text-xs" style={textStyleCss(a.weekday)}>
         {WEEKDAYS[now.getDay()]}
       </div>
     </div>

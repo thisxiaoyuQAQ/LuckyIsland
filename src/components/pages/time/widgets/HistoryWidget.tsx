@@ -28,7 +28,7 @@ export function HistoryWidget() {
   );
   const [data, setData] = useState<PHistory | null>(null);
   const [idx, setIdx] = useState(0);
-  const [err, setErr] = useState<string | null>(null);
+  const [err, setErr] = useState(false);
   const [detail, setDetail] = useState<PEvent | null>(null);
 
   useEffect(() => {
@@ -37,9 +37,9 @@ export function HistoryWidget() {
         const h = await invoke<PHistory>("time_programmer_history_get");
         setData(h);
         setIdx(0);
-        setErr(null);
-      } catch (e) {
-        setErr(String(e));
+        setErr(false);
+      } catch {
+        setErr(true);
       }
     })();
   }, []);
@@ -61,44 +61,48 @@ export function HistoryWidget() {
   const ev = data?.events[idx];
 
   return (
-    <div className="flex w-full flex-col gap-1 rounded-lg border border-border/60 bg-card/40 p-2">
-      <div className="flex items-center justify-between text-[10px] text-muted-foreground">
-        <span>程序员历史上的今天{data?.offline ? " · 缓存" : ""}</span>
-        {data && data.events.length > 1 && (
-          <span className="flex items-center gap-1">
-            <button
-              onClick={() => setIdx((i) => (i - 1 + data.events.length) % data.events.length)}
-              aria-label="上一条"
-            >
-              <ChevronLeft className="h-3 w-3" />
-            </button>
-            <span>
-              {idx + 1}/{data.events.length}
+    <div className="flex w-full items-center gap-2 rounded-lg border border-border/40 bg-card/20 px-3 py-1.5">
+      <span className="shrink-0 text-[10px] uppercase tracking-wide text-muted-foreground">历史</span>
+      {err ? (
+        <span className="flex-1 truncate text-xs text-destructive">加载失败，稍后重试</span>
+      ) : ev ? (
+        <button
+          type="button"
+          onClick={() => setDetail(ev)}
+          className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+          aria-label="查看事件详情"
+        >
+          <span className="shrink-0 text-xs font-semibold tabular-nums">{ev.year || "—"}</span>
+          {cfg.showCategory && ev.category && (
+            <span className="shrink-0 rounded bg-accent px-1 text-[10px] text-muted-foreground">
+              {ev.category}
             </span>
-            <button
-              onClick={() => setIdx((i) => (i + 1) % data.events.length)}
-              aria-label="下一条"
-            >
-              <ChevronRight className="h-3 w-3" />
-            </button>
-          </span>
-        )}
-      </div>
-      {err && <p className="text-xs text-destructive">加载失败，稍后重试</p>}
-      {ev && (
-        <button type="button" onClick={() => setDetail(ev)} className="text-left">
-          <div className="flex items-center gap-1.5">
-            <span className="text-xs font-semibold tabular-nums">{ev.year || "年份未知"}</span>
-            {cfg.showCategory && ev.category && (
-              <span className="rounded bg-accent px-1 text-[10px] text-muted-foreground">
-                {ev.category}
-              </span>
-            )}
-          </div>
-          <p className="line-clamp-2 text-xs leading-relaxed">{ev.title}</p>
+          )}
+          <span className="truncate text-xs">{ev.title}</span>
         </button>
+      ) : (
+        <span className="flex-1 text-xs text-muted-foreground">暂无数据</span>
       )}
-      {!err && !ev && <p className="text-xs text-muted-foreground">暂无数据</p>}
+      {data && data.events.length > 1 && (
+        <span className="flex shrink-0 items-center gap-1 text-muted-foreground">
+          <button
+            onClick={() => setIdx((i) => (i - 1 + data.events.length) % data.events.length)}
+            aria-label="上一条"
+          >
+            <ChevronLeft className="h-3 w-3" />
+          </button>
+          <span className="text-[10px] tabular-nums">
+            {idx + 1}/{data.events.length}
+          </span>
+          <button
+            onClick={() => setIdx((i) => (i + 1) % data.events.length)}
+            aria-label="下一条"
+          >
+            <ChevronRight className="h-3 w-3" />
+          </button>
+        </span>
+      )}
+      {data?.offline && <span className="shrink-0 text-[10px] text-yellow-500">缓存</span>}
 
       {detail && (
         <div
@@ -119,7 +123,9 @@ export function HistoryWidget() {
             </div>
             <div className="text-sm font-medium">{detail.title}</div>
             {detail.description && (
-              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{detail.description}</p>
+              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                {detail.description}
+              </p>
             )}
             {detail.tags.length > 0 && (
               <div className="mt-1 flex flex-wrap gap-1">
