@@ -112,10 +112,10 @@ vault/                    模块任务拆解
 - [Claude/Codex hook 配置](docs/Claude-Codex-hook配置.md)
 - [时间页组件设计](docs/superpowers/specs/2026-07-11-time-page-widgets-design.md)
 
-## 状态
-
-M0–M9 全部完成，含时间页可自定义组件（模块 09）。真机验收通过。详见 [开发进度](docs/开发进度.md)。
-
 ## 许可证
 
-[MIT License](LICENSE)。代码、文档与仓库内素材均按 MIT 授权，可自由使用、修改、分发（含商用），需保留版权声明。
+[MIT License](LICENSE)。代码、文档与仓库内素材均按 MIT 授权，可自由使用、修改、分发（含商用），需保留版权声明
+
+## 友链
+
+[LINUX DO](https://linux.do/)
