@@ -15,7 +15,6 @@ interface Saying {
 export function SayingWidget() {
   const { value: cfg } = useTimeSetting(timeWidgetKey("saying"), parseSayingConfig, DEFAULT_SAYING);
   const [text, setText] = useState("");
-  const [offline, setOffline] = useState(false);
   const [loading, setLoading] = useState(false);
 
   const fetchOne = useCallback(async () => {
@@ -23,10 +22,8 @@ export function SayingWidget() {
     try {
       const s = await invoke<Saying>("time_saying_get");
       setText(s.text);
-      setOffline(s.offline);
     } catch {
       setText(fallbackSaying());
-      setOffline(true);
     } finally {
       setLoading(false);
     }
@@ -46,7 +43,6 @@ export function SayingWidget() {
     >
       <span className="shrink-0 text-[10px] uppercase tracking-wide text-muted-foreground">一言</span>
       <span className="min-w-0 flex-1 truncate text-xs">{text || "……"}</span>
-      {offline && <span className="shrink-0 text-[10px] text-yellow-500">缓存</span>}
       <RefreshCw
         className={`h-3 w-3 shrink-0 text-muted-foreground ${loading ? "animate-spin" : ""}`}
         aria-hidden
