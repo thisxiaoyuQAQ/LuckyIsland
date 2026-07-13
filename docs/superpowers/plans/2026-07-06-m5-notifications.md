@@ -1,5 +1,8 @@
 # M5 Notifications Implementation Plan
 
+> **历史状态（2026-07-13）：** ✅ 对应功能已实施并验收。本文件是当时的实施脚本，所有 `- [ ]`、命令、路径和提交步骤仅保留历史语境，不是当前 TODO，也不得直接重放。
+> **当前事实与验收：** [`vault/06-通知系统.md`](../../../vault/06-通知系统.md)、[`docs/开发进度.md`](../../开发进度.md)。偏离以当前文档为准，包括 Windows toast、设置开关和最终 hook 事件。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build LuckyIsland M5 notifications: localhost HTTP receive endpoint, SQLite history, island notification page, `lucky-notify` CLI wrapper, and hook documentation.
