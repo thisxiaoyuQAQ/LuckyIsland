@@ -1,5 +1,8 @@
 # Voice Listening Event Delivery Implementation Plan
 
+> **历史状态（2026-07-13）：** ✅ 对应修复已实施，并于 2026-07-11 完成真机验收。本文件是当时的实施脚本，所有 `- [ ]`、命令与未提交约束不是当前 TODO。
+> **当前事实与验收：** [`vault/08-AI助手.md`](../../../vault/08-AI助手.md)、[`docs/开发进度.md`](../../开发进度.md) 的 BUG-20260710-03 与 2026-07-11 验收记录。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make “正在聆听…” visible for the real manual-recording interval and clear it reliably on every exit.
