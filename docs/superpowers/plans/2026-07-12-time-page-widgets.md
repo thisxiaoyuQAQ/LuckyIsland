@@ -1,5 +1,9 @@
 # 时间页可自定义组件 实施计划
 
+> **历史状态（2026-07-13）：** ✅ 模块 09 已实施并完成自动化与真机验收。本文件是当时的实施脚本，所有 `- [ ]`、代码片段、命令与测试数字不是当前 TODO 或新鲜验证证据。
+> **当前事实与验收：** [`docs/开发进度.md`](../../开发进度.md) 模块 09；跨午夜刷新与木鱼卸载 flush 由 [`vault/10a-文档同步与确定性修复.md`](../../../vault/10a-文档同步与确定性修复.md) 跟踪。
+> **偏离摘要：** 当前锁文件为 Vitest 4.1.10，计划中的 Vitest 3 与 `42 passed` 是历史预期/快照；最终记录为 2026-07-13 前既有验收 `pnpm test` 45 passed（仅 `*.test.ts` 纯逻辑、node 环境）、Rust 定向 7 passed、tsc 通过。木鱼最终使用用户提供的 `public/WoodenFish.svg` 与 `public/sound_1.mp3`，来源为用户提供、授权状态未在仓库中形成可独立审计的许可证文件，因此不再表述为原创或许可证已证明。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 将时间页展开态重构为九宫格可配置组件画布，新增一言、程序员历史上的今天、今日运势、电子木鱼、今日心情五个内置组件，并新增“时间组件”与“时间外观”两个独立设置面板。

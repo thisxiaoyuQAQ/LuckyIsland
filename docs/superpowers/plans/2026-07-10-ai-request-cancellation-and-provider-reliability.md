@@ -1,5 +1,8 @@
 # AI Request Cancellation and Provider Reliability Implementation Plan
 
+> **历史状态（2026-07-13）：** ✅ 对应实现、自动化与三类 Provider 真机验收已完成。本文件是当时的实施脚本，所有 `- [ ]`、命令和“下一 Session”仅为历史快照，不是当前 TODO。
+> **当前事实与验收：** [`vault/08a-AI请求取消.md`](../../../vault/08a-AI请求取消.md)、[`vault/08-AI助手.md`](../../../vault/08-AI助手.md)、[`docs/开发进度.md`](../../开发进度.md)。Codex 最终联网链路采用后端天气/DDG 预搜索，不依赖本计划中的 `codex --search`。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make AI requests provider-explicit and request-identified, support true CLI/HTTP cancellation, and make realtime Codex/Chat API answers reliable.

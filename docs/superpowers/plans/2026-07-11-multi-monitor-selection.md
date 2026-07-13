@@ -1,5 +1,8 @@
 # LuckyIsland Multi-Monitor Selection Implementation Plan
 
+> **历史状态（2026-07-13）：** ✅ 对应功能已实施并完成自动化与 Windows 真机验收。本文件是当时的实施脚本，所有 `- [ ]`、命令和“待真机”段落不是当前 TODO。
+> **当前事实与验收：** [`vault/02-灵动岛外壳.md`](../../../vault/02-灵动岛外壳.md)、[`docs/开发进度.md`](../../开发进度.md)。实施补入运行时副屏断开监听；恢复时应用不主动跳回，Windows 自动恢复仅为观察结果。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add a persistent monitor selector that immediately moves the LuckyIsland window to the chosen display's top center, restores that choice after restart, and temporarily falls back to the current primary display when a saved display is unavailable.
