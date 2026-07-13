@@ -3,8 +3,10 @@
 .rustup/
 .cargo/
 .omc/
+.superpowers/
 .cursor/
 .idea/
+WebPage/
 
 # ===== Node =====
 node_modules/

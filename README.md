@@ -164,7 +164,14 @@ curl -X POST http://127.0.0.1:9753/notify \
       <br /><sub>设置窗口</sub>
     </td>
   </tr>
+  <tr>
+    <td align="center" colspan="2">
+      <img src="./public/pictures/AI-assistant.png" alt="LuckyIsland AI 助手页面" />
+      <br /><sub>AI 助手页面</sub>
+    </td>
+  </tr>
 </table>
+
 ## 项目结构
 
 ```
