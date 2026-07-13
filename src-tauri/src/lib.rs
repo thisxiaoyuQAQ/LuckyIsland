@@ -57,6 +57,28 @@ use voice::{
 const COMPACT_H: f64 = 80.0;
 const EXPANDED_H: f64 = 400.0;
 
+fn cleanup_runtime_resources(app: &tauri::AppHandle) {
+    if let Some(registry) = app.try_state::<TerminalRegistry>() {
+        terminal::cleanup_all(registry.inner());
+    }
+    if let Some(state) = app.try_state::<VoiceState>() {
+        let _ = voice_stop_listening(state);
+    }
+}
+
+/// Updater 2.10 runs `AppHandle::cleanup_before_exit` immediately before its
+/// Windows installer exits the process. An app resource is dropped by that
+/// cleanup path, letting us release terminal and voice resources first.
+struct UpdaterCleanupGuard(tauri::AppHandle);
+
+impl tauri::Resource for UpdaterCleanupGuard {}
+
+impl Drop for UpdaterCleanupGuard {
+    fn drop(&mut self) {
+        cleanup_runtime_resources(&self.0);
+    }
+}
+
 /// 应用状态：调整窗口尺寸与可见性
 fn apply_state(window: &tauri::WebviewWindow, state: &str) -> tauri::Result<()> {
     match state {
@@ -242,6 +264,14 @@ pub fn run() {
             hotkeys_reload
         ])
         .setup(|app| {
+            // Updater 2.10 wires `cleanup_before_exit` into each update resource.
+            // Register an app resource guard so terminal and voice cleanup runs
+            // before the updater starts the Windows installer and exits.
+            app.resources_table()
+                .add(UpdaterCleanupGuard(app.handle().clone()));
+            app.handle()
+                .plugin(tauri_plugin_updater::Builder::new().build())?;
+
             // 系统托盘
             let show_item = MenuItem::with_id(app, "show", "显示/隐藏", true, None::<&str>)?;
             let settings_item = MenuItem::with_id(app, "settings", "设置...", true, None::<&str>)?;
@@ -362,12 +392,7 @@ pub fn run() {
             // 变化并退出，Drop 里会关掉 cpal 音频流。进程马上就要退出，不等线程真正
             // 结束也无妨（OS 会在进程退出时回收所有句柄）。
             if let tauri::RunEvent::Exit = event {
-                if let Some(reg) = app_handle.try_state::<TerminalRegistry>() {
-                    terminal::cleanup_all(reg.inner());
-                }
-                if let Some(state) = app_handle.try_state::<VoiceState>() {
-                    let _ = voice_stop_listening(state);
-                }
+                cleanup_runtime_resources(app_handle);
             }
         });
 }
