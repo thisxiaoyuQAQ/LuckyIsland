@@ -1,5 +1,7 @@
 # LuckyIsland 分层展开收起动画 Implementation Plan
 
+> **实施状态：✅ 2026-07-14 完成。** 下方步骤保留为实施记录；最终实现根据 Windows 真机反馈把收起优化为“内容淡出与容器收缩并行约 240ms，随后缩小原生窗口”，并补充手动状态覆盖 hover、结构化快照不抢占过渡阶段及顶部页面标签滚轮回归。相关提交：`30f32e8`、`967d457`、`cc9513e`、`cdc9c96`、`4d351ac`、`38f3cb8`、`d1c9ac9`、`309c472`。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. 本项目按用户要求由主 Agent 串行执行，不启动 subagent；每个 Task 完成验证后必须独立 commit。
 
 **Goal:** 把灵动岛动画改为“展开时容器先扩展、内容延迟进入；收起时内容先退出、平台窗口随后缩小”，同时保持快速反向操作与 reduced-motion 安全。
@@ -65,7 +67,7 @@ export const ISLAND_COLLAPSE_TOTAL_MS = 200;
 export const ISLAND_LAYERED_EASE: [number, number, number, number] = [0.2, 0.8, 0.2, 1];
 ```
 
-- [ ] **Step 1: Write failing controller tests**
+- [x] **Step 1: Write failing controller tests**
 
 Add focused tests showing the desired API and order:
 
@@ -143,7 +145,7 @@ it("reduced motion submits compact without waiting", async () => {
 
 Retain and adapt the existing test proving an expand request cancels a pending Compact submission.
 
-- [ ] **Step 2: Run the focused test and confirm RED**
+- [x] **Step 2: Run the focused test and confirm RED**
 
 Run:
 
@@ -153,11 +155,11 @@ pnpm test src/lib/__tests__/window-policy.test.ts
 
 Expected: FAIL because the controller still accepts `shrinkDelay` / `setVisualState` and does not emit visual phases or reduced-motion behavior.
 
-- [ ] **Step 3: Add animation constants**
+- [x] **Step 3: Add animation constants**
 
 Replace the single shrink-delay contract in `src/lib/anim.ts` with the constants listed in **Interfaces**. Keep `ISLAND_DURATION_MS` and `ISLAND_EASE` only for unrelated existing page/notification transitions; document that the layered island transition uses the new constants.
 
-- [ ] **Step 4: Implement the minimal phase-based controller**
+- [x] **Step 4: Implement the minimal phase-based controller**
 
 In `createIslandTransitionController`:
 
@@ -190,7 +192,7 @@ const request = async (state: IslandState): Promise<void> => {
 
 `wait()` must reuse the existing cancellable timer / resolver mechanism so a new generation cannot leave an older request unresolved.
 
-- [ ] **Step 5: Run focused tests**
+- [x] **Step 5: Run focused tests**
 
 Run:
 
@@ -201,7 +203,7 @@ pnpm exec tsc --noEmit
 
 Expected: all window-policy tests pass and TypeScript exits 0.
 
-- [ ] **Step 6: Commit Task 1**
+- [x] **Step 6: Commit Task 1**
 
 ```bash
 git add src/lib/anim.ts src/lib/window-policy.ts src/lib/__tests__/window-policy.test.ts
@@ -221,7 +223,7 @@ git commit -m "refactor(window): 建立分层动画阶段"
 - Consumes: `IslandVisualPhase`、Task 1 的动画常量和 phase-based `createIslandTransitionController`。
 - Produces: 稳定顶部栏、独立主体 Motion 容器、reduced-motion 感知的方案 B 动画。
 
-- [ ] **Step 1: Add a failing visual-state mapping test**
+- [x] **Step 1: Add a failing visual-state mapping test**
 
 Export a pure helper from `src/lib/window-policy.ts`:
 
@@ -244,7 +246,7 @@ it.each([
 });
 ```
 
-- [ ] **Step 2: Run focused test and confirm RED**
+- [x] **Step 2: Run focused test and confirm RED**
 
 Run:
 
@@ -254,7 +256,7 @@ pnpm test src/lib/__tests__/window-policy.test.ts
 
 Expected: FAIL because `contentVisibleForPhase` does not exist.
 
-- [ ] **Step 3: Implement the pure helper and App phase state**
+- [x] **Step 3: Implement the pure helper and App phase state**
 
 In `App.tsx`:
 
@@ -279,7 +281,7 @@ When accepting or recovering a snapshot, derive the resting phase from `snapshot
 setVisualPhase(snapshot.effectiveState === "expanded" ? "expanded" : "compact");
 ```
 
-- [ ] **Step 4: Replace the outer height transition**
+- [x] **Step 4: Replace the outer height transition**
 
 For the island `motion.div`, remove the generic CSS `transition-[height]` timing and drive height through Motion:
 
@@ -298,7 +300,7 @@ transition={{
 
 The Rust platform window still expands first because `expanded` becomes authoritative from the returned policy snapshot; during collapse the visual phase hides content before Compact is submitted.
 
-- [ ] **Step 5: Wrap only the body content in AnimatePresence**
+- [x] **Step 5: Wrap only the body content in AnimatePresence**
 
 Keep the existing top bar outside the body animation. Wrap the expanded page body in:
 
@@ -330,7 +332,7 @@ Keep the existing top bar outside the body animation. Wrap the expanded page bod
 
 Do not move page state, the page navigation bar, hover handlers, or notification listeners.
 
-- [ ] **Step 6: Run focused and full frontend verification**
+- [x] **Step 6: Run focused and full frontend verification**
 
 Run:
 
@@ -343,7 +345,7 @@ git diff --check -- src/App.tsx src/lib/anim.ts src/lib/window-policy.ts src/lib
 
 Expected: tests and typecheck pass; all three HTML entries build; only the existing main chunk >500 kB warning may remain.
 
-- [ ] **Step 7: Commit Task 2**
+- [x] **Step 7: Commit Task 2**
 
 ```bash
 git add src/App.tsx src/lib/anim.ts src/lib/window-policy.ts src/lib/__tests__/window-policy.test.ts
@@ -363,7 +365,7 @@ git commit -m "feat(window): 优化展开收起分层动画"
 - Consumes: Task 2 完成的方案 B 动画。
 - Produces: 自动化证据与 Windows 真机结论；不触碰共享 `CURRENT.md` / `docs/开发进度.md`。
 
-- [ ] **Step 1: Run the final automated gate**
+- [x] **Step 1: Run the final automated gate**
 
 Run:
 
@@ -376,7 +378,7 @@ git diff --check
 
 Expected: all commands pass; build may only report the existing main chunk >500 kB warning.
 
-- [ ] **Step 2: Ask the user to run the Windows visual matrix**
+- [x] **Step 2: Ask the user to run the Windows visual matrix**
 
 Verify all of the following:
 
@@ -389,11 +391,11 @@ Verify all of the following:
 
 Do not mark this step complete until the user explicitly reports the result.
 
-- [ ] **Step 3: Record fresh evidence only in module 11 files**
+- [x] **Step 3: Record fresh evidence only in module 11 files**
 
 Create this plan file at the path named above with checked boxes and exact command counts, then append a short evidence bullet to `vault/11-更新窗口策略与七日天气.md`. Do not modify module 10, `vault/CURRENT.md`, or `docs/开发进度.md` while the other session owns them.
 
-- [ ] **Step 4: Commit Task 3**
+- [x] **Step 4: Commit Task 3**
 
 ```bash
 git add docs/superpowers/plans/2026-07-14-island-transition-animation.md vault/11-更新窗口策略与七日天气.md
@@ -402,6 +404,13 @@ git commit -m "docs(window): 验收分层展开收起动画"
 ```
 
 ---
+
+## Completion Evidence（2026-07-14）
+
+- TDD RED 分别确认旧 controller 缺少 visual phase/reduced-motion、手动操作无法抑制 hover timer、显式 Rust 状态未清除已生效 hover、快照事件抢占过渡阶段、串行收起形成两段动画，以及页面标签按钮被 wheel 分类器拦截。
+- 最终收起时序为内容淡出与前端容器收缩并行约 240ms，完成后才提交 Rust `Compact`；新 generation 可取消待提交的旧 Compact。
+- 用户 Windows 真机确认：悬停自动展开/收起使用新动画；手动收起可覆盖已有 hover；重新移入恢复自动展开；顶部页面文字区域可滚轮换页；最终相关问题均确认修复。
+- 收尾新鲜验证：`window-policy.test.ts` + `islandWheel.test.ts` 共 57/57；Rust `window_policy::tests` 20/20、`hotkeys::tests` 10/10、`storage::portable_tests` 2/2；`pnpm exec tsc --noEmit`、三入口 `pnpm build` 与全量 `git diff --check` 通过。build 仅有既有主 chunk >500 kB 警告。
 
 ## Completion Criteria
 
