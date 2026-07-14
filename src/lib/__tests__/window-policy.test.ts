@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createHoverController,
   createIslandTransitionController,
+  shouldSyncExternalVisualPhase,
   type WindowPolicySnapshot,
 } from "../window-policy";
 
@@ -114,6 +115,15 @@ describe("hover controller", () => {
     vi.runAllTimers();
 
     expect(submit.mock.calls).toEqual([[true], [false]]);
+  });
+});
+
+describe("external policy snapshots", () => {
+  it("preserves an in-flight local animation phase", () => {
+    expect(shouldSyncExternalVisualPhase("expanding")).toBe(false);
+    expect(shouldSyncExternalVisualPhase("collapsing")).toBe(false);
+    expect(shouldSyncExternalVisualPhase("compact")).toBe(true);
+    expect(shouldSyncExternalVisualPhase("expanded")).toBe(true);
   });
 });
 

@@ -3,6 +3,10 @@ import { invoke } from "@tauri-apps/api/core";
 export type IslandState = "hidden" | "compact" | "expanded";
 export type IslandVisualPhase = "compact" | "expanding" | "expanded" | "collapsing";
 
+export function shouldSyncExternalVisualPhase(phase: IslandVisualPhase): boolean {
+  return phase === "compact" || phase === "expanded";
+}
+
 export interface WindowPolicySnapshot {
   desiredState: IslandState;
   effectiveState: IslandState;

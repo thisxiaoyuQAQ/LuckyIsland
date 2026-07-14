@@ -36,6 +36,7 @@ import {
   createHoverController,
   createIslandTransitionController,
   setIslandState as submitIslandState,
+  shouldSyncExternalVisualPhase,
   windowHoverSet,
   windowPolicyGet,
   type IslandState,
@@ -325,9 +326,11 @@ function App() {
         }));
       } else {
         setPolicy(event.payload);
-        setVisualPhase(
-          event.payload.effectiveState === "expanded" ? "expanded" : "compact",
-        );
+        if (shouldSyncExternalVisualPhase(visualPhaseRef.current)) {
+          setVisualPhase(
+            event.payload.effectiveState === "expanded" ? "expanded" : "compact",
+          );
+        }
       }
     }).then((fn) => {
       un = fn;
