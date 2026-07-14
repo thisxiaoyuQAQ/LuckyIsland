@@ -191,6 +191,42 @@ describe("island transition controller", () => {
     ]);
   });
 
+  it("shrinks the frontend container before submitting compact", async () => {
+    vi.useFakeTimers();
+    const calls: string[] = [];
+    const controller = createIslandTransitionController({
+      contentExitDelay: 120,
+      containerCollapseDelay: 200,
+      reducedMotion: () => false,
+      setVisualPhase: (phase) => calls.push(`phase:${phase}`),
+      submit: async (state) => {
+        calls.push(`submit:${state}`);
+        return snapshot(state);
+      },
+      acceptSnapshot: () => calls.push("snapshot"),
+      recover: vi.fn(),
+    });
+
+    const request = controller.request("compact");
+    expect(calls).toEqual(["phase:collapsing"]);
+
+    await vi.advanceTimersByTimeAsync(120);
+    expect(calls).toEqual(["phase:collapsing", "phase:compact"]);
+
+    await vi.advanceTimersByTimeAsync(199);
+    expect(calls).not.toContain("submit:compact");
+
+    await vi.advanceTimersByTimeAsync(1);
+    await request;
+    expect(calls).toEqual([
+      "phase:collapsing",
+      "phase:compact",
+      "submit:compact",
+      "snapshot",
+      "phase:compact",
+    ]);
+  });
+
   it("cancels a pending compact resize when expand is requested", async () => {
     vi.useFakeTimers();
     const submit = vi.fn(async (state) => snapshot(state));

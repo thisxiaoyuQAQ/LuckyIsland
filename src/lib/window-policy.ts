@@ -110,7 +110,10 @@ export function createHoverController({
 }
 
 interface IslandTransitionControllerOptions {
-  collapseDelay: number;
+  contentExitDelay?: number;
+  containerCollapseDelay?: number;
+  /** Backward-compatible one-stage delay for existing callers/tests. */
+  collapseDelay?: number;
   reducedMotion: () => boolean;
   setVisualPhase: (phase: IslandVisualPhase) => void;
   submit: (state: IslandState) => Promise<WindowPolicySnapshot>;
@@ -119,6 +122,8 @@ interface IslandTransitionControllerOptions {
 }
 
 export function createIslandTransitionController({
+  contentExitDelay,
+  containerCollapseDelay,
   collapseDelay,
   reducedMotion,
   setVisualPhase,
@@ -137,6 +142,17 @@ export function createIslandTransitionController({
     finishDelay = undefined;
   };
 
+  const wait = async (delay: number) => {
+    await new Promise<void>((resolve) => {
+      finishDelay = resolve;
+      timer = setTimeout(() => {
+        timer = undefined;
+        finishDelay = undefined;
+        resolve();
+      }, delay);
+    });
+  };
+
   const request = async (
     state: IslandState,
     submitState: (state: IslandState) => Promise<WindowPolicySnapshot> = submit,
@@ -146,15 +162,16 @@ export function createIslandTransitionController({
     if (state === "compact") {
       setVisualPhase("collapsing");
       if (!reducedMotion()) {
-        await new Promise<void>((resolve) => {
-          finishDelay = resolve;
-          timer = setTimeout(() => {
-            timer = undefined;
-            finishDelay = undefined;
-            resolve();
-          }, collapseDelay);
-        });
+        const exitDelay = contentExitDelay ?? collapseDelay ?? 0;
+        await wait(exitDelay);
         if (currentGeneration !== generation) return;
+        if (containerCollapseDelay !== undefined) {
+          setVisualPhase("compact");
+          await wait(containerCollapseDelay);
+          if (currentGeneration !== generation) return;
+        }
+      } else {
+        setVisualPhase("compact");
       }
     } else if (state === "expanded") {
       setVisualPhase("expanding");
