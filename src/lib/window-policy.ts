@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 
 export type IslandState = "hidden" | "compact" | "expanded";
+export type IslandVisualPhase = "compact" | "expanding" | "expanded" | "collapsing";
 
 export interface WindowPolicySnapshot {
   desiredState: IslandState;
@@ -53,6 +54,7 @@ export function createHoverController({
 }: HoverControllerOptions) {
   let generation = 0;
   let active = false;
+  let suppressed = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
 
   const clearTimer = () => {
@@ -63,6 +65,10 @@ export function createHoverController({
   const schedule = (hovered: boolean, delay: number) => {
     const currentGeneration = ++generation;
     clearTimer();
+    if (suppressed) {
+      if (!hovered) suppressed = false;
+      return;
+    }
     timer = setTimeout(() => {
       timer = undefined;
       if (currentGeneration !== generation) return;
@@ -74,6 +80,11 @@ export function createHoverController({
 
   const enter = () => schedule(true, enterDelay);
   const leave = () => schedule(false, leaveDelay);
+  const suppressCurrentCycle = () => {
+    generation += 1;
+    clearTimer();
+    suppressed = true;
+  };
   const disable = () => {
     generation += 1;
     clearTimer();
@@ -87,20 +98,22 @@ export function createHoverController({
     clearTimer();
   };
 
-  return { enter, leave, disable, dispose };
+  return { enter, leave, suppressCurrentCycle, disable, dispose };
 }
 
 interface IslandTransitionControllerOptions {
-  shrinkDelay: number;
-  setVisualState: (state: IslandState) => void;
+  collapseDelay: number;
+  reducedMotion: () => boolean;
+  setVisualPhase: (phase: IslandVisualPhase) => void;
   submit: (state: IslandState) => Promise<WindowPolicySnapshot>;
   acceptSnapshot: (snapshot: WindowPolicySnapshot) => void;
   recover: () => void | Promise<void>;
 }
 
 export function createIslandTransitionController({
-  shrinkDelay,
-  setVisualState,
+  collapseDelay,
+  reducedMotion,
+  setVisualPhase,
   submit,
   acceptSnapshot,
   recover,
@@ -116,26 +129,35 @@ export function createIslandTransitionController({
     finishDelay = undefined;
   };
 
-  const request = async (state: IslandState): Promise<void> => {
+  const request = async (
+    state: IslandState,
+    submitState: (state: IslandState) => Promise<WindowPolicySnapshot> = submit,
+  ): Promise<void> => {
     const currentGeneration = ++generation;
     clearPendingDelay();
-    setVisualState(state);
-
     if (state === "compact") {
-      await new Promise<void>((resolve) => {
-        finishDelay = resolve;
-        timer = setTimeout(() => {
-          timer = undefined;
-          finishDelay = undefined;
-          resolve();
-        }, shrinkDelay);
-      });
-      if (currentGeneration !== generation) return;
+      setVisualPhase("collapsing");
+      if (!reducedMotion()) {
+        await new Promise<void>((resolve) => {
+          finishDelay = resolve;
+          timer = setTimeout(() => {
+            timer = undefined;
+            finishDelay = undefined;
+            resolve();
+          }, collapseDelay);
+        });
+        if (currentGeneration !== generation) return;
+      }
+    } else if (state === "expanded") {
+      setVisualPhase("expanding");
     }
 
     try {
-      const snapshot = await submit(state);
-      if (currentGeneration === generation) acceptSnapshot(snapshot);
+      const snapshot = await submitState(state);
+      if (currentGeneration === generation) {
+        acceptSnapshot(snapshot);
+        setVisualPhase(snapshot.effectiveState === "expanded" ? "expanded" : "compact");
+      }
     } catch (error) {
       if (currentGeneration === generation) await recover();
       throw error;

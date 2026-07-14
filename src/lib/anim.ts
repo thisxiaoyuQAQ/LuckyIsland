@@ -8,10 +8,9 @@ export const ISLAND_DURATION_MS = 260;
 /** motion 的 cubic-bezier 控制点（等价 CSS --island-ease）；4 元组以匹配 motion BezierDefinition 类型 */
 export const ISLAND_EASE: [number, number, number, number] = [0.4, 0, 0.2, 1];
 
-/**
- * 收起时延迟缩窗的等待时长（ms）。
- * 内层容器 CSS 过渡收缩完成后再调用 Rust set_island_state 缩窗，
- * 避免窗口先变小、容器仍大被窗口方形边界裁剪出无圆角方框。
- * 须 >= ISLAND_DURATION_MS；留 20ms 缓冲。
- */
-export const ISLAND_WINDOW_SHRINK_DELAY_MS = 280;
+/** 方案 B：外层容器展开时长与缓动。 */
+export const ISLAND_EXPAND_DURATION_MS = 240;
+export const ISLAND_CONTENT_ENTER_DELAY_MS = 60;
+export const ISLAND_CONTENT_ENTER_DURATION_MS = 180;
+export const ISLAND_CONTENT_EXIT_DURATION_MS = 120;
+export const ISLAND_LAYERED_EASE: [number, number, number, number] = [0.2, 0.8, 0.2, 1];
