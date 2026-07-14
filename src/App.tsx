@@ -425,6 +425,7 @@ function App() {
               {pages.map((p, i) => (
                 <button
                   key={p.id}
+                  data-island-wheel-page-switch
                   onClick={() => setPage(i)}
                   className={cn(
                     "rounded-md px-2.5 py-1 text-xs transition-colors",

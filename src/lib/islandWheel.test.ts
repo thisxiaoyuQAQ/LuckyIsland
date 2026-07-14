@@ -145,6 +145,20 @@ describe("getIslandWheelDirection", () => {
     expect(direction(element(tagName))).toBe(0);
   });
 
+  it("switches pages over an explicitly marked page-tab button", () => {
+    expect(
+      direction(
+        element("BUTTON", {
+          attrs: { "data-island-wheel-page-switch": "" },
+        }),
+      ),
+    ).toBe(1);
+  });
+
+  it("keeps unmarked action buttons native", () => {
+    expect(direction(element("BUTTON"))).toBe(0);
+  });
+
   it("does not switch pages over a range input", () => {
     expect(direction(element("INPUT", { attrs: { type: "range" } }))).toBe(0);
   });

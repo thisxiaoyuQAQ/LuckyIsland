@@ -70,6 +70,7 @@ function defaultOverflowReader(target: EventTarget): Overflow {
 }
 
 function keepsNativeWheel(target: ElementLike, readOverflow: OverflowReader): boolean {
+  if (target.getAttribute("data-island-wheel-page-switch") !== null) return false;
   if (target.getAttribute("data-island-wheel-native") !== null) return true;
   if (INTERACTIVE_TAGS.has(target.tagName.toUpperCase())) return true;
   if (target.isContentEditable) return true;
