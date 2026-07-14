@@ -390,12 +390,17 @@ fn update_and_apply(
     }
 }
 
+fn apply_explicit_state(inputs: &mut WindowPolicyInputs, state: IslandState) {
+    inputs.desired_state = state;
+    inputs.hovered = false;
+}
+
 pub fn set_desired_state(
     app: &AppHandle,
     state: IslandState,
     focus: FocusIntent,
 ) -> Result<WindowPolicySnapshot, String> {
-    update_and_apply(app, |inputs| inputs.desired_state = state, focus)
+    update_and_apply(app, |inputs| apply_explicit_state(inputs, state), focus)
 }
 
 fn apply_hover_report(inputs: &mut WindowPolicyInputs, hovered: bool) {
@@ -837,6 +842,21 @@ mod tests {
         assert!(!snapshot.click_through);
         assert_eq!(harness.persisted, vec![false]);
         assert_eq!(harness.emitted.len(), 1);
+    }
+
+    #[test]
+    fn explicit_user_state_clears_transient_hover_before_reduce() {
+        let mut policy_inputs = inputs(IslandState::Compact, false, false);
+        policy_inputs.hover_expand = true;
+        policy_inputs.hovered = true;
+
+        apply_explicit_state(&mut policy_inputs, IslandState::Compact);
+
+        assert!(!policy_inputs.hovered);
+        assert_eq!(
+            reduce(policy_inputs, FocusIntent::Focus).effective_state,
+            IslandState::Compact
+        );
     }
 
     #[test]
