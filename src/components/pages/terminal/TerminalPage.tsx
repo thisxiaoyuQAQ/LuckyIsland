@@ -2,6 +2,7 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Plus, X, ExternalLink } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { getVerticalWheelDirection } from "@/lib/islandWheel";
 import { useReorder } from "@/lib/useReorder";
 import { TerminalTab } from "./TerminalTab";
 import { Shortcuts } from "./Shortcuts";
@@ -62,13 +63,15 @@ export function TerminalPage({ compact }: { compact: boolean }) {
       {/* 工具栏：tab 栏（横向滚动） + 快捷命令 + 外部 WT */}
       <div className="flex shrink-0 items-center gap-2">
         <div
+          data-island-wheel-native
           className="flex flex-1 min-w-0 items-center gap-1 overflow-x-auto [scrollbar-gutter:stable]"
           onWheel={(e) => {
             if (tabs.length < 2) return;
+            const direction = getVerticalWheelDirection(e);
+            if (direction === 0) return;
             const idx = tabs.findIndex((t) => t.id === active);
             if (idx < 0) return;
-            const next =
-              e.deltaY > 0 ? Math.min(idx + 1, tabs.length - 1) : Math.max(idx - 1, 0);
+            const next = Math.max(0, Math.min(idx + direction, tabs.length - 1));
             storeSetActive(tabs[next].id);
           }}
         >
@@ -147,7 +150,10 @@ export function TerminalPage({ compact }: { compact: boolean }) {
       {err && <div className="shrink-0 text-[11px] text-destructive">{err}</div>}
 
       {/* tab 内容：仅渲染激活 tab（避免隐藏容器上 xterm 不渲染） */}
-      <div className="min-h-0 flex-1 overflow-hidden rounded-md border border-border/60 bg-[#0c0c14]">
+      <div
+        data-island-wheel-native
+        className="min-h-0 flex-1 overflow-hidden rounded-md border border-border/60 bg-[#0c0c14]"
+      >
         {tabs
           .filter((t) => t.id === active)
           .map((t) => (

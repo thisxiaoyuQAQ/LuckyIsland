@@ -25,6 +25,10 @@ import {
   type PageId,
 } from "@/lib/settings";
 import { ISLAND_DURATION_MS, ISLAND_EASE, ISLAND_WINDOW_SHRINK_DELAY_MS } from "@/lib/anim";
+import {
+  getIslandWheelDirection,
+  updateWheelGestureLock,
+} from "@/lib/islandWheel";
 
 type Theme = "light" | "dark";
 type ThemeMode = Theme | "auto";
@@ -79,6 +83,11 @@ function App() {
   const [pagesOrder, setPagesOrder] = useState(parsePagesOrder(null));
   const [direction, setDirection] = useState(1);
   const prevIndexRef = useRef(0);
+  const islandRef = useRef<HTMLDivElement>(null);
+  const pageIndexRef = useRef(pageIndex);
+  const wheelLockedUntilRef = useRef(0);
+  const islandStateChangedRef = useRef(false);
+  pageIndexRef.current = pageIndex;
 
   const pages = useMemo(() => {
     const ordered = pagesOrder.map((id) => PAGE_BY_ID[id]).filter(Boolean);
@@ -91,6 +100,7 @@ function App() {
   const CurrentPage = pages[pageIndex]?.Component ?? TimePage;
 
   const setState = useCallback((s: IslandState) => {
+    islandStateChangedRef.current = true;
     setIslandState(s);
     if (s === "compact") {
       // 收起：先让容器 CSS 收缩（在原窗口尺寸内，圆角不被裁剪），过渡完成后再缩小窗口，
@@ -121,16 +131,41 @@ function App() {
     [pages.length],
   );
 
+  // 岛面非交互区域滚轮切页；局部控件/滚动区由分类器保留自身 wheel 语义。
+  useEffect(() => {
+    const island = islandRef.current;
+    if (!island) return;
+
+    const onWheel = (event: WheelEvent) => {
+      const wheelDirection = getIslandWheelDirection(event, island);
+      if (wheelDirection === 0 || pages.length < 2) return;
+
+      const lock = updateWheelGestureLock(
+        wheelLockedUntilRef.current,
+        performance.now(),
+        ISLAND_DURATION_MS,
+      );
+      wheelLockedUntilRef.current = lock.lockedUntil;
+      if (!lock.consume) return;
+
+      event.preventDefault();
+      setPage(pageIndexRef.current + wheelDirection);
+    };
+
+    island.addEventListener("wheel", onWheel, { passive: false });
+    return () => island.removeEventListener("wheel", onWheel);
+  }, [pages.length, setPage]);
+
   const setThemeAndPersist = useCallback((mode: ThemeMode) => {
     setThemeMode(mode);
     void settingSetEmit(KEYS.theme, mode);
   }, []);
 
-  // settings KV 初始化：页面显隐/顺序、主题模式、启动默认态。
+  // settings KV 初始化：各项独立应用，单个读取失败不影响其余设置。
   useEffect(() => {
     (async () => {
-      const [enabledRaw, orderRaw, themeRaw, defaultStateRaw, blurRaw, opacityRaw] =
-        await Promise.all([
+      const [enabled, order, theme, defaultState, blurResult, opacityResult] =
+        await Promise.allSettled([
           settingGet(KEYS.pagesEnabled),
           settingGet(KEYS.pagesOrder),
           settingGet(KEYS.theme),
@@ -138,13 +173,39 @@ function App() {
           settingGet(KEYS.blur),
           settingGet(KEYS.windowOpacity),
         ]);
-      setPagesEnabled(parsePagesEnabled(enabledRaw));
-      setPagesOrder(parsePagesOrder(orderRaw));
-      setThemeMode(normalizeThemeMode(themeRaw) ?? "auto");
-      setBlur(parseBool(blurRaw, true));
-      setOpacity(parseOpacity(opacityRaw));
-      const initialState = normalizeIslandState(defaultStateRaw);
-      if (initialState) setIslandState(initialState);
+
+      const applySetting = (
+        key: string,
+        result: PromiseSettledResult<string | null>,
+        apply: (value: string | null) => void,
+      ) => {
+        if (result.status === "fulfilled") {
+          apply(result.value);
+        } else {
+          console.error(`[settings] 启动读取失败 ${key}:`, result.reason);
+        }
+      };
+
+      applySetting(KEYS.pagesEnabled, enabled, (value) => {
+        setPagesEnabled(parsePagesEnabled(value));
+      });
+      applySetting(KEYS.pagesOrder, order, (value) => {
+        setPagesOrder(parsePagesOrder(value));
+      });
+      applySetting(KEYS.theme, theme, (value) => {
+        setThemeMode(normalizeThemeMode(value) ?? "auto");
+      });
+      applySetting(KEYS.defaultState, defaultState, (value) => {
+        if (islandStateChangedRef.current) return;
+        const initialState = normalizeIslandState(value);
+        if (initialState) setIslandState(initialState);
+      });
+      applySetting(KEYS.blur, blurResult, (value) => {
+        setBlur(parseBool(value, true));
+      });
+      applySetting(KEYS.windowOpacity, opacityResult, (value) => {
+        setOpacity(parseOpacity(value));
+      });
     })();
   }, []);
 
@@ -184,10 +245,13 @@ function App() {
     return () => mq.removeEventListener("change", h);
   }, []);
 
-  // 监听 Rust 推送的状态变化。
+  // 监听 Rust 推送的状态变化；启动设置读取不得覆盖更新后的运行态。
   useEffect(() => {
     let un: (() => void) | undefined;
-    listen<IslandState>("window://state-changed", (e) => setIslandState(e.payload)).then((fn) => {
+    listen<IslandState>("window://state-changed", (e) => {
+      islandStateChangedRef.current = true;
+      setIslandState(e.payload);
+    }).then((fn) => {
       un = fn;
     });
     return () => un?.();
@@ -239,6 +303,7 @@ function App() {
   return (
     <div className="flex h-screen w-screen items-start justify-center pt-3">
       <motion.div
+        ref={islandRef}
         className={cn(
           "flex w-full max-w-[700px] flex-col rounded-2xl border border-border/60 px-4 shadow-2xl transition-[height] duration-[var(--island-duration)] ease-[var(--island-ease)]",
           expanded ? "h-[380px] py-3" : "h-14 py-0",
@@ -256,13 +321,7 @@ function App() {
         {/* 顶部条 */}
         <div data-tauri-drag-region className="flex h-14 shrink-0 items-center gap-3">
           {expanded ? (
-            <div
-              className="flex items-center gap-1"
-              onWheel={(e) => {
-                if (e.deltaY > 0) setPage(pageIndex + 1);
-                else if (e.deltaY < 0) setPage(pageIndex - 1);
-              }}
-            >
+            <div className="flex items-center gap-1">
               {pages.map((p, i) => (
                 <button
                   key={p.id}
@@ -279,13 +338,7 @@ function App() {
               ))}
             </div>
           ) : (
-            <div
-              className="flex items-center gap-1.5"
-              onWheel={(e) => {
-                if (e.deltaY > 0) setPage(pageIndex + 1);
-                else if (e.deltaY < 0) setPage(pageIndex - 1);
-              }}
-            >
+            <div className="flex items-center gap-1.5">
               {pages.map((p, i) => (
                 <span
                   key={p.id}

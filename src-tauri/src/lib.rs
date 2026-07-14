@@ -140,9 +140,25 @@ fn set_island_state(app: tauri::AppHandle, state: String) -> Result<(), String> 
     Ok(())
 }
 
+fn storage_plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
+    tauri::plugin::Builder::new("storage")
+        .setup(|app, _api| {
+            let db = storage::Db::init(app).map_err(|error| {
+                std::io::Error::other(format!("failed to initialize SQLite: {error}"))
+            })?;
+            if !app.manage(db) {
+                return Err(std::io::Error::other("SQLite state was already managed").into());
+            }
+            Ok(())
+        })
+        .build()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // SQLite 必须在 tauri.conf.json 的静态 webview 创建前可用，避免首屏 setting_get 抢跑。
+        .plugin(storage_plugin())
         // 单实例：重复启动时唤起已有窗口
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             set_state_and_emit(app, "compact");
@@ -264,13 +280,14 @@ pub fn run() {
             hotkeys_reload
         ])
         .setup(|app| {
-            // Updater 2.10 wires `cleanup_before_exit` into each update resource.
-            // Register an app resource guard so terminal and voice cleanup runs
-            // before the updater starts the Windows installer and exits.
-            app.resources_table()
-                .add(UpdaterCleanupGuard(app.handle().clone()));
-            app.handle()
-                .plugin(tauri_plugin_updater::Builder::new().build())?;
+            // Updater Config 不接受缺失配置对应的 null；真实公钥与 endpoint 接入前保持禁用。
+            // 配置存在后再注册 cleanup guard，确保安装器退出路径也释放终端和语音资源。
+            if app.config().plugins.0.contains_key("updater") {
+                app.resources_table()
+                    .add(UpdaterCleanupGuard(app.handle().clone()));
+                app.handle()
+                    .plugin(tauri_plugin_updater::Builder::new().build())?;
+            }
 
             // 系统托盘
             let show_item = MenuItem::with_id(app, "show", "显示/隐藏", true, None::<&str>)?;
@@ -309,13 +326,12 @@ pub fn run() {
                 })
                 .build(app)?;
 
-            // 初始化 SQLite（%APPDATA%/com.luckyisland.app/data.db）
-            let db = storage::Db::init(app.handle())?;
-            let default_state = db
+            // SQLite 已在 storage_plugin 中初始化；这里只读取启动默认态。
+            let default_state = app
+                .state::<storage::Db>()
                 .setting_get("general:default_state")
                 .filter(|s| matches!(s.as_str(), "hidden" | "compact" | "expanded"))
                 .unwrap_or_else(|| "compact".to_string());
-            app.manage(db);
 
             // 自定义全局热键：按用户绑定注册（DB 无值则默认 alt+KeyX / alt+Space）。
             // HotkeyMap 供插件 handler 用 HotKey::id() 反查动作分发。

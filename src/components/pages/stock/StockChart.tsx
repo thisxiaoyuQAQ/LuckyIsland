@@ -106,5 +106,5 @@ export function StockChart({
     };
   }, [symbol, period, onMa]);
 
-  return <div ref={containerRef} className="h-full w-full" />;
+  return <div ref={containerRef} data-island-wheel-native className="h-full w-full" />;
 }
