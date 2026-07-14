@@ -176,7 +176,7 @@ Create `vault/12-plugin-system-phase-0.md` with:
 
 ## 原有项目恢复点
 
-插件专项开始前，项目唯一入口为模块 10「审计整改」BASE-10B 工程基线；模块 11 暂停于 Task 5。若用户不继续阶段 1，应把 `vault/CURRENT.md` 恢复到 `vault/10b-工程基线与低风险重构.md` 的 BASE-10B-01 方案评估，不得覆盖模块 10/11 的未提交现场。
+插件专项开始前，项目唯一入口为模块 10「审计整改」BASE-10B 工程基线；模块 11 暂停于 Task 5。若用户不继续阶段 1，应把 `vault/CURRENT.md` 恢复到 `vault/10b-工程基线与低风险重构.md` 的 BASE-10B-03 方案评估，不得覆盖模块 10/11 的未提交现场。
 ```
 
 - [ ] **Step 2: Update the roadmap header without changing its architecture content**
@@ -204,7 +204,7 @@ Run:
 
 ```bash
 rg -n "阶段 0 已于 2026-07-14 完成|阶段 1 尚未立项|禁止直接作为实施计划执行" docs/superpowers/specs/2026-07-13-plugin-market-roadmap.md
-rg -n "状态：✅ 已完成|10/10 已解决|不得从路线图、本 Vault 或阶段 0 规格直接开始阶段 1 编码|BASE-10B-01" vault/12-plugin-system-phase-0.md
+rg -n "状态：✅ 已完成|10/10 已解决|不得从路线图、本 Vault 或阶段 0 规格直接开始阶段 1 编码|BASE-10B-03" vault/12-plugin-system-phase-0.md
 ```
 
 Expected: every required phrase appears; the Vault contains both the plugin stop point and the preserved module 10 resume point.
@@ -284,13 +284,13 @@ Use this exact content:
 **等待用户选择后续方向。**
 
 - 若继续插件专项：只可启动阶段 1 的独立 brainstorming，不能直接编码；
-- 若返回原项目：恢复模块 10 `BASE-10B-01` 统一验证入口方案评估；模块 11 继续暂停于 Task 5。
+- 若返回原项目：恢复模块 10 `BASE-10B-03` 统一验证入口方案评估；模块 11 继续暂停于 Task 5。
 
 当前没有获授权的阶段 1 实施任务。
 
 ## 保留现场
 
-- 模块 10「审计整改」：DOC-10A、FIX-10A 已完成；原入口为 BASE-10B-01 方案评估；
+- 模块 10「审计整改」：DOC-10A、FIX-10A 已完成；原入口为 BASE-10B-03 方案评估；
 - 模块 11「更新、窗口策略与七日天气」：Task 1～4 已完成，暂停于 Task 5；
 - 工作区包含上述模块的未提交改动，不得覆盖、清理或夹带提交。
 ```
@@ -324,7 +324,7 @@ Insert immediately after the module table:
 Run:
 
 ```bash
-rg -n "当前唯一下一动作|当前没有获授权的阶段 1 实施任务|BASE-10B-01|暂停于 Task 5" vault/CURRENT.md
+rg -n "当前唯一下一动作|当前没有获授权的阶段 1 实施任务|BASE-10B-03|暂停于 Task 5" vault/CURRENT.md
 rg -n "\| 10 \| 审计整改 \| 🚧|\| 11 \| 更新、窗口策略与七日天气 \| 🚫|\| 12 \| 插件系统阶段 0：威胁模型与产品规则 \| ✅" docs/开发进度.md
 rg -n "10/10 已解决|阶段 1 尚未立项|没有实现插件运行时" docs/开发进度.md
 ```
