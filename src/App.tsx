@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FC } from "react";
-import { AnimatePresence, motion } from "motion/react";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { listen } from "@tauri-apps/api/event";
 import { ChevronDown, ChevronUp, Moon, Settings, Sun } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -23,7 +23,15 @@ import {
   settingSetEmit,
   type PageId,
 } from "@/lib/settings";
-import { ISLAND_DURATION_MS, ISLAND_EASE, ISLAND_WINDOW_SHRINK_DELAY_MS } from "@/lib/anim";
+import {
+  ISLAND_CONTENT_ENTER_DELAY_MS,
+  ISLAND_CONTENT_ENTER_DURATION_MS,
+  ISLAND_CONTENT_EXIT_DURATION_MS,
+  ISLAND_DURATION_MS,
+  ISLAND_EASE,
+  ISLAND_EXPAND_DURATION_MS,
+  ISLAND_LAYERED_EASE,
+} from "@/lib/anim";
 import {
   createHoverController,
   createIslandTransitionController,
@@ -31,6 +39,7 @@ import {
   windowHoverSet,
   windowPolicyGet,
   type IslandState,
+  type IslandVisualPhase,
   type WindowPolicySnapshot,
 } from "@/lib/window-policy";
 import {
@@ -79,7 +88,9 @@ function App() {
   const [themeMode, setThemeMode] = useState<ThemeMode>("auto");
   const [systemTheme, setSystemTheme] = useState<Theme>(getSystemTheme);
   const [policy, setPolicy] = useState<WindowPolicySnapshot | null>(null);
-  const [visualState, setVisualState] = useState<IslandState | null>(null);
+  const [visualPhase, setVisualPhase] = useState<IslandVisualPhase>("compact");
+  const reducedMotion = useReducedMotion();
+  const reducedMotionRef = useRef(reducedMotion);
   const [blur, setBlur] = useState(true);
   const [opacity, setOpacity] = useState(0.7);
   const [pageIndex, setPageIndex] = useState(0);
@@ -93,21 +104,24 @@ function App() {
   const islandStateChangedRef = useRef(false);
   const transitionControllerRef = useRef<ReturnType<typeof createIslandTransitionController> | null>(null);
   const hoverControllerRef = useRef<ReturnType<typeof createHoverController> | null>(null);
+  const visualPhaseRef = useRef(visualPhase);
+  reducedMotionRef.current = reducedMotion;
+  visualPhaseRef.current = visualPhase;
   pageIndexRef.current = pageIndex;
 
   if (transitionControllerRef.current === null) {
     transitionControllerRef.current = createIslandTransitionController({
-      shrinkDelay: ISLAND_WINDOW_SHRINK_DELAY_MS,
-      setVisualState,
+      collapseDelay: ISLAND_CONTENT_EXIT_DURATION_MS,
+      reducedMotion: () => reducedMotionRef.current ?? false,
+      setVisualPhase,
       submit: submitIslandState,
       acceptSnapshot: (snapshot) => {
         setPolicy(snapshot);
-        setVisualState(null);
       },
       recover: async () => {
         const snapshot = await windowPolicyGet();
         setPolicy(snapshot);
-        setVisualState(null);
+        setVisualPhase(snapshot.effectiveState === "expanded" ? "expanded" : "compact");
       },
     });
   }
@@ -117,9 +131,10 @@ function App() {
       enterDelay: 180,
       leaveDelay: 300,
       submit: (hovered) => {
-        void windowHoverSet(hovered).catch((error) =>
-          console.error("[window-policy] 提交悬停状态失败:", error),
-        );
+        const target = hovered ? "expanded" : "compact";
+        void transitionControllerRef.current
+          ?.request(target, async () => windowHoverSet(hovered))
+          .catch((error) => console.error("[window-policy] 提交悬停状态失败:", error));
       },
     });
   }
@@ -130,13 +145,14 @@ function App() {
     return visible.length > 0 ? visible : [PAGE_BY_ID.time];
   }, [pagesEnabled, pagesOrder]);
 
-  const islandState = visualState ?? policy?.effectiveState ?? "compact";
-  const expanded = islandState === "expanded";
+  const islandState = policy?.effectiveState ?? "compact";
+  const expanded = visualPhase === "expanding" || visualPhase === "expanded";
   const effectiveTheme: Theme = themeMode === "auto" ? systemTheme : themeMode;
   const CurrentPage = pages[pageIndex]?.Component ?? TimePage;
 
   const setState = useCallback((state: IslandState) => {
     islandStateChangedRef.current = true;
+    hoverControllerRef.current?.suppressCurrentCycle();
     void transitionControllerRef.current
       ?.request(state)
       .catch((error) => console.error(`[window-policy] 切换 ${state} 失败:`, error));
@@ -287,7 +303,7 @@ function App() {
       .then((snapshot) => {
         islandStateChangedRef.current = true;
         setPolicy(snapshot);
-        setVisualState(null);
+        setVisualPhase(snapshot.effectiveState === "expanded" ? "expanded" : "compact");
       })
       .catch((error) => console.error("[window-policy] 读取初始状态失败:", error));
     listen<WindowPolicySnapshot | IslandState>("window://state-changed", (event) => {
@@ -309,7 +325,9 @@ function App() {
         }));
       } else {
         setPolicy(event.payload);
-        setVisualState(null);
+        setVisualPhase(
+          event.payload.effectiveState === "expanded" ? "expanded" : "compact",
+        );
       }
     }).then((fn) => {
       un = fn;
@@ -366,8 +384,7 @@ function App() {
         onMouseEnter={() => hoverControllerRef.current?.enter()}
         onMouseLeave={() => hoverControllerRef.current?.leave()}
         className={cn(
-          "flex w-full max-w-[700px] flex-col rounded-2xl border border-border/60 px-4 shadow-2xl transition-[height] duration-[var(--island-duration)] ease-[var(--island-ease)]",
-          expanded ? "h-[380px]" : "h-14",
+          "flex w-full max-w-[700px] flex-col rounded-2xl border border-border/60 px-4 shadow-2xl",
           blur && "backdrop-blur-xl",
         )}
         style={{
@@ -376,8 +393,22 @@ function App() {
           // var(--card) 与 transparent 混合，亮度/色度保留、只调 alpha，亮暗主题都生效。
           backgroundColor: `color-mix(in oklch, var(--card) ${(opacity * 100).toFixed(0)}%, transparent)`,
         }}
-        animate={{ opacity: islandState === "hidden" ? 0 : 1 }}
-        transition={{ duration: ISLAND_DURATION_MS / 1000, ease: ISLAND_EASE }}
+        animate={{
+          height: expanded ? 380 : 56,
+          opacity: islandState === "hidden" ? 0 : 1,
+        }}
+        transition={{
+          height: reducedMotion
+            ? { duration: 0 }
+            : {
+                duration: ISLAND_EXPAND_DURATION_MS / 1000,
+                ease: ISLAND_LAYERED_EASE,
+              },
+          opacity: {
+            duration: reducedMotion ? 0 : ISLAND_DURATION_MS / 1000,
+            ease: ISLAND_EASE,
+          },
+        }}
       >
         {/* 顶部条 */}
         <div data-tauri-drag-region className="flex h-14 shrink-0 items-center gap-3">
@@ -467,25 +498,48 @@ function App() {
           </div>
         </div>
 
-        {/* 展开内容 */}
-        {expanded && (
-          <div className="relative flex-1 overflow-hidden px-2 pb-1">
-            <AnimatePresence mode="popLayout" custom={direction} initial={false}>
-              <motion.div
-                key={pageIndex}
-                custom={direction}
-                variants={pageVariants}
-                initial="enter"
-                animate="center"
-                exit="exit"
-                transition={{ duration: ISLAND_DURATION_MS / 1000, ease: ISLAND_EASE }}
-                className="h-full"
-              >
-                <CurrentPage compact={false} />
-              </motion.div>
-            </AnimatePresence>
-          </div>
-        )}
+        {/* 展开内容：容器先获得空间，内容随后进入；收起时内容先退出。 */}
+        <AnimatePresence initial={false}>
+          {(visualPhase === "expanding" || visualPhase === "expanded") && (
+            <motion.div
+              key="island-body"
+              initial={reducedMotion ? false : { opacity: 0, y: -8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={reducedMotion ? { opacity: 0 } : { opacity: 0, y: -8 }}
+              transition={
+                reducedMotion
+                  ? { duration: 0 }
+                  : {
+                      delay:
+                        visualPhase === "expanding"
+                          ? ISLAND_CONTENT_ENTER_DELAY_MS / 1000
+                          : 0,
+                      duration:
+                        visualPhase === "expanding"
+                          ? ISLAND_CONTENT_ENTER_DURATION_MS / 1000
+                          : ISLAND_CONTENT_EXIT_DURATION_MS / 1000,
+                      ease: ISLAND_LAYERED_EASE,
+                    }
+              }
+              className="relative flex-1 overflow-hidden px-2 pb-1"
+            >
+              <AnimatePresence mode="popLayout" custom={direction} initial={false}>
+                <motion.div
+                  key={pageIndex}
+                  custom={direction}
+                  variants={pageVariants}
+                  initial="enter"
+                  animate="center"
+                  exit="exit"
+                  transition={{ duration: ISLAND_DURATION_MS / 1000, ease: ISLAND_EASE }}
+                  className="h-full"
+                >
+                  <CurrentPage compact={false} />
+                </motion.div>
+              </AnimatePresence>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </motion.div>
     </div>
   );
