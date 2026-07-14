@@ -12,7 +12,7 @@ export const ISLAND_EASE: [number, number, number, number] = [0.4, 0, 0.2, 1];
 export const ISLAND_EXPAND_DURATION_MS = 240;
 export const ISLAND_CONTENT_ENTER_DELAY_MS = 60;
 export const ISLAND_CONTENT_ENTER_DURATION_MS = 180;
-export const ISLAND_CONTENT_EXIT_DURATION_MS = 120;
-/** 内容退出后，前端容器先收回；完成后才缩小原生窗口。 */
-export const ISLAND_CONTAINER_COLLAPSE_DURATION_MS = 200;
+export const ISLAND_CONTENT_EXIT_DURATION_MS = 180;
+/** 内容淡出与容器收缩并行，完成后才缩小原生窗口。 */
+export const ISLAND_COLLAPSE_DURATION_MS = 240;
 export const ISLAND_LAYERED_EASE: [number, number, number, number] = [0.2, 0.8, 0.2, 1];

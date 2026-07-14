@@ -24,10 +24,10 @@ import {
   type PageId,
 } from "@/lib/settings";
 import {
+  ISLAND_COLLAPSE_DURATION_MS,
   ISLAND_CONTENT_ENTER_DELAY_MS,
   ISLAND_CONTENT_ENTER_DURATION_MS,
   ISLAND_CONTENT_EXIT_DURATION_MS,
-  ISLAND_CONTAINER_COLLAPSE_DURATION_MS,
   ISLAND_DURATION_MS,
   ISLAND_EASE,
   ISLAND_EXPAND_DURATION_MS,
@@ -114,8 +114,7 @@ function App() {
 
   if (transitionControllerRef.current === null) {
     transitionControllerRef.current = createIslandTransitionController({
-      contentExitDelay: ISLAND_CONTENT_EXIT_DURATION_MS,
-      containerCollapseDelay: ISLAND_CONTAINER_COLLAPSE_DURATION_MS,
+      collapseDelay: ISLAND_COLLAPSE_DURATION_MS,
       reducedMotion: () => reducedMotionRef.current ?? false,
       setVisualPhase: (phase) => {
         visualPhaseRef.current = phase;

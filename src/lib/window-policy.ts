@@ -110,10 +110,7 @@ export function createHoverController({
 }
 
 interface IslandTransitionControllerOptions {
-  contentExitDelay?: number;
-  containerCollapseDelay?: number;
-  /** Backward-compatible one-stage delay for existing callers/tests. */
-  collapseDelay?: number;
+  collapseDelay: number;
   reducedMotion: () => boolean;
   setVisualPhase: (phase: IslandVisualPhase) => void;
   submit: (state: IslandState) => Promise<WindowPolicySnapshot>;
@@ -122,8 +119,6 @@ interface IslandTransitionControllerOptions {
 }
 
 export function createIslandTransitionController({
-  contentExitDelay,
-  containerCollapseDelay,
   collapseDelay,
   reducedMotion,
   setVisualPhase,
@@ -160,18 +155,10 @@ export function createIslandTransitionController({
     const currentGeneration = ++generation;
     clearPendingDelay();
     if (state === "compact") {
-      setVisualPhase("collapsing");
+      setVisualPhase("compact");
       if (!reducedMotion()) {
-        const exitDelay = contentExitDelay ?? collapseDelay ?? 0;
-        await wait(exitDelay);
+        await wait(collapseDelay);
         if (currentGeneration !== generation) return;
-        if (containerCollapseDelay !== undefined) {
-          setVisualPhase("compact");
-          await wait(containerCollapseDelay);
-          if (currentGeneration !== generation) return;
-        }
-      } else {
-        setVisualPhase("compact");
       }
     } else if (state === "expanded") {
       setVisualPhase("expanding");

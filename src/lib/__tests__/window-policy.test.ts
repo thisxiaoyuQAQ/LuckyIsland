@@ -160,11 +160,11 @@ describe("island transition controller", () => {
     ]);
   });
 
-  it("waits for content exit before submitting compact", async () => {
+  it("waits for the parallel frontend collapse before submitting compact", async () => {
     vi.useFakeTimers();
     const calls: string[] = [];
     const controller = createIslandTransitionController({
-      collapseDelay: 120,
+      collapseDelay: 240,
       reducedMotion: () => false,
       setVisualPhase: (phase) => calls.push(`phase:${phase}`),
       submit: async (state) => {
@@ -176,50 +176,14 @@ describe("island transition controller", () => {
     });
 
     const request = controller.request("compact");
-    expect(calls).toEqual(["phase:collapsing"]);
+    expect(calls).toEqual(["phase:compact"]);
 
-    await vi.advanceTimersByTimeAsync(119);
-    expect(calls).toEqual(["phase:collapsing"]);
-
-    await vi.advanceTimersByTimeAsync(1);
-    await request;
-    expect(calls).toEqual([
-      "phase:collapsing",
-      "submit:compact",
-      "snapshot",
-      "phase:compact",
-    ]);
-  });
-
-  it("shrinks the frontend container before submitting compact", async () => {
-    vi.useFakeTimers();
-    const calls: string[] = [];
-    const controller = createIslandTransitionController({
-      contentExitDelay: 120,
-      containerCollapseDelay: 200,
-      reducedMotion: () => false,
-      setVisualPhase: (phase) => calls.push(`phase:${phase}`),
-      submit: async (state) => {
-        calls.push(`submit:${state}`);
-        return snapshot(state);
-      },
-      acceptSnapshot: () => calls.push("snapshot"),
-      recover: vi.fn(),
-    });
-
-    const request = controller.request("compact");
-    expect(calls).toEqual(["phase:collapsing"]);
-
-    await vi.advanceTimersByTimeAsync(120);
-    expect(calls).toEqual(["phase:collapsing", "phase:compact"]);
-
-    await vi.advanceTimersByTimeAsync(199);
-    expect(calls).not.toContain("submit:compact");
+    await vi.advanceTimersByTimeAsync(239);
+    expect(calls).toEqual(["phase:compact"]);
 
     await vi.advanceTimersByTimeAsync(1);
     await request;
     expect(calls).toEqual([
-      "phase:collapsing",
       "phase:compact",
       "submit:compact",
       "snapshot",
