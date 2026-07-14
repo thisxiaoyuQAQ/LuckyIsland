@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FC } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { ChevronDown, ChevronUp, Moon, Settings, Sun } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -26,13 +25,21 @@ import {
 } from "@/lib/settings";
 import { ISLAND_DURATION_MS, ISLAND_EASE, ISLAND_WINDOW_SHRINK_DELAY_MS } from "@/lib/anim";
 import {
+  createHoverController,
+  createIslandTransitionController,
+  setIslandState as submitIslandState,
+  windowHoverSet,
+  windowPolicyGet,
+  type IslandState,
+  type WindowPolicySnapshot,
+} from "@/lib/window-policy";
+import {
   getIslandWheelDirection,
   updateWheelGestureLock,
 } from "@/lib/islandWheel";
 
 type Theme = "light" | "dark";
 type ThemeMode = Theme | "auto";
-type IslandState = "hidden" | "compact" | "expanded";
 
 interface PageMeta {
   id: PageId;
@@ -68,14 +75,11 @@ function normalizeThemeMode(v: string | null): ThemeMode | null {
   return v === "light" || v === "dark" || v === "auto" ? v : null;
 }
 
-function normalizeIslandState(v: string | null): IslandState | null {
-  return v === "hidden" || v === "compact" || v === "expanded" ? v : null;
-}
-
 function App() {
   const [themeMode, setThemeMode] = useState<ThemeMode>("auto");
   const [systemTheme, setSystemTheme] = useState<Theme>(getSystemTheme);
-  const [islandState, setIslandState] = useState<IslandState>("compact");
+  const [policy, setPolicy] = useState<WindowPolicySnapshot | null>(null);
+  const [visualState, setVisualState] = useState<IslandState | null>(null);
   const [blur, setBlur] = useState(true);
   const [opacity, setOpacity] = useState(0.7);
   const [pageIndex, setPageIndex] = useState(0);
@@ -87,7 +91,38 @@ function App() {
   const pageIndexRef = useRef(pageIndex);
   const wheelLockedUntilRef = useRef(0);
   const islandStateChangedRef = useRef(false);
+  const transitionControllerRef = useRef<ReturnType<typeof createIslandTransitionController> | null>(null);
+  const hoverControllerRef = useRef<ReturnType<typeof createHoverController> | null>(null);
   pageIndexRef.current = pageIndex;
+
+  if (transitionControllerRef.current === null) {
+    transitionControllerRef.current = createIslandTransitionController({
+      shrinkDelay: ISLAND_WINDOW_SHRINK_DELAY_MS,
+      setVisualState,
+      submit: submitIslandState,
+      acceptSnapshot: (snapshot) => {
+        setPolicy(snapshot);
+        setVisualState(null);
+      },
+      recover: async () => {
+        const snapshot = await windowPolicyGet();
+        setPolicy(snapshot);
+        setVisualState(null);
+      },
+    });
+  }
+
+  if (hoverControllerRef.current === null) {
+    hoverControllerRef.current = createHoverController({
+      enterDelay: 180,
+      leaveDelay: 300,
+      submit: (hovered) => {
+        void windowHoverSet(hovered).catch((error) =>
+          console.error("[window-policy] 提交悬停状态失败:", error),
+        );
+      },
+    });
+  }
 
   const pages = useMemo(() => {
     const ordered = pagesOrder.map((id) => PAGE_BY_ID[id]).filter(Boolean);
@@ -95,22 +130,16 @@ function App() {
     return visible.length > 0 ? visible : [PAGE_BY_ID.time];
   }, [pagesEnabled, pagesOrder]);
 
+  const islandState = visualState ?? policy?.effectiveState ?? "compact";
   const expanded = islandState === "expanded";
   const effectiveTheme: Theme = themeMode === "auto" ? systemTheme : themeMode;
   const CurrentPage = pages[pageIndex]?.Component ?? TimePage;
 
-  const setState = useCallback((s: IslandState) => {
+  const setState = useCallback((state: IslandState) => {
     islandStateChangedRef.current = true;
-    setIslandState(s);
-    if (s === "compact") {
-      // 收起：先让容器 CSS 收缩（在原窗口尺寸内，圆角不被裁剪），过渡完成后再缩小窗口，
-      // 避免窗口先变小、容器仍大被窗口方形边界裁剪出无圆角的方框
-      window.setTimeout(() => {
-        void invoke("set_island_state", { state: s });
-      }, ISLAND_WINDOW_SHRINK_DELAY_MS);
-    } else {
-      void invoke("set_island_state", { state: s });
-    }
+    void transitionControllerRef.current
+      ?.request(state)
+      .catch((error) => console.error(`[window-policy] 切换 ${state} 失败:`, error));
   }, []);
 
   const setPage = useCallback(
@@ -161,15 +190,26 @@ function App() {
     void settingSetEmit(KEYS.theme, mode);
   }, []);
 
+  useEffect(() => {
+    return () => {
+      transitionControllerRef.current?.dispose();
+      hoverControllerRef.current?.dispose();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (policy?.hoverExpand && !policy.clickThrough) return;
+    hoverControllerRef.current?.disable();
+  }, [policy?.clickThrough, policy?.hoverExpand]);
+
   // settings KV 初始化：各项独立应用，单个读取失败不影响其余设置。
   useEffect(() => {
     (async () => {
-      const [enabled, order, theme, defaultState, blurResult, opacityResult] =
+      const [enabled, order, theme, blurResult, opacityResult] =
         await Promise.allSettled([
           settingGet(KEYS.pagesEnabled),
           settingGet(KEYS.pagesOrder),
           settingGet(KEYS.theme),
-          settingGet(KEYS.defaultState),
           settingGet(KEYS.blur),
           settingGet(KEYS.windowOpacity),
         ]);
@@ -194,11 +234,6 @@ function App() {
       });
       applySetting(KEYS.theme, theme, (value) => {
         setThemeMode(normalizeThemeMode(value) ?? "auto");
-      });
-      applySetting(KEYS.defaultState, defaultState, (value) => {
-        if (islandStateChangedRef.current) return;
-        const initialState = normalizeIslandState(value);
-        if (initialState) setIslandState(initialState);
       });
       applySetting(KEYS.blur, blurResult, (value) => {
         setBlur(parseBool(value, true));
@@ -245,30 +280,54 @@ function App() {
     return () => mq.removeEventListener("change", h);
   }, []);
 
-  // 监听 Rust 推送的状态变化；启动设置读取不得覆盖更新后的运行态。
+  // 监听 Rust 推送的结构化策略快照；启动读取不得覆盖更新后的运行态。
   useEffect(() => {
     let un: (() => void) | undefined;
-    listen<IslandState>("window://state-changed", (e) => {
+    void windowPolicyGet()
+      .then((snapshot) => {
+        islandStateChangedRef.current = true;
+        setPolicy(snapshot);
+        setVisualState(null);
+      })
+      .catch((error) => console.error("[window-policy] 读取初始状态失败:", error));
+    listen<WindowPolicySnapshot | IslandState>("window://state-changed", (event) => {
       islandStateChangedRef.current = true;
-      setIslandState(e.payload);
+      if (typeof event.payload === "string") {
+        // Task 8 迁移通知展示前，通知后端仍可能发送旧字符串事件。
+        setPolicy((current) => ({
+          desiredState: event.payload as IslandState,
+          effectiveState: event.payload as IslandState,
+          shouldFocus: false,
+          clickThrough: current?.clickThrough ?? false,
+          hoverExpand: current?.hoverExpand ?? false,
+          hovered: current?.hovered ?? false,
+          hideInFullscreen: current?.hideInFullscreen ?? false,
+          fullscreenSupported: current?.fullscreenSupported ?? true,
+          fullscreenBlock: current?.fullscreenBlock ?? false,
+          priorityOverrideActive: current?.priorityOverrideActive ?? false,
+          priorityOverrideGeneration: current?.priorityOverrideGeneration ?? 0,
+        }));
+      } else {
+        setPolicy(event.payload);
+        setVisualState(null);
+      }
     }).then((fn) => {
       un = fn;
     });
     return () => un?.();
   }, []);
 
-  // 通知到达：切通知页（若通知页未关闭）+ 展开灵动岛。
+  // 通知到达：只切通知页；窗口显示由后端策略统一裁决。
   useEffect(() => {
     let un: (() => void) | undefined;
     listen("notify://incoming", () => {
       const i = pages.findIndex((p) => p.id === "notify");
       if (i >= 0) setPage(i);
-      setState("expanded");
     }).then((fn) => {
       un = fn;
     });
     return () => un?.();
-  }, [pages, setPage, setState]);
+  }, [pages, setPage]);
 
   // 局部快捷键（仅展开态，需窗口焦点）。
   useEffect(() => {
@@ -304,6 +363,8 @@ function App() {
     <div className="flex h-screen w-screen items-start justify-center pt-3">
       <motion.div
         ref={islandRef}
+        onMouseEnter={() => hoverControllerRef.current?.enter()}
+        onMouseLeave={() => hoverControllerRef.current?.leave()}
         className={cn(
           "flex w-full max-w-[700px] flex-col rounded-2xl border border-border/60 px-4 shadow-2xl transition-[height] duration-[var(--island-duration)] ease-[var(--island-ease)]",
           expanded ? "h-[380px]" : "h-14",

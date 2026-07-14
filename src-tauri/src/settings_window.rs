@@ -137,11 +137,7 @@ pub fn autostart_get(app: tauri::AppHandle) -> Result<bool, String> {
 /// 07a 导出配置：把可安全迁移的 settings + stock_watchlist + weather_cities 序列化为 JSON 写入 `path`。
 /// `exported_at` 由前端拼好传入（ISO 字符串），避免后端取系统时间。
 #[tauri::command]
-pub fn config_export(
-    path: String,
-    exported_at: String,
-    db: State<'_, Db>,
-) -> Result<(), String> {
+pub fn config_export(path: String, exported_at: String, db: State<'_, Db>) -> Result<(), String> {
     let settings = db.settings_portable()?;
     let watchlist = db.watchlist_all()?;
     let cities = db.weather_cities_all()?;
@@ -173,10 +169,9 @@ pub fn config_import(
     path: String,
     db: State<'_, Db>,
 ) -> Result<ImportSummary, String> {
-    let content = std::fs::read_to_string(&path)
-        .map_err(|e| format!("读取导入文件失败：{e}"))?;
-    let payload: ImportPayload =
-        serde_json::from_str(&content).map_err(|e| format!("解析配置文件失败（不是有效 JSON 或格式不符）：{e}"))?;
+    let content = std::fs::read_to_string(&path).map_err(|e| format!("读取导入文件失败：{e}"))?;
+    let payload: ImportPayload = serde_json::from_str(&content)
+        .map_err(|e| format!("解析配置文件失败（不是有效 JSON 或格式不符）：{e}"))?;
     if payload.version != 1 {
         return Err(format!(
             "配置文件版本不兼容（期望 1，实际 {}）；该文件可能由更新版本导出。",
@@ -213,6 +208,10 @@ pub fn config_import(
         || new_keys.contains(OFFSET_Y_KEY);
     let needs_hotkeys_apply = old_keys.iter().any(|k| k.starts_with("hotkeys:"))
         || new_keys.iter().any(|k| k.starts_with("hotkeys:"));
+    let needs_window_policy_reload = old_keys.contains(crate::window_policy::CLICK_THROUGH_KEY)
+        || new_keys.contains(crate::window_policy::CLICK_THROUGH_KEY)
+        || old_keys.contains(crate::window_policy::HOVER_EXPAND_KEY)
+        || new_keys.contains(crate::window_policy::HOVER_EXPAND_KEY);
 
     let settings_count = settings_vec.len();
     let watchlist_count = watchlist_vec.len();
@@ -257,6 +256,17 @@ pub fn config_import(
         tauri::async_runtime::spawn(async move {
             let db = hk_app.state::<crate::storage::Db>();
             let _ = crate::hotkeys::apply(&hk_app, db.inner());
+        });
+    }
+    if needs_window_policy_reload {
+        let policy_app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            let db = policy_app.state::<crate::storage::Db>();
+            if let Err(error) =
+                crate::window_policy::reload_persisted_settings(&policy_app, db.inner())
+            {
+                eprintln!("[window-policy] reload imported policy failed: {error}");
+            }
         });
     }
 

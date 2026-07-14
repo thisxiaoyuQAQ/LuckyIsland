@@ -23,6 +23,10 @@ export const KEYS = {
   windowOffsetX: "window:offset_x",
   /** 07a 窗口外观：纵向物理像素偏移（负=上移，正=下移）。 */
   windowOffsetY: "window:offset_y",
+  /** 整个灵动岛忽略鼠标事件，默认关闭。 */
+  windowClickThrough: "window:click_through",
+  /** 紧凑态悬停自动展开，默认关闭。 */
+  windowHoverExpand: "window:hover_expand",
   /** 时间页：布局 JSON（clockRegion + widgets）。 */
   timeLayout: "time:layout",
   /** 时间页：外观 JSON（颜色/渐变/字号/制式）。 */
@@ -52,6 +56,8 @@ export const DEFAULTS = {
   windowOpacity: "0.7",
   windowOffsetX: "0",
   windowOffsetY: "0",
+  windowClickThrough: "false",
+  windowHoverExpand: "false",
 } as const;
 
 export interface MonitorPoint {
@@ -311,13 +317,13 @@ export async function settingSet(key: string, value: string | null): Promise<voi
 
 /** 热键动作列表项（hotkeys_list 返回） */
 export interface HotkeyEntry {
-  /** 动作 id：toggle_island / toggle_ai */
+  /** 动作 id：toggle_island / toggle_ai / toggle_click_through */
   action: string;
   /** 中文标签 */
   label: string;
-  /** 当前生效绑定（规范形，如 "alt+KeyX"；DB 无值则为默认） */
+  /** 当前生效绑定（规范形，如 "alt+KeyX"）；空字符串表示显式未绑定 */
   binding: string;
-  /** 默认绑定 */
+  /** 默认绑定；空字符串表示该动作默认未绑定 */
   default: string;
 }
 

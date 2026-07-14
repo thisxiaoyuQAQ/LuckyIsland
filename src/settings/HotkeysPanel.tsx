@@ -171,7 +171,7 @@ export function HotkeysPanel() {
             <div className="flex flex-col gap-0.5">
               <div className="text-sm font-medium">{e.label}</div>
               <div className="text-xs text-muted-foreground">
-                默认：{formatBinding(e.default)}
+                默认：{e.default ? formatBinding(e.default) : "未绑定"}
               </div>
             </div>
             <div className="flex flex-col items-end gap-1">

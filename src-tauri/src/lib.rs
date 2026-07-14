@@ -8,11 +8,12 @@ mod settings_window;
 mod storage;
 mod terminal;
 mod voice;
+mod window_policy;
 
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Emitter, LogicalSize, Manager, Size, WindowEvent,
+    Manager, WindowEvent,
 };
 use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_global_shortcut::ShortcutState;
@@ -26,18 +27,18 @@ use data::stock::{
     poll_loop, stock_get, stock_kline, stock_search, stock_watchlist_add, stock_watchlist_list,
     stock_watchlist_remove, stock_watchlist_reorder,
 };
+use data::time_api::{time_programmer_history_get, time_saying_get};
 use data::todo::{todo_create, todo_delete, todo_list, todo_update};
 use data::weather::{
     weather_cities_add, weather_cities_list, weather_cities_remove, weather_cities_reorder,
     weather_get, weather_get_city, weather_locate, weather_set_city,
 };
-use data::time_api::{time_programmer_history_get, time_saying_get};
 use hotkeys::{
     hotkeys_apply, hotkeys_list, hotkeys_reload, hotkeys_reset, hotkeys_suspend, HotkeyMap,
 };
 use monitor::{
     monitor_get_selection, monitor_list, monitor_select, restore_island_monitor,
-    start_runtime_watch, window_offset_apply, ISLAND_WIDTH_LOGICAL,
+    start_runtime_watch, window_offset_apply,
 };
 use notify::{notify_create, notify_get_token, notify_list, notify_mark_read};
 use settings::{setting_get, setting_set};
@@ -53,9 +54,6 @@ use voice::{
     voice_reload_keyword, voice_start_listening, voice_stop_listening, voice_validate_keyword,
     VoiceState,
 };
-
-const COMPACT_H: f64 = 80.0;
-const EXPANDED_H: f64 = 400.0;
 
 fn cleanup_runtime_resources(app: &tauri::AppHandle) {
     if let Some(registry) = app.try_state::<TerminalRegistry>() {
@@ -79,48 +77,6 @@ impl Drop for UpdaterCleanupGuard {
     }
 }
 
-/// 应用状态：调整窗口尺寸与可见性
-fn apply_state(window: &tauri::WebviewWindow, state: &str) -> tauri::Result<()> {
-    match state {
-        "hidden" => window.hide()?,
-        "compact" => {
-            window.set_size(Size::Logical(LogicalSize {
-                width: ISLAND_WIDTH_LOGICAL,
-                height: COMPACT_H,
-            }))?;
-            window.show()?;
-            window.set_focus()?;
-        }
-        "expanded" => {
-            window.set_size(Size::Logical(LogicalSize {
-                width: ISLAND_WIDTH_LOGICAL,
-                height: EXPANDED_H,
-            }))?;
-            window.show()?;
-            window.set_focus()?;
-        }
-        _ => {}
-    }
-    Ok(())
-}
-
-/// 改状态并通知前端
-fn set_state_and_emit(app: &tauri::AppHandle, state: &str) {
-    if let Some(window) = app.get_webview_window("island") {
-        let _ = apply_state(&window, state);
-    }
-    let _ = app.emit("window://state-changed", state.to_string());
-}
-
-/// Alt+X / 托盘：在 hidden ↔ compact 间切换
-fn toggle_visibility(app: &tauri::AppHandle) {
-    let visible = app
-        .get_webview_window("island")
-        .map(|w| w.is_visible().unwrap_or(false))
-        .unwrap_or(false);
-    set_state_and_emit(app, if visible { "hidden" } else { "compact" });
-}
-
 /// Alt+Space / 托盘「AI 助手」：面板已显示则关闭（同 ESC，保存位置），否则打开
 fn toggle_ai_palette(app: &tauri::AppHandle) {
     let visible = app
@@ -132,12 +88,6 @@ fn toggle_ai_palette(app: &tauri::AppHandle) {
     } else {
         let _ = open_ai_palette(app.clone());
     }
-}
-
-#[tauri::command]
-fn set_island_state(app: tauri::AppHandle, state: String) -> Result<(), String> {
-    set_state_and_emit(&app, &state);
-    Ok(())
 }
 
 fn storage_plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
@@ -161,7 +111,13 @@ pub fn run() {
         .plugin(storage_plugin())
         // 单实例：重复启动时唤起已有窗口
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            set_state_and_emit(app, "compact");
+            if let Err(error) = window_policy::set_desired_state(
+                app,
+                window_policy::IslandState::Compact,
+                window_policy::FocusIntent::Focus,
+            ) {
+                eprintln!("[window-policy] 单实例唤起失败：{error}");
+            }
         }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
@@ -193,23 +149,34 @@ pub fn run() {
                     }
                     let Some(action) = app
                         .try_state::<HotkeyMap>()
-                        .and_then(|m| {
-                            m.0.lock()
-                                .ok()
-                                .and_then(|g| g.get(&shortcut.id()).copied())
-                        })
+                        .and_then(|m| m.0.lock().ok().and_then(|g| g.get(&shortcut.id()).copied()))
                     else {
                         return;
                     };
                     match action {
-                        hotkeys::Action::ToggleIsland => toggle_visibility(app),
+                        hotkeys::Action::ToggleIsland => {
+                            if let Err(error) = window_policy::toggle_visibility(app) {
+                                eprintln!("[window-policy] 全局热键切换失败：{error}");
+                            }
+                        }
                         hotkeys::Action::ToggleAi => toggle_ai_palette(app),
+                        hotkeys::Action::ToggleClickThrough => {
+                            let db = app.state::<storage::Db>();
+                            if let Err(error) = window_policy::toggle_click_through(app, db.inner())
+                            {
+                                eprintln!("[window-policy] 切换鼠标穿透失败：{error}");
+                            }
+                        }
                     }
                 })
                 .build(),
         )
         .invoke_handler(tauri::generate_handler![
-            set_island_state,
+            window_policy::set_island_state,
+            window_policy::window_policy_get,
+            window_policy::window_click_through_set,
+            window_policy::window_hover_set,
+            window_policy::window_hover_expand_set,
             monitor_list,
             monitor_get_selection,
             monitor_select,
@@ -295,7 +262,16 @@ pub fn run() {
             let ai_item = MenuItem::with_id(app, "ai", "AI 助手", true, None::<&str>)?;
             let restart_item = MenuItem::with_id(app, "restart", "重启", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show_item, &settings_item, &ai_item, &restart_item, &quit_item])?;
+            let menu = Menu::with_items(
+                app,
+                &[
+                    &show_item,
+                    &settings_item,
+                    &ai_item,
+                    &restart_item,
+                    &quit_item,
+                ],
+            )?;
             TrayIconBuilder::new()
                 .icon(
                     app.default_window_icon()
@@ -305,7 +281,11 @@ pub fn run() {
                 .menu(&menu)
                 .tooltip("LuckyIsland")
                 .on_menu_event(|app, event| match event.id.as_ref() {
-                    "show" => toggle_visibility(app),
+                    "show" => {
+                        if let Err(error) = window_policy::toggle_visibility(app) {
+                            eprintln!("[window-policy] 托盘切换失败：{error}");
+                        }
+                    }
                     "settings" => {
                         let _ = open_settings(app.clone());
                     }
@@ -321,7 +301,9 @@ pub fn run() {
                         ..
                     } = event
                     {
-                        toggle_visibility(tray.app_handle());
+                        if let Err(error) = window_policy::toggle_visibility(tray.app_handle()) {
+                            eprintln!("[window-policy] 托盘点击切换失败：{error}");
+                        }
                     }
                 })
                 .build(app)?;
@@ -332,6 +314,14 @@ pub fn run() {
                 .setting_get("general:default_state")
                 .filter(|s| matches!(s.as_str(), "hidden" | "compact" | "expanded"))
                 .unwrap_or_else(|| "compact".to_string());
+            let default_state = match default_state.as_str() {
+                "hidden" => window_policy::IslandState::Hidden,
+                "expanded" => window_policy::IslandState::Expanded,
+                _ => window_policy::IslandState::Compact,
+            };
+            app.manage(window_policy::WindowPolicy::new(
+                window_policy::WindowPolicyInputs::new(default_state),
+            ));
 
             // 自定义全局热键：按用户绑定注册（DB 无值则默认 alt+KeyX / alt+Space）。
             // HotkeyMap 供插件 handler 用 HotKey::id() 反查动作分发。
@@ -391,8 +381,20 @@ pub fn run() {
             {
                 eprintln!("[monitor] 启动恢复显示器失败：{error}");
             }
-            if let Some(window) = app.get_webview_window("island") {
-                let _ = apply_state(&window, &default_state);
+            if let Err(error) = window_policy::reapply(app.handle()) {
+                eprintln!("[window-policy] 启动应用窗口状态失败：{error}");
+            }
+            if let Err(error) = window_policy::restore_click_through(
+                app.handle(),
+                app.state::<storage::Db>().inner(),
+            ) {
+                eprintln!("[window-policy] restore click-through failed: {error}");
+            }
+            if let Err(error) = window_policy::restore_hover_expand(
+                app.handle(),
+                app.state::<storage::Db>().inner(),
+            ) {
+                eprintln!("[window-policy] restore hover-expand failed: {error}");
             }
 
             // 运行时显示器变化监听：副屏断开时立即临时跳回主屏（不改持久化选择）。

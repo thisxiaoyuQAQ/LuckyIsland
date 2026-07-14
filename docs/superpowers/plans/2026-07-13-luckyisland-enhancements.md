@@ -1,8 +1,9 @@
 # LuckyIsland 更新、窗口策略与七日天气 Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **执行状态：** 模块 11 是当前唯一入口；Task 1 更新插件接入已由提交 `7485835` 完成，Phase 1 / Task 2 纯归约器已完成并通过独立审查；Task 3 自动化实现与验证已完成，当前等待 Step 9 Windows 真机 smoke test，未开始 Task 4。
+> **For agentic workers:** 恢复执行后使用 superpowers:subagent-driven-development（推荐）或 superpowers:executing-plans 逐任务实施。Steps use checkbox (`- [ ]`) syntax for tracking；已完成步骤以 `- [x]` 标记。
 
-**Goal:** 在保持旧配置、旧通知请求和现有页面兼容的前提下，交付需求 1、2、3、5、6：关于/稳定更新、统一窗口策略、整窗鼠标穿透、同屏真正全屏隐藏、悬停展开和未来七日天气。
+**Goal:** 在保持旧配置、旧通知请求和现有页面兼容的前提下，交付需求 1、2、3、5、6 及 DOC-10A-03 确认的多屏恢复契约：关于/稳定更新、统一窗口策略、整窗鼠标穿透、同屏真正全屏隐藏、悬停展开、未来七日天气，以及副屏恢复后主动移回已保存副屏。
 
 **Architecture:** 先把 `lib.rs` 中分散的 show/hide/resize/focus 逻辑收敛到 Rust `WindowPolicy`，以纯归约器区分用户期望状态和环境抑制/临时覆盖，再让热键、悬停、全屏探测与通知只提交输入。关于/更新由独立前端状态机调用 Tauri 官方 updater 插件（Windows 安装器负责退出与重启）；天气由 Rust 供应商适配器、规范化地点和按地点缓存合成统一 `WeatherBundle`，React 只渲染 DTO 并用 request ID 防旧响应覆盖。
 
@@ -10,7 +11,7 @@
 
 ## Global Constraints
 
-- 只实施需求 1、2、3、5、6；需求 4 的插件系统、公开市场、语音/问答插件化和真正卸载仅引用 `docs/superpowers/specs/2026-07-13-plugin-market-roadmap.md`，不得新增插件目录、Host/Bridge、manifest、市场 API、卸载入口，也不得移动/删除 `src-tauri/src/ai/*`、`src-tauri/src/voice/*`、sherpa-onnx 依赖或 DLL。
+- 只实施需求 1、2、3、5、6，以及 DOC-10A-03 新增的需求 7（副屏恢复后主动移回已保存副屏）；需求 4 的插件系统、公开市场、语音/问答插件化和真正卸载仅引用 `docs/superpowers/specs/2026-07-13-plugin-market-roadmap.md`，不得新增插件目录、Host/Bridge、manifest、市场 API、卸载入口，也不得移动/删除 `src-tauri/src/ai/*`、`src-tauri/src/voice/*`、sherpa-onnx 依赖或 DLL。
 - 当前本地 `main` 基线（计划编写时）为 `df0fbc2`，包含规格提交 `d5dcd89`；当时 `origin/main` 为 `1f80ea5`。执行前必须再次 `git fetch origin` 并确认远端没有分叉；不得假设领先提交数仍不变，且未经用户授权不得为了“同步”自动 push/rebase/reset。规格已在本地 `main` 提交中，不依赖未跟踪文件。
 - 当前分支固定为用户指定的 `main` 线性开发；每个可独立验收功能一次提交。不得覆盖、暂存或提交任务启动前已有的用户改动；每次 `git add` 只列本任务路径。未经明确授权不得 push、打 tag、创建 Release 或删除/改写历史。
 - 灵动岛逻辑尺寸保持 720×80（紧凑）和 720×400（展开）；React 内容容器仍为最大 700px、展开内容 380px。悬停延迟固定为 enter 180ms / leave 300ms，不新增数值配置。
@@ -59,7 +60,7 @@
 
 - `src-tauri/src/lib.rs` — 托管策略/全屏状态，注册命令，迁移岛窗口入口，注册 updater 插件和自动检查信号。
 - `src-tauri/src/hotkeys.rs` — `ToggleClickThrough` 与 `Option<HotKey>` 空绑定语义。
-- `src-tauri/src/monitor.rs` — 暴露岛当前物理显示器几何；副屏回退不再直接聚焦/显示而提交策略重应用。
+- `src-tauri/src/monitor.rs` — 暴露岛当前物理显示器几何；副屏断开回退与恢复主动移回均保留保存选择/偏移，并在完成定位后提交策略重应用而非直接聚焦。
 - `src-tauri/src/notify/mod.rs`, `src-tauri/src/notify/server.rs`, `src-tauri/src/bin/lucky-notify.rs` — priority、迁移后查询和策略展示请求。
 - `src-tauri/src/storage/mod.rs` — 幂等通知列迁移、portable update key、天气缓存不导出测试。
 - `src-tauri/src/data/weather/mod.rs` — 把旧单文件天气入口变成分层 module facade，保留命令名。
@@ -96,7 +97,7 @@
 - The process plugin is not required for the Windows path because updater installation exits into NSIS; do not add `@tauri-apps/plugin-process`, `tauri-plugin-process`, or `process:allow-restart` unless a separately tested non-Windows path is later implemented.
 - Does not yet produce UI, update checks, `createUpdaterArtifacts`, real public key, or release output.
 
-- [ ] **Step 1: Capture the pre-feature baseline without modifying code**
+- [x] **Step 1: Capture the pre-feature baseline without modifying code**
 
 Run:
 
@@ -112,7 +113,7 @@ CARGO_HOME=D:/rust/.cargo RUSTUP_HOME=D:/rust/.rustup CARGO_TARGET_DIR=E:/Code/T
 
 Expected: `origin/main...HEAD` shows only known local specification/gallery commits on the right and no unexpected remote-only commits on the left; do not hard-code their count because origin may advance before execution. Preserve the initial `git status` path list separately. Vitest/tsc/build/Rust lib tests pass. If remote-only commits appear, stop and ask how to reconcile main. If a command is blocked by the known mirror or an active `tauri dev`, record it before continuing and do not treat it as a product regression.
 
-- [ ] **Step 2: Add pinned-to-major official dependencies**
+- [x] **Step 2: Add pinned-to-major official dependencies**
 
 Run:
 
@@ -128,7 +129,7 @@ tauri-plugin-updater = "2"
 
 Expected: package/lock and Cargo/lock pairs change; no process or plugin-market dependency appears.
 
-- [ ] **Step 3: Register the Rust updater plugin with pre-exit cleanup**
+- [x] **Step 3: Register the Rust updater plugin with pre-exit cleanup**
 
 Add one shared helper in `src-tauri/src/lib.rs` and use it from both updater installation and normal exit:
 
@@ -156,7 +157,7 @@ app.handle().plugin(
 
 The existing `RunEvent::Exit` branch calls the same helper. Do not call the updater yet.
 
-- [ ] **Step 4: Grant the settings window minimum update permissions**
+- [x] **Step 4: Grant the settings window minimum update permissions**
 
 Change `src-tauri/capabilities/settings.json` permissions to include:
 
@@ -171,11 +172,11 @@ Change `src-tauri/capabilities/settings.json` permissions to include:
 
 `default.json` (island) does not get updater permission.
 
-- [ ] **Step 5: Keep updater config disabled until the real key task**
+- [x] **Step 5: Keep updater config disabled until the real key task**
 
 Do not add a dummy `pubkey` or enable `createUpdaterArtifacts` here. Add only a plan comment in the commit body if needed; `tauri.conf.json` remains valid and release-incapable until Task 11.
 
-- [ ] **Step 6: Verify dependency registration**
+- [x] **Step 6: Verify dependency registration**
 
 Run:
 
@@ -187,12 +188,14 @@ git diff --check
 
 Expected: all pass; `git diff --name-only` contains only Task 1 paths plus pre-existing user paths (which remain unstaged).
 
-- [ ] **Step 7: Commit only dependency/setup files**
+- [x] **Step 7: Commit only dependency/setup files**
 
 ```bash
 git add package.json pnpm-lock.yaml src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/src/lib.rs src-tauri/capabilities/settings.json
 git commit -m "chore(update): 接入 Tauri 更新插件"
 ```
+
+Task 1 completion evidence: commit `7485835` (`chore(update): 接入 Tauri 更新插件`).
 
 ---
 
@@ -238,7 +241,7 @@ pub struct WindowDecision {
 pub fn reduce(inputs: WindowPolicyInputs, focus: FocusIntent) -> WindowDecision;
 ```
 
-- [ ] **Step 1: Write failing reducer tests**
+- [x] **Step 1: Write failing reducer tests**
 
 Add tests before implementation:
 
@@ -285,7 +288,7 @@ fn pointer_leave_never_collapses_explicit_expanded() {
 
 The test helper `inputs(desired, fullscreen_block, override_active)` returns defaults for all unspecified fields.
 
-- [ ] **Step 2: Run the tests and confirm failure**
+- [x] **Step 2: Run the tests and confirm failure**
 
 ```bash
 CARGO_HOME=D:/rust/.cargo RUSTUP_HOME=D:/rust/.rustup CARGO_TARGET_DIR=E:/Code/Tauri/LuckyIsland/.superpowers/target-check /d/rust/.rustup/toolchains/stable-x86_64-pc-windows-msvc/bin/cargo.exe test --manifest-path src-tauri/Cargo.toml window_policy::tests -- --nocapture
@@ -293,7 +296,7 @@ CARGO_HOME=D:/rust/.cargo RUSTUP_HOME=D:/rust/.rustup CARGO_TARGET_DIR=E:/Code/T
 
 Expected: FAIL because `window_policy` and reducer types do not exist.
 
-- [ ] **Step 3: Implement the reducer exactly in priority order**
+- [x] **Step 3: Implement the reducer exactly in priority order**
 
 Core body:
 
@@ -319,7 +322,7 @@ pub fn reduce(inputs: WindowPolicyInputs, requested_focus: FocusIntent) -> Windo
 }
 ```
 
-- [ ] **Step 4: Register the module and run tests**
+- [x] **Step 4: Register the module and run tests**
 
 Add `mod window_policy;` in `src-tauri/src/lib.rs`, then run the Task 2 command.
 
@@ -327,10 +330,14 @@ Expected: all new reducer tests pass.
 
 - [ ] **Step 5: Commit the pure domain layer**
 
+> 2026-07-14：实现与验证已完成；因用户明确要求本轮不 commit，本步骤有意保留未勾选，不影响 Task 3 继续在当前工作树实施。
+
 ```bash
 git add src-tauri/src/window_policy.rs src-tauri/src/lib.rs
 git commit -m "feat(window): 建立统一窗口策略归约器"
 ```
+
+Task 2 completion evidence (2026-07-14): RED confirmed missing reducer symbols; focused reducer 6/6 and full Rust lib 54/54 passed; `cargo check --lib`, targeted `rustfmt --check`, and `git diff --check` passed. Five expected `dead_code` warnings remain until Task 3 consumes the pure domain API. No Tauri/window/effect/event/persistence code exists in `window_policy.rs`.
 
 ### Task 3: Apply policy effects and migrate all existing island entry points
 
@@ -377,7 +384,7 @@ pub fn set_island_state(app: AppHandle, policy: State<'_, WindowPolicy>, state: 
 
 TypeScript mirrors the camelCase snapshot and exports `windowPolicyGet()` / `setIslandState(state)`.
 
-- [ ] **Step 1: Add failing state-transition and dedup tests**
+- [x] **Step 1: Add failing state-transition and dedup tests**
 
 Extract a testable `EffectPlan::between(previous, next)` and test:
 
@@ -401,11 +408,15 @@ fn focus_is_not_repeated_when_only_non_visual_inputs_change() {
 }
 ```
 
-- [ ] **Step 2: Verify failure**
+- [x] **Step 2: Verify failure**
 
-Run the Task 2 Rust command. Expected: FAIL because effect planning is absent.
+```bash
+CARGO_HOME=D:/rust/.cargo RUSTUP_HOME=D:/rust/.rustup CARGO_TARGET_DIR=E:/Code/Tauri/LuckyIsland/.superpowers/target-check /d/rust/.rustup/toolchains/stable-x86_64-pc-windows-msvc/bin/cargo.exe test --manifest-path src-tauri/Cargo.toml window_policy::tests -- --nocapture
+```
 
-- [ ] **Step 3: Implement short-lock snapshot/update/apply**
+> 2026-07-14 RED 已确认：全套 `window_policy::tests` 9/10；`explicit_focus_applies_when_state_is_already_visible` 期望 `[Focus]`、实际 `[]`。同时 `rustfmt --check` 指出该预备测试格式待修。下一执行者从 Step 3 修复开始，不得重建 Step 1/2。
+
+- [x] **Step 3: Implement short-lock snapshot/update/apply**
 
 Required ordering:
 
@@ -433,7 +444,7 @@ emit_snapshot(app, &snapshot)?;
 
 Use 720×80/720×400. Only an explicit user action gets `FocusIntent::Focus`; priority/fullscreen/hover use `Preserve`. Do not persist a value until the platform effect succeeds.
 
-- [ ] **Step 4: Emit only structured events**
+- [x] **Step 4: Emit only structured events**
 
 Use:
 
@@ -444,7 +455,7 @@ window://policy-changed -> WindowPolicySnapshot
 
 Both may carry the same snapshot during migration. Remove free-string emitters from `lib.rs` now. `notify/mod.rs` still emits the legacy string only until Task 8 migrates notification presentation; add an explicit temporary compatibility test, then remove it in Task 8. After Task 8 only `window_policy` may emit these names.
 
-- [ ] **Step 5: Migrate entry points in `lib.rs`**
+- [x] **Step 5: Migrate entry points in `lib.rs`**
 
 Replace `apply_state`, `set_state_and_emit`, and old `toggle_visibility` with policy calls:
 
@@ -456,11 +467,11 @@ Replace `apply_state`, `set_state_and_emit`, and old `toggle_visibility` with po
 
 Do not alter AI palette or settings window behavior.
 
-- [ ] **Step 6: Make monitor recovery policy-aware**
+- [x] **Step 6: Make monitor recovery policy-aware and restore reconnected selections**
 
-In `monitor.rs`, replace `recover_island_to_monitor`'s unconditional `show()+set_focus()` with size/unminimize/position recovery followed by `window_policy::reapply(app)`. `monitor_select` still only moves position. Add a regression test that the recovery helper itself does not encode a focus operation.
+In `monitor.rs`, replace `recover_island_to_monitor`'s unconditional `show()+set_focus()` with size/unminimize/position recovery followed by `window_policy::reapply(app)`. `monitor_select` still only moves position. When a saved concrete secondary display becomes available after a fallback cycle, resolve that saved display, move the island back with the persisted offsets, and only then emit `monitor://changed(fallback=false)`; if movement fails, keep the fallback state and retry on a later watch iteration instead of broadcasting a false recovery. Add regression tests for the disconnect/reconnect state transition and for the recovery helper not encoding a focus operation.
 
-- [ ] **Step 7: Add TypeScript contract wrappers and migrate `App.tsx`**
+- [x] **Step 7: Add TypeScript contract wrappers and migrate `App.tsx`**
 
 `src/lib/window-policy.ts`:
 
@@ -489,7 +500,7 @@ In `App.tsx`:
 - listener payload is `WindowPolicySnapshot`, not string;
 - notification listener only switches page; remove `setState("expanded")` because backend policy owns display.
 
-- [ ] **Step 8: Run focused and compatibility verification**
+- [x] **Step 8: Run focused and compatibility verification**
 
 ```bash
 CARGO_HOME=D:/rust/.cargo RUSTUP_HOME=D:/rust/.rustup CARGO_TARGET_DIR=E:/Code/Tauri/LuckyIsland/.superpowers/target-check /d/rust/.rustup/toolchains/stable-x86_64-pc-windows-msvc/bin/cargo.exe test --manifest-path src-tauri/Cargo.toml window_policy::tests -- --nocapture
@@ -501,9 +512,11 @@ git diff --check
 
 Expected: pass. Before Task 8, grep may find the one documented legacy notification string emit in `notify/mod.rs`; all other `window://state-changed` emits are in `window_policy.rs`, and no island `show/hide/set_focus` remains in `lib.rs`. Task 8 removes the notification exception and its direct show/focus calls.
 
-- [ ] **Step 9: User smoke-test the legacy contract**
+- [x] **Step 9: User smoke-test the legacy contract**
 
-Ask user to verify: Alt+X, tray click, explicit expand/collapse, Escape collapse, single-instance wake and monitor switching still work; explicit user open can focus, monitor recovery does not unexpectedly steal focus.
+2026-07-14 用户确认修复已通过 Windows 真机验证：Alt+X、托盘、显式展开/收起、Escape、单实例唤醒、显示器切换以及副屏断开/重连恢复契约均可继续；Task 3 自动化与真机门禁完成。
+
+Ask user to verify: Alt+X, tray click, explicit expand/collapse, Escape collapse, single-instance wake and monitor switching still work; disconnecting the selected secondary display falls back to primary, reconnecting it actively returns the island to the saved display with offsets preserved, and automatic monitor recovery does not unexpectedly steal focus.
 
 - [ ] **Step 10: Commit**
 
@@ -527,7 +540,7 @@ git commit -m "refactor(window): 统一灵动岛窗口状态入口"
 **Interfaces:**
 - Produces `Action::default_binding() -> Option<&'static str>` and `current_binding(db, action) -> Option<HotKey>` while preserving UI serialization as `binding: string`, `default: string`, where `""` means unbound. Task 5 uses this domain support when it adds `ToggleClickThrough`.
 
-- [ ] **Step 1: Write failing explicit-unbound tests**
+- [x] **Step 1: Write failing explicit-unbound tests**
 
 ```rust
 #[test]
@@ -548,7 +561,7 @@ fn existing_default_collision_check_only_counts_bound_defaults() {
 }
 ```
 
-- [ ] **Step 2: Verify failure**
+- [x] **Step 2: Verify failure**
 
 Run:
 
@@ -556,9 +569,11 @@ Run:
 CARGO_HOME=D:/rust/.cargo RUSTUP_HOME=D:/rust/.rustup CARGO_TARGET_DIR=E:/Code/Tauri/LuckyIsland/.superpowers/target-check /d/rust/.rustup/toolchains/stable-x86_64-pc-windows-msvc/bin/cargo.exe test --manifest-path src-tauri/Cargo.toml hotkeys::tests -- --nocapture
 ```
 
+2026-07-14 RED 已确认：`binding_from_stored` 与 `default_hotkey_ids` 尚不存在，`hotkeys::tests` 因 4 个 E0425 编译错误失败。
+
 Expected: FAIL because the domain currently turns empty into an invalid value and falls back to a default.
 
-- [ ] **Step 3: Implement Option semantics without adding the new action yet**
+- [x] **Step 3: Implement Option semantics without adding the new action yet**
 
 Rules:
 
@@ -569,11 +584,13 @@ Rules:
 - reset deletes keys and restores each action's optional default;
 - conflicts/default collision sets contain only bound IDs.
 
-- [ ] **Step 4: Update TypeScript documentation/UI for empty defaults**
+- [x] **Step 4: Update TypeScript documentation/UI for empty defaults**
 
 Document empty current/default bindings in `HotkeyEntry`. In `HotkeysPanel`, render `默认：未设置`; “恢复默认” may set `""`; saving an empty draft is valid and shows no error. Existing actions still have non-empty defaults until Task 5.
 
-- [ ] **Step 5: Verify**
+- [x] **Step 5: Verify**
+
+2026-07-14：`hotkeys::tests` 9/9、`pnpm exec tsc --noEmit`、`rustfmt --check src-tauri/src/hotkeys.rs` 与 Task 4 文件 `git diff --check` 通过；仅有既有 LF→CRLF 提示。显式空值现在保持未绑定，缺失/非法存量按可选默认规则处理，未加入 Task 5 的新动作。
 
 Run the Task 4 Rust command, `pnpm exec tsc --noEmit`, and `git diff --check`.
 
@@ -616,7 +633,7 @@ Action::ToggleClickThrough
 
 - JS: `windowClickThroughSet(enabled): Promise<WindowPolicySnapshot>`.
 
-- [ ] **Step 1: Write failing transaction-order tests**
+- [x] **Step 1: Write failing transaction-order tests**
 
 Introduce a small mockable `PlatformEffects`/`SettingsWriter` seam and test:
 
@@ -646,11 +663,13 @@ fn startup_restore_failure_falls_back_to_false_snapshot() {
 }
 ```
 
-- [ ] **Step 2: Verify failure**
+- [x] **Step 2: Verify failure**
+
+2026-07-14 RED 已确认：事务函数尚不存在，首次编译出现对应 E0425；最小实现后启动恢复失败用例继续以实际错误失败，证明安全回退分支尚未实现。
 
 Run the window-policy Rust test command. Expected: FAIL.
 
-- [ ] **Step 3: Implement apply-first, persist-second semantics**
+- [x] **Step 3: Implement apply-first, persist-second semantics**
 
 For explicit setting:
 
@@ -663,7 +682,7 @@ For explicit setting:
 
 At startup, read bool and attempt platform restore. If restore fails, keep runtime `false`; attempt to write `false`; emit actual state. The settings window itself is never modified. Both `window_click_through_set` and the global-action path call one shared `set_click_through(app, db, enabled)` transaction; the hotkey computes `enabled = !snapshot.click_through`, avoiding duplicate effect/persistence code.
 
-- [ ] **Step 4: Add and dispatch the default-unbound global action**
+- [x] **Step 4: Add and dispatch the default-unbound global action**
 
 Extend `ALL_ACTIONS`, id/label parsing/list serialization and tests with `ToggleClickThrough`; its default is `None`, so reset leaves it unbound and startup still registers only the two historical defaults. Dispatch through the same persistent policy transaction:
 
@@ -678,7 +697,7 @@ hotkeys::Action::ToggleClickThrough => {
 
 Add action roundtrip/default-unbound/conflict tests and extend the portable-setting test for `hotkeys:toggle_click_through`.
 
-- [ ] **Step 5: Reapply imported settings, then add wrappers and UI**
+- [x] **Step 5: Reapply imported settings, then add wrappers and UI**
 
 In `settings_window::config_import`, detect `window:click_through`, `window:hover_expand`, `window:hide_in_fullscreen`, `update:auto_check` among old/new keys. After DB transaction, spawn a worker that calls a single `window_policy::reload_persisted_settings(&app, &db)` and full-screen controller reconciliation. The existing per-key `settings://changed` events handle `update:auto_check` in the frontend store. Do not call Tauri main-thread APIs synchronously under SQLite lock. `reload_persisted_settings` applies click-through first; if that platform effect fails it forces/persists false, while independent hover/fullscreen values still load and the failure is emitted/logged as actual state rather than leaving UI/data divergence.
 
@@ -692,7 +711,9 @@ Add keys/defaults in `src/lib/settings.ts`, expose `windowClickThroughSet`, upda
 
 Optimistically set UI only if desired, but on command failure query `windowPolicyGet()` and roll back to snapshot value; show an inline error, not only `console.error`.
 
-- [ ] **Step 6: Verify and user-test**
+- [x] **Step 6: Verify and user-test**
+
+2026-07-14 自动化通过：`window_policy::tests` 17/17、`hotkeys::tests` 10/10、`storage::portable_tests` 2/2、TypeScript、三入口 build 与 Task 5 diff check；build 仅有既有主 chunk >500 kB 警告。用户确认 Windows 真机正常运行，覆盖设置开关、整窗点击落到后方窗口、重启持久化、设置页恢复、默认空热键及绑定后跨应用切换。
 
 Run:
 
@@ -727,7 +748,7 @@ git commit -m "feat(window): 增加持久化整窗鼠标穿透"
 **Interfaces:**
 - Produces Rust commands `window_hover_set(hovered)` and `window_hover_expand_set(app, db, enabled) -> WindowPolicySnapshot`; TypeScript wrappers `windowHoverSet(hovered)` / `windowHoverExpandSet(enabled)` and `createHoverController({enterDelay:180, leaveDelay:300, submit})` with `enter()`, `leave()`, `disable()`, `dispose()`.
 
-- [ ] **Step 1: Write fake-timer hover tests**
+- [x] **Step 1: Write fake-timer hover tests**
 
 ```ts
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -760,7 +781,9 @@ it("disable and dispose clear timers and submit false once", () => {
 });
 ```
 
-- [ ] **Step 2: Verify failure**
+- [x] **Step 2: Verify failure**
+
+2026-07-14 RED 已确认：三个 fake-timer 用例因 `createHoverController` 不存在而失败（3 failed / 3 existing passed）；后端 hover 规则测试因 `apply_hover_report` / `apply_hover_expand_setting` 缺失产生 4 个 E0425。
 
 ```bash
 pnpm test src/lib/__tests__/window-policy.test.ts
@@ -768,19 +791,19 @@ pnpm test src/lib/__tests__/window-policy.test.ts
 
 Expected: FAIL because controller does not exist.
 
-- [ ] **Step 3: Implement generation-based controller**
+- [x] **Step 3: Implement generation-based controller**
 
 Use a monotonically increasing `generation` and one timeout. Each callback captures generation and exits if stale. `disable()`/`dispose()` clear timeout; `disable()` submits false if active. No React imports in this pure module.
 
-- [ ] **Step 4: Add backend hover command**
+- [x] **Step 4: Add backend hover command**
 
 `window_hover_set` updates only `hovered`; if `hover_expand=false` or `click_through=true`, coerce false. It uses `FocusIntent::Preserve` and never persists transient hovered state. Add reducer transition tests. Both hover commands are registered in `generate_handler!`, and `src/lib/window-policy.ts` invokes them with Tauri camelCase arguments.
 
-- [ ] **Step 5: Wire the island outer container**
+- [x] **Step 5: Wire the island outer container**
 
 Attach `onPointerEnter`/`onPointerLeave` to the outer `motion.div`. On mount load policy snapshot; enable controller only when `hoverExpand && !clickThrough`; react to policy events. Cleanup must call `dispose()` and submit false. Frontend must not call `setIslandState("expanded")` from hover.
 
-- [ ] **Step 6: Add persistent hover setting with rollback**
+- [x] **Step 6: Add persistent hover setting with rollback**
 
 Add `window:hover_expand` Switch, default false. `window_hover_expand_set` updates policy, persists only after policy reapply succeeds, emits the actual snapshot, and clears `hovered` immediately when disabling. GeneralPanel calls this dedicated command—not generic `setting_set_and_emit`—and rolls back to the returned/queried snapshot on failure. Turning click-through on also disables the controller through the emitted snapshot.
 

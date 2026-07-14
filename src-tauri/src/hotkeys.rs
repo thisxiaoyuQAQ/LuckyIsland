@@ -30,6 +30,7 @@ pub struct HotkeyMap(pub Arc<Mutex<HashMap<u32, Action>>>);
 pub enum Action {
     ToggleIsland,
     ToggleAi,
+    ToggleClickThrough,
 }
 
 impl Action {
@@ -38,6 +39,7 @@ impl Action {
         match self {
             Action::ToggleIsland => "toggle_island",
             Action::ToggleAi => "toggle_ai",
+            Action::ToggleClickThrough => "toggle_click_through",
         }
     }
 
@@ -46,20 +48,26 @@ impl Action {
         match self {
             Action::ToggleIsland => "显示/隐藏灵动岛",
             Action::ToggleAi => "打开/关闭 AI 面板",
+            Action::ToggleClickThrough => "开启/关闭鼠标穿透",
         }
     }
 
-    /// 默认绑定（DB 无值 / 值非法时回退）。
-    pub fn default_binding(&self) -> &'static str {
+    /// 默认绑定；None 表示动作默认未绑定。
+    pub fn default_binding(&self) -> Option<&'static str> {
         match self {
-            Action::ToggleIsland => "alt+KeyX",
-            Action::ToggleAi => "alt+Space",
+            Action::ToggleIsland => Some("alt+KeyX"),
+            Action::ToggleAi => Some("alt+Space"),
+            Action::ToggleClickThrough => None,
         }
     }
 }
 
 /// 全部可绑定动作（UI 列表与默认值来源）。新增动作在此追加。
-const ALL_ACTIONS: [Action; 2] = [Action::ToggleIsland, Action::ToggleAi];
+const ALL_ACTIONS: [Action; 3] = [
+    Action::ToggleIsland,
+    Action::ToggleAi,
+    Action::ToggleClickThrough,
+];
 
 /// `hotkeys:<id>` 形式的 settings key。
 fn setting_key(action: Action) -> String {
@@ -71,6 +79,7 @@ fn parse_action(id: &str) -> Option<Action> {
     match id {
         "toggle_island" => Some(Action::ToggleIsland),
         "toggle_ai" => Some(Action::ToggleAi),
+        "toggle_click_through" => Some(Action::ToggleClickThrough),
         _ => None,
     }
 }
@@ -81,16 +90,37 @@ fn normalize(binding: &str) -> Option<String> {
     HotKey::from_str(binding).ok().map(|h| h.into_string())
 }
 
-/// 读某动作当前生效绑定：DB 有合法值则用规范形，否则回退默认。
-fn current_binding(db: &Db, action: Action) -> String {
-    db.setting_get(&setting_key(action))
-        .as_deref()
-        .and_then(normalize)
-        .unwrap_or_else(|| action.default_binding().to_string())
+fn binding_from_stored(stored: Option<&str>, action: Action) -> Option<HotKey> {
+    match stored {
+        Some("") => None,
+        Some(value) => HotKey::from_str(value).ok().or_else(|| {
+            action
+                .default_binding()
+                .and_then(|default| HotKey::from_str(default).ok())
+        }),
+        None => action
+            .default_binding()
+            .and_then(|default| HotKey::from_str(default).ok()),
+    }
 }
 
-/// 读全部动作的当前生效绑定（坏值自动回退默认）。
-fn load_bindings(db: &Db) -> Vec<(Action, String)> {
+fn default_hotkey_ids() -> HashSet<u32> {
+    ALL_ACTIONS
+        .iter()
+        .filter_map(|action| action.default_binding())
+        .filter_map(|binding| HotKey::from_str(binding).ok())
+        .map(|hotkey| hotkey.id())
+        .collect()
+}
+
+/// 读某动作当前生效绑定：缺失值使用默认，显式空值保持未绑定，坏值回退默认。
+fn current_binding(db: &Db, action: Action) -> Option<HotKey> {
+    let stored = db.setting_get(&setting_key(action));
+    binding_from_stored(stored.as_deref(), action)
+}
+
+/// 读全部动作的当前生效绑定。
+fn load_bindings(db: &Db) -> Vec<(Action, Option<HotKey>)> {
     ALL_ACTIONS
         .iter()
         .map(|&a| (a, current_binding(db, a)))
@@ -132,18 +162,16 @@ pub fn apply(app: &AppHandle, db: &Db) -> Vec<HotkeyResult> {
     let mut seen: HashSet<u32> = HashSet::new();
     let mut results = Vec::with_capacity(bindings.len());
     for (action, binding) in bindings {
-        let parsed = match HotKey::from_str(&binding) {
-            Ok(h) => h,
-            Err(e) => {
-                results.push(HotkeyResult {
-                    action: action.id_str().to_string(),
-                    binding,
-                    ok: false,
-                    error: Some(format!("无法解析按键：{e}")),
-                });
-                continue;
-            }
+        let Some(parsed) = binding else {
+            results.push(HotkeyResult {
+                action: action.id_str().to_string(),
+                binding: String::new(),
+                ok: true,
+                error: None,
+            });
+            continue;
         };
+        let binding = parsed.into_string();
         let id = parsed.id();
         // 跨动作冲突：两个动作绑到同一组合键，后者拒绝注册。
         if !seen.insert(id) {
@@ -186,8 +214,10 @@ pub fn hotkeys_list(db: State<'_, Db>) -> Result<Vec<HotkeyEntry>, String> {
         .map(|&a| HotkeyEntry {
             action: a.id_str().to_string(),
             label: a.label().to_string(),
-            binding: current_binding(&db, a),
-            default: a.default_binding().to_string(),
+            binding: current_binding(&db, a)
+                .map(|hotkey| hotkey.into_string())
+                .unwrap_or_default(),
+            default: a.default_binding().unwrap_or_default().to_string(),
         })
         .collect())
 }
@@ -204,8 +234,7 @@ pub async fn hotkeys_apply(
     bindings: Vec<(String, String)>,
 ) -> Result<Vec<HotkeyResult>, String> {
     for (id, binding) in &bindings {
-        let action = parse_action(id)
-            .ok_or_else(|| format!("未知动作：{id}"))?;
+        let action = parse_action(id).ok_or_else(|| format!("未知动作：{id}"))?;
         let normalized = normalize(binding).unwrap_or_else(|| binding.clone());
         db.setting_set(&setting_key(action), &normalized)
             .map_err(|e| e.to_string())?;
@@ -217,7 +246,8 @@ pub async fn hotkeys_apply(
 #[tauri::command]
 pub async fn hotkeys_reset(app: AppHandle, db: State<'_, Db>) -> Result<Vec<HotkeyResult>, String> {
     for &a in ALL_ACTIONS.iter() {
-        db.setting_delete(&setting_key(a)).map_err(|e| e.to_string())?;
+        db.setting_delete(&setting_key(a))
+            .map_err(|e| e.to_string())?;
     }
     Ok(apply(&app, db.inner()))
 }
@@ -236,7 +266,10 @@ pub async fn hotkeys_suspend(app: AppHandle) -> Result<(), String> {
 
 /// 按 DB 当前绑定重新注册（录制取消 / 面板卸载时恢复用，不写 DB）。
 #[tauri::command]
-pub async fn hotkeys_reload(app: AppHandle, db: State<'_, Db>) -> Result<Vec<HotkeyResult>, String> {
+pub async fn hotkeys_reload(
+    app: AppHandle,
+    db: State<'_, Db>,
+) -> Result<Vec<HotkeyResult>, String> {
     Ok(apply(&app, db.inner()))
 }
 
@@ -245,11 +278,47 @@ mod tests {
     use super::*;
 
     #[test]
+    fn explicit_empty_value_is_valid_unbound_not_default_fallback() {
+        assert_eq!(binding_from_stored(Some(""), Action::ToggleIsland), None);
+    }
+
+    #[test]
+    fn missing_value_still_uses_existing_defaults() {
+        assert_eq!(
+            binding_from_stored(None, Action::ToggleIsland)
+                .unwrap()
+                .into_string(),
+            "alt+KeyX"
+        );
+        assert_eq!(
+            binding_from_stored(None, Action::ToggleAi)
+                .unwrap()
+                .into_string(),
+            "alt+Space"
+        );
+    }
+
+    #[test]
+    fn existing_default_collision_check_only_counts_bound_defaults() {
+        assert_eq!(default_hotkey_ids().len(), 2);
+    }
+
+    #[test]
+    fn click_through_is_default_unbound() {
+        assert_eq!(Action::ToggleClickThrough.default_binding(), None);
+        assert_eq!(binding_from_stored(None, Action::ToggleClickThrough), None);
+        assert_eq!(default_hotkey_ids().len(), 2);
+    }
+
+    #[test]
     fn default_bindings_parse_and_match_display() {
         // 默认绑定必须可解析，且 into_string 往返稳定（确保落盘规范形可被 from_str 还原）。
         for &a in ALL_ACTIONS.iter() {
-            let raw = a.default_binding();
-            let h = HotKey::from_str(raw).unwrap_or_else(|e| panic!("默认绑定 {raw} 解析失败：{e}"));
+            let Some(raw) = a.default_binding() else {
+                continue;
+            };
+            let h =
+                HotKey::from_str(raw).unwrap_or_else(|e| panic!("默认绑定 {raw} 解析失败：{e}"));
             let canonical = h.into_string();
             HotKey::from_str(&canonical).expect("规范形必须可往返解析");
         }
@@ -260,10 +329,19 @@ mod tests {
         // 用户输入大小写/修饰键顺序不规范时，normalize 应产出统一规范形。
         assert_eq!(normalize("Alt+KeyX").as_deref(), Some("alt+KeyX"));
         assert_eq!(normalize("ALT+SPACE").as_deref(), Some("alt+Space"));
-        assert_eq!(normalize("shift+alt+KeyC").as_deref(), Some("shift+alt+KeyC"));
+        assert_eq!(
+            normalize("shift+alt+KeyC").as_deref(),
+            Some("shift+alt+KeyC")
+        );
         // 规范形里修饰键顺序固定为 shift+control+alt+super，与用户输入顺序无关。
-        assert_eq!(normalize("alt+shift+KeyC").as_deref(), Some("shift+alt+KeyC"));
-        assert_eq!(normalize("control+alt+KeyC").as_deref(), Some("control+alt+KeyC"));
+        assert_eq!(
+            normalize("alt+shift+KeyC").as_deref(),
+            Some("shift+alt+KeyC")
+        );
+        assert_eq!(
+            normalize("control+alt+KeyC").as_deref(),
+            Some("control+alt+KeyC")
+        );
     }
 
     #[test]
@@ -288,6 +366,10 @@ mod tests {
     fn setting_key_format() {
         assert_eq!(setting_key(Action::ToggleIsland), "hotkeys:toggle_island");
         assert_eq!(setting_key(Action::ToggleAi), "hotkeys:toggle_ai");
+        assert_eq!(
+            setting_key(Action::ToggleClickThrough),
+            "hotkeys:toggle_click_through"
+        );
     }
 
     #[test]
@@ -295,8 +377,9 @@ mod tests {
         // 两个默认绑定不能撞键，否则启动 apply 会判冲突。
         let ids: HashSet<u32> = ALL_ACTIONS
             .iter()
-            .map(|&a| HotKey::from_str(a.default_binding()).unwrap().id())
+            .filter_map(|action| action.default_binding())
+            .map(|binding| HotKey::from_str(binding).unwrap().id())
             .collect();
-        assert_eq!(ids.len(), ALL_ACTIONS.len());
+        assert_eq!(ids.len(), default_hotkey_ids().len());
     }
 }

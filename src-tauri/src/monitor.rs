@@ -19,6 +19,38 @@ const ISLAND_EXPANDED_HEIGHT: f64 = 400.0;
 /// 运行时显示器变化轮询间隔。副屏断开后最多延迟此时间即临时跳回主屏。
 const RUNTIME_WATCH_INTERVAL: Duration = Duration::from_secs(2);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RuntimeWatchAction {
+    None,
+    RecoverPrimary,
+    RestoreSaved,
+}
+
+fn runtime_watch_action(fell_back: bool, saved_available: bool) -> RuntimeWatchAction {
+    match (fell_back, saved_available) {
+        (false, false) => RuntimeWatchAction::RecoverPrimary,
+        (true, true) => RuntimeWatchAction::RestoreSaved,
+        _ => RuntimeWatchAction::None,
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RecoveryOperation {
+    ResizeCompact,
+    Unminimize,
+    Move,
+    ReapplyPolicy,
+}
+
+#[cfg(test)]
+const RECOVERY_OPERATIONS: &[RecoveryOperation] = &[
+    RecoveryOperation::ResizeCompact,
+    RecoveryOperation::Unminimize,
+    RecoveryOperation::Move,
+    RecoveryOperation::ReapplyPolicy,
+];
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MonitorPoint {
@@ -113,7 +145,12 @@ fn physical_window_height(logical_height: f64, scale_factor: f64) -> u32 {
     (logical_height * scale_factor).round().max(1.0) as u32
 }
 
-fn top_center_position(monitor: &MonitorInfo, window_width: u32, offset_x: i32, offset_y: i32) -> MonitorPoint {
+fn top_center_position(
+    monitor: &MonitorInfo,
+    window_width: u32,
+    offset_x: i32,
+    offset_y: i32,
+) -> MonitorPoint {
     MonitorPoint {
         x: monitor.position.x + (monitor.size.width as i32 - window_width as i32) / 2 + offset_x,
         y: monitor.position.y + TOP_GAP_PHYSICAL + offset_y,
@@ -213,7 +250,10 @@ fn read_offsets(db: &Db) -> (i32, i32) {
     let parse = |raw: Option<String>| -> i32 {
         raw.and_then(|v| v.trim().parse::<i32>().ok()).unwrap_or(0)
     };
-    (parse(db.setting_get(OFFSET_X_KEY)), parse(db.setting_get(OFFSET_Y_KEY)))
+    (
+        parse(db.setting_get(OFFSET_X_KEY)),
+        parse(db.setting_get(OFFSET_Y_KEY)),
+    )
 }
 
 /// 把偏移 clamp 到窗口仍留在 monitor 可视区内的范围：
@@ -282,12 +322,11 @@ fn move_island_to_monitor(
         .map_err(|error| format!("移动灵动岛窗口失败：{error}"))
 }
 
-/// 把灵动岛恢复并迁移到目标显示器（运行时副屏断开回退专用）。
+/// 把灵动岛恢复并迁移到目标显示器（运行时显示器变化专用）。
 ///
 /// Windows 在显示器断开时会把窗口移到 (-32000,-32000) 并缩到 160x28（最小化到屏外）。
 /// 此时单纯的 `set_position` 不生效——必须先 `set_size` 恢复正常尺寸、`unminimize`
-/// 解除最小化，再 `set_position`，最后 `show` + `set_focus` 保证可见。
-/// 回退态固定用紧凑尺寸（与默认启动态一致）。
+/// 解除最小化，再 `set_position`。最终可见性和焦点由窗口策略重放，不在恢复路径直接裁决。
 fn recover_island_to_monitor(
     app: &AppHandle,
     monitor: &RuntimeMonitor,
@@ -312,12 +351,7 @@ fn recover_island_to_monitor(
     window
         .set_position(PhysicalPosition::new(position.x, position.y))
         .map_err(|error| format!("移动灵动岛窗口失败：{error}"))?;
-    window
-        .show()
-        .map_err(|error| format!("显示窗口失败：{error}"))?;
-    window
-        .set_focus()
-        .map_err(|error| format!("聚焦窗口失败：{error}"))?;
+    crate::window_policy::reapply(app)?;
     Ok(())
 }
 
@@ -424,8 +458,8 @@ pub fn window_offset_apply(
 /// - 副屏断开：Windows 会把窗口移到 (-32000,-32000) 并缩到 160x28（最小化到屏外），
 ///   `recover_island_to_monitor` 恢复尺寸并迁移到主屏；emit `monitor://changed`
 ///   携带 `fallback=true`，让设置页显示「当前不可用，暂用主显示器」。
-/// - 副屏恢复：Windows 自动把窗口移回原屏（OS 行为，无需我们处理）；这里只复位
-///   `fell_back` 标志并 emit `fallback=false` 让设置页移除回退提示。
+/// - 副屏恢复：主动迁移回已保存副屏，成功后才复位 `fell_back` 并 emit
+///   `fallback=false`；失败则保留回退态供后续轮询重试。
 ///
 /// 选中「主显示器」时不做任何事——主屏若消失应用本身已无法正常显示。
 pub fn start_runtime_watch(app: AppHandle) {
@@ -447,42 +481,46 @@ pub fn start_runtime_watch(app: AppHandle) {
                 continue;
             }
 
-            let still_available = set.monitors.iter().any(|m| m.info.id == saved);
-            if still_available {
-                // 副屏恢复：不自动跳回窗口，但复位标志并通知前端移除回退提示。
-                if fell_back {
-                    let _ = app.emit(
-                        "monitor://changed",
-                        MonitorSelectionState {
-                            selected: saved.clone(),
-                            resolved: saved,
-                            fallback: false,
-                        },
-                    );
+            let saved_available = set.monitors.iter().any(|m| m.info.id == saved);
+            match runtime_watch_action(fell_back, saved_available) {
+                RuntimeWatchAction::RestoreSaved => {
+                    let Some(target) = set.monitors.iter().find(|m| m.info.id == saved) else {
+                        continue;
+                    };
+                    let db = app.state::<Db>();
+                    let (offset_x, offset_y) = read_offsets(db.inner());
+                    if recover_island_to_monitor(&app, target, offset_x, offset_y).is_ok() {
+                        fell_back = false;
+                        let _ = app.emit(
+                            "monitor://changed",
+                            MonitorSelectionState {
+                                selected: saved.clone(),
+                                resolved: saved,
+                                fallback: false,
+                            },
+                        );
+                    }
                 }
-                fell_back = false;
-                continue;
-            }
-
-            // 副屏断开：每个断开周期只移动+通知一次，避免反复 set_position。
-            if fell_back {
-                continue;
-            }
-            let Some(primary) = set.monitors.iter().find(|m| m.info.id == set.primary_id) else {
-                continue;
-            };
-            let db = app.state::<Db>();
-            let (offset_x, offset_y) = read_offsets(db.inner());
-            if recover_island_to_monitor(&app, primary, offset_x, offset_y).is_ok() {
-                fell_back = true;
-                let _ = app.emit(
-                    "monitor://changed",
-                    MonitorSelectionState {
-                        selected: saved,
-                        resolved: set.primary_id.clone(),
-                        fallback: true,
-                    },
-                );
+                RuntimeWatchAction::RecoverPrimary => {
+                    let Some(primary) = set.monitors.iter().find(|m| m.info.id == set.primary_id)
+                    else {
+                        continue;
+                    };
+                    let db = app.state::<Db>();
+                    let (offset_x, offset_y) = read_offsets(db.inner());
+                    if recover_island_to_monitor(&app, primary, offset_x, offset_y).is_ok() {
+                        fell_back = true;
+                        let _ = app.emit(
+                            "monitor://changed",
+                            MonitorSelectionState {
+                                selected: saved,
+                                resolved: set.primary_id.clone(),
+                                fallback: true,
+                            },
+                        );
+                    }
+                }
+                RuntimeWatchAction::None => {}
             }
         }
     });
@@ -589,7 +627,7 @@ mod tests {
             MonitorPoint { x: 600, y: 16 }
         );
         assert_eq!(
-            top_center_position(&info("LEFT", -2560, -200, 2560, 1440, false), 1080, 0, 0, ),
+            top_center_position(&info("LEFT", -2560, -200, 2560, 1440, false), 1080, 0, 0,),
             MonitorPoint { x: -1820, y: -184 }
         );
     }
@@ -619,6 +657,32 @@ mod tests {
         assert_eq!(clamp_offsets(&monitor, 720, 400, 0, 0), (0, 0));
         // 150% DPI：展开态物理高度 600px，纵向下移上限随之收紧到 464。
         assert_eq!(clamp_offsets(&monitor, 1080, 600, 0, 9999), (0, 464));
+    }
+
+    #[test]
+    fn runtime_watch_disconnects_then_returns_to_saved_monitor() {
+        assert_eq!(
+            runtime_watch_action(false, false),
+            RuntimeWatchAction::RecoverPrimary
+        );
+        assert_eq!(
+            runtime_watch_action(true, true),
+            RuntimeWatchAction::RestoreSaved
+        );
+        assert_eq!(runtime_watch_action(false, true), RuntimeWatchAction::None);
+    }
+
+    #[test]
+    fn automatic_recovery_never_requests_focus() {
+        assert_eq!(
+            RECOVERY_OPERATIONS,
+            &[
+                RecoveryOperation::ResizeCompact,
+                RecoveryOperation::Unminimize,
+                RecoveryOperation::Move,
+                RecoveryOperation::ReapplyPolicy,
+            ]
+        );
     }
 
     #[test]

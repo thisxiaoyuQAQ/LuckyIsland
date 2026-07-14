@@ -2,6 +2,12 @@ import { useEffect, useState, type ReactNode } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { Switch } from "@/components/ui/switch";
 import {
+  windowClickThroughSet,
+  windowHoverExpandSet,
+  windowPolicyGet,
+  type WindowPolicySnapshot,
+} from "@/lib/window-policy";
+import {
   KEYS,
   parseBool,
   settingGet,
@@ -39,6 +45,10 @@ export function GeneralPanel() {
   const [defaultState, setDefaultState] = useState<IslandState>("compact");
   const [toast, setToast] = useState(true);
   const [blur, setBlur] = useState(true);
+  const [clickThrough, setClickThrough] = useState(false);
+  const [hoverExpand, setHoverExpand] = useState(false);
+  const [clickThroughError, setClickThroughError] = useState<string | null>(null);
+  const [hoverExpandError, setHoverExpandError] = useState<string | null>(null);
   const [theme, setTheme] = useState<Theme>("auto");
   const [monitors, setMonitors] = useState<MonitorInfo[]>([]);
   const [monitorState, setMonitorState] = useState<MonitorSelectionState>({
@@ -65,12 +75,13 @@ export function GeneralPanel() {
           }
         });
 
-      const [auto, ds, t, th, b] = await Promise.all([
+      const [auto, ds, t, th, b, policy] = await Promise.all([
         autostartGet().catch(() => false),
         settingGet(KEYS.defaultState),
         settingGet(KEYS.toast),
         settingGet(KEYS.theme),
         settingGet(KEYS.blur),
+        windowPolicyGet().catch(() => null),
       ]);
       if (disposed) return;
       setAutostart(auto);
@@ -78,6 +89,8 @@ export function GeneralPanel() {
       setToast(parseBool(t, true));
       if (th === "light" || th === "dark" || th === "auto") setTheme(th);
       setBlur(parseBool(b, true));
+      setClickThrough(policy?.clickThrough ?? false);
+      setHoverExpand(policy?.hoverExpand ?? false);
       await monitorLoad;
       if (!disposed) setLoading(false);
     })().catch((error) => {
@@ -117,6 +130,30 @@ export function GeneralPanel() {
     await settingSetEmit(KEYS.blur, v ? "true" : "false");
   };
 
+  const toggleClickThrough = async (enabled: boolean) => {
+    setClickThroughError(null);
+    try {
+      const snapshot = await windowClickThroughSet(enabled);
+      setClickThrough(snapshot.clickThrough);
+    } catch (error) {
+      const actual = await windowPolicyGet().catch(() => null);
+      if (actual) setClickThrough(actual.clickThrough);
+      setClickThroughError(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const toggleHoverExpand = async (enabled: boolean) => {
+    setHoverExpandError(null);
+    try {
+      const snapshot = await windowHoverExpandSet(enabled);
+      setHoverExpand(snapshot.hoverExpand);
+    } catch (error) {
+      const actual = await windowPolicyGet().catch(() => null);
+      if (actual) setHoverExpand(actual.hoverExpand);
+      setHoverExpandError(error instanceof Error ? error.message : String(error));
+    }
+  };
+
   const changeTheme = async (v: Theme) => {
     setTheme(v);
     await settingSetEmit(KEYS.theme, v);
@@ -148,6 +185,25 @@ export function GeneralPanel() {
       void monitorList().then((list) => {
         if (!disposed) setMonitors(list);
       });
+    }).then((fn) => {
+      if (disposed) fn();
+      else un = fn;
+    });
+    return () => {
+      disposed = true;
+      un?.();
+    };
+  }, []);
+
+  // 策略事件可由岛窗口、全局热键或配置导入触发；设置窗口保持实时一致。
+  useEffect(() => {
+    let disposed = false;
+    let un: (() => void) | undefined;
+    void listen<WindowPolicySnapshot>("window://policy-changed", (event) => {
+      if (!disposed) {
+        setClickThrough(event.payload.clickThrough);
+        setHoverExpand(event.payload.hoverExpand);
+      }
     }).then((fn) => {
       if (disposed) fn();
       else un = fn;
@@ -219,6 +275,35 @@ export function GeneralPanel() {
           {monitorError && (
             <p className="text-right text-xs text-destructive">
               显示器设置失败：{monitorError}
+            </p>
+          )}
+        </div>
+      </Row>
+
+      <Row
+        label="鼠标穿透"
+        desc="开启后灵动岛不再接收鼠标；可从本设置页或已绑定的全局热键恢复"
+      >
+        <div className="flex flex-col items-end gap-1">
+          <Switch checked={clickThrough} onCheckedChange={toggleClickThrough} />
+          {clickThroughError && (
+            <p className="text-right text-xs text-destructive">
+              鼠标穿透设置失败：{clickThroughError}
+            </p>
+          )}
+        </div>
+      </Row>
+
+      <Row label="悬停展开" desc="紧凑态移入约 180ms 后展开，移出约 300ms 后收起；鼠标穿透时暂停">
+        <div className="flex flex-col items-end gap-1">
+          <Switch
+            checked={hoverExpand}
+            onCheckedChange={toggleHoverExpand}
+            disabled={clickThrough}
+          />
+          {hoverExpandError && (
+            <p className="text-right text-xs text-destructive">
+              悬停展开设置失败：{hoverExpandError}
             </p>
           )}
         </div>

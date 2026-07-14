@@ -52,7 +52,8 @@ impl Db {
             );",
         )?;
         // 首次启动：播种默认自选股（贵州茅台 + 平安银行），方便即时实测
-        let count: i64 = conn.query_row("SELECT COUNT(*) FROM stock_watchlist", [], |r| r.get(0))?;
+        let count: i64 =
+            conn.query_row("SELECT COUNT(*) FROM stock_watchlist", [], |r| r.get(0))?;
         if count == 0 {
             let now = now_ts();
             conn.execute(
@@ -70,8 +71,12 @@ impl Db {
     /// 读取一个 settings KV（M3 用于天气城市 / 天气缓存 / 股票缓存）
     pub fn setting_get(&self, key: &str) -> Option<String> {
         let conn = self.0.lock().ok()?;
-        conn.query_row("SELECT value FROM settings WHERE key=?1", params![key], |r| r.get(0))
-            .ok()
+        conn.query_row(
+            "SELECT value FROM settings WHERE key=?1",
+            params![key],
+            |r| r.get(0),
+        )
+        .ok()
     }
 
     /// 写入（覆盖）一个 settings KV
@@ -237,7 +242,9 @@ impl Db {
     pub fn weather_cities_all(&self) -> Result<Vec<(String, i64, i64)>, String> {
         let conn = self.0.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
-            .prepare("SELECT city, sort, added_at FROM weather_cities ORDER BY sort ASC, added_at ASC")
+            .prepare(
+                "SELECT city, sort, added_at FROM weather_cities ORDER BY sort ASC, added_at ASC",
+            )
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([], |r| {
@@ -346,6 +353,8 @@ mod portable_tests {
         // 自定义热键随配置导出/导入；密钥/运行时数据仍被排除。
         assert!(Db::is_portable_setting("hotkeys:toggle_island"));
         assert!(Db::is_portable_setting("hotkeys:toggle_ai"));
+        assert!(Db::is_portable_setting("hotkeys:toggle_click_through"));
+        assert!(Db::is_portable_setting("window:click_through"));
         assert!(!Db::is_portable_setting("notify:http_token"));
         assert!(!Db::is_portable_setting("ai:chat_api_key"));
     }
