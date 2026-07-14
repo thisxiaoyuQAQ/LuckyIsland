@@ -111,7 +111,11 @@ fn val_str(v: &serde_json::Value, key: &str) -> String {
 fn val_i64(v: &serde_json::Value, key: &str) -> i64 {
     v.get(key)
         .and_then(|x| x.as_i64())
-        .or_else(|| v.get(key).and_then(|x| x.as_str()).and_then(|s| s.parse().ok()))
+        .or_else(|| {
+            v.get(key)
+                .and_then(|x| x.as_str())
+                .and_then(|s| s.parse().ok())
+        })
         .unwrap_or(0)
 }
 

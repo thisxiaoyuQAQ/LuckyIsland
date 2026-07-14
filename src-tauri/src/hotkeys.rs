@@ -26,6 +26,8 @@ use crate::storage::Db;
 pub struct HotkeyMap(pub Arc<Mutex<HashMap<u32, Action>>>);
 
 /// 可绑定的动作。新增动作：加 variant + 下方三方法 + `ALL_ACTIONS`，handler 加 arm。
+/// `Toggle*` 与持久化 action ID 的既有领域命名保持一致。
+#[allow(clippy::enum_variant_names)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Action {
     ToggleIsland,
@@ -104,6 +106,7 @@ fn binding_from_stored(stored: Option<&str>, action: Action) -> Option<HotKey> {
     }
 }
 
+#[cfg(test)]
 fn default_hotkey_ids() -> HashSet<u32> {
     ALL_ACTIONS
         .iter()

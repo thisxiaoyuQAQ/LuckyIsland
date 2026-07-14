@@ -151,7 +151,9 @@ pub fn term_create(
                             leftover.drain(..valid);
                         }
                         match e.error_len() {
-                            Some(_) => { leftover.drain(..1); } // 丢弃 1 个无效字节，继续
+                            Some(_) => {
+                                leftover.drain(..1);
+                            } // 丢弃 1 个无效字节，继续
                             None => break, // 尾部是不完整的多字节序列，等下次
                         }
                     }
@@ -195,7 +197,10 @@ pub fn term_write(
 
 /// 返回该终端已缓存输出。解决前端监听晚于 PTY 初始提示符导致输出丢失的问题。
 #[tauri::command]
-pub fn term_snapshot(term_id: String, registry: State<'_, TerminalRegistry>) -> Result<String, String> {
+pub fn term_snapshot(
+    term_id: String,
+    registry: State<'_, TerminalRegistry>,
+) -> Result<String, String> {
     let output_buffer = {
         let guard = registry.0.lock().map_err(|e| e.to_string())?;
         let Some(handle) = guard.get(&term_id) else {
@@ -220,7 +225,12 @@ pub fn term_resize(
     };
     handle
         .master
-        .resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+        .resize(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
         .map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -247,4 +257,3 @@ pub fn term_open_wt(cwd: Option<String>) -> Result<(), String> {
         .map_err(|e| format!("打开 Windows Terminal 失败：{e}（是否已安装？）"))?;
     Ok(())
 }
-

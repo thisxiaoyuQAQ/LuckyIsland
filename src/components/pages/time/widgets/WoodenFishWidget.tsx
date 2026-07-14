@@ -3,7 +3,10 @@ import { motion, AnimatePresence, useAnimationControls } from "motion/react";
 import { useTimeSetting } from "../useTimeConfig";
 import { settingGet, settingSet, timeWidgetKey } from "@/lib/settings";
 import { parseWoodenFishConfig, DEFAULT_WOODEN_FISH } from "../widgetConfig";
-import { rolloverMerit, applyMeritClick, isCrazyThursday, localDateKey, type MeritState } from "../date";
+import { rolloverMerit, isCrazyThursday, type MeritState } from "../date";
+import { currentLocalDay, useLocalDay } from "../useLocalDay";
+import { createDebouncedWriter } from "../debouncedWriter";
+import { loadWoodenFishState, prepareWoodenFishKnock } from "../woodenFishState";
 import { thursdayLine } from "./thursdayContent";
 
 const DATA_KEY = "time:data:wooden_fish";
@@ -36,47 +39,72 @@ export function WoodenFishWidget() {
     parseWoodenFishConfig,
     DEFAULT_WOODEN_FISH,
   );
-  const [state, setState] = useState<MeritState>({
-    date: localDateKey(new Date()),
+  const day = useLocalDay();
+  const initialState: MeritState = {
+    date: day,
     todayCount: 0,
     totalCount: 0,
     lastMilestone: null,
-  });
+  };
+  const [state, setState] = useState<MeritState>(initialState);
+  const stateRef = useRef(initialState);
+  const loadedRef = useRef(false);
   const [floats, setFloats] = useState<FloatItem[]>([]);
   const [thursday, setThursday] = useState<string | null>(null);
-  const persistTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const persistWriter = useRef(
+    createDebouncedWriter<MeritState>(
+      (value) => settingSet(DATA_KEY, JSON.stringify(value)),
+      500,
+    ),
+  );
   const floatId = useRef(0);
   const controls = useAnimationControls();
 
   useEffect(() => {
+    let disposed = false;
     (async () => {
-      const stored = await settingGet(DATA_KEY);
-      let parsed: MeritState | null = null;
-      if (stored) {
-        try {
-          parsed = JSON.parse(stored) as MeritState;
-        } catch {
-          parsed = null;
-        }
+      const loaded = await loadWoodenFishState(() => settingGet(DATA_KEY), currentLocalDay);
+      if (disposed) return;
+      loadedRef.current = loaded.canInteract;
+      stateRef.current = loaded.state;
+      setState(loaded.state);
+      if (loaded.canInteract && loaded.rolledOver) {
+        persistWriter.current.schedule(loaded.state);
+        void persistWriter.current.flush().catch(() => {
+          /* 首次跨日恢复失败不阻塞 UI；后续敲击会继续调度最新状态。 */
+        });
       }
-      setState(rolloverMerit(parsed, localDateKey(new Date())));
     })();
     return () => {
-      if (persistTimer.current) clearTimeout(persistTimer.current);
+      disposed = true;
+      void persistWriter.current.flush().catch(() => {
+        /* 卸载期间无法再展示错误；保留异步写入尽力提交。 */
+      });
     };
   }, []);
 
-  const schedulePersist = (s: MeritState) => {
-    if (persistTimer.current) clearTimeout(persistTimer.current);
-    persistTimer.current = setTimeout(() => {
-      void settingSet(DATA_KEY, JSON.stringify(s));
-    }, 500);
+  useEffect(() => {
+    if (!loadedRef.current) return;
+    const next = rolloverMerit(stateRef.current, day);
+    if (next === stateRef.current) return;
+    stateRef.current = next;
+    setState(next);
+    persistWriter.current.schedule(next);
+    void persistWriter.current.flush().catch(() => {
+      /* 保持 UI 可用；后续敲击会继续调度最新状态。 */
+    });
+  }, [day]);
+
+  const schedulePersist = (value: MeritState) => {
+    persistWriter.current.schedule(value);
   };
 
   const knock = () => {
-    const { state: next, crossed } = applyMeritClick(state);
-    setState(next);
-    schedulePersist(next);
+    if (!loadedRef.current) return;
+    const next = prepareWoodenFishKnock(stateRef.current, currentLocalDay());
+    stateRef.current = next.state;
+    setState(next.state);
+    schedulePersist(next.state);
     if (cfg.sound) playKnock(cfg.volume);
     if (!reduceMotion() && cfg.animation) {
       // 每次敲击重新触发：放大再缩回。controls.start 会打断上一次动画，连击也能逐次播放。
@@ -85,7 +113,7 @@ export function WoodenFishWidget() {
       setFloats((f) => [...f, { id, text: "+1" }]);
       setTimeout(() => setFloats((f) => f.filter((x) => x.id !== id)), 700);
     }
-    if (crossed !== null && cfg.crazyThursday && isCrazyThursday(new Date())) {
+    if (next.crossed !== null && cfg.crazyThursday && isCrazyThursday(new Date())) {
       setThursday(thursdayLine());
       setTimeout(() => setThursday(null), 4000);
     }
@@ -102,9 +130,10 @@ export function WoodenFishWidget() {
       <motion.button
         type="button"
         onClick={knock}
+        disabled={!loadedRef.current}
         aria-label="敲击木鱼"
         animate={controls}
-        className="select-none"
+        className="select-none disabled:cursor-wait disabled:opacity-60"
       >
         <img src={FISH_URL} alt="木鱼" className="h-14 w-auto" draggable={false} />
       </motion.button>

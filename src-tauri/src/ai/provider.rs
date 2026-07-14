@@ -267,7 +267,7 @@ fn extract_weather_city(query: &str) -> Option<String> {
         city = tail.trim().to_string();
     }
     let count = city.chars().count();
-    (count >= 2 && count <= 8).then_some(city)
+    (2..=8).contains(&count).then_some(city)
 }
 
 fn build_codex_prompt(
@@ -909,7 +909,7 @@ fn strip_ansi(s: &str) -> String {
     while let Some(c) = chars.next() {
         if c == '\x1b' && chars.peek() == Some(&'[') {
             chars.next(); // consume '['
-            while let Some(c) = chars.next() {
+            for c in chars.by_ref() {
                 if c.is_ascii_alphabetic() {
                     break;
                 }

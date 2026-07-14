@@ -58,6 +58,8 @@ fn guard_current(runtime: &AiRuntime, request: &ActiveRequest) -> Result<(), Str
 }
 
 /// AI 对话：校验 provider -> 注册单活 request -> provider -> 动作/历史/事件检查点。
+/// Tauri command 参数保持与前端 invoke 契约逐项对应，不合并为请求结构体。
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn ai_chat(
     app: AppHandle,

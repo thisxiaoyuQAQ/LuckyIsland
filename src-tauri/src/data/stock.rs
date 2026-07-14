@@ -116,7 +116,10 @@ fn parse_quotes(body: &str, symbols: &[String]) -> Vec<Quote> {
             continue;
         }
         let parse = |i: usize| -> f64 {
-            fields.get(i).and_then(|s| s.trim().parse().ok()).unwrap_or(0.0)
+            fields
+                .get(i)
+                .and_then(|s| s.trim().parse().ok())
+                .unwrap_or(0.0)
         };
         out.push(Quote {
             symbol: sym.clone(),
@@ -146,10 +149,7 @@ fn parse_quotes(body: &str, symbols: &[String]) -> Vec<Quote> {
     out
 }
 
-async fn fetch_quotes(
-    client: &reqwest::Client,
-    symbols: &[String],
-) -> Result<Vec<Quote>, String> {
+async fn fetch_quotes(client: &reqwest::Client, symbols: &[String]) -> Result<Vec<Quote>, String> {
     if symbols.is_empty() {
         return Ok(vec![]);
     }
@@ -255,9 +255,8 @@ pub async fn stock_kline(
         "day" | "week" | "month" => period.as_str(),
         _ => return Err("period 需为 day/week/month".into()),
     };
-    let url = format!(
-        "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={sym},{p},,,320,qfq"
-    );
+    let url =
+        format!("https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={sym},{p},,,320,qfq");
     let resp = http
         .get(&url)
         .header("Referer", "https://gu.qq.com/")
@@ -285,7 +284,11 @@ pub async fn stock_kline(
             }
             let num = |i: usize| {
                 a.get(i)
-                    .and_then(|x| x.as_str().and_then(|s| s.parse().ok()).or_else(|| x.as_f64()))
+                    .and_then(|x| {
+                        x.as_str()
+                            .and_then(|s| s.parse().ok())
+                            .or_else(|| x.as_f64())
+                    })
                     .unwrap_or(0.0)
             };
             Some(KBar {
@@ -309,8 +312,10 @@ fn is_a_share_trading(now: chrono::DateTime<Local>) -> bool {
         _ => {}
     }
     let t = now.time();
-    let morning = NaiveTime::from_hms_opt(9, 30, 0).unwrap()..=NaiveTime::from_hms_opt(11, 30, 0).unwrap();
-    let afternoon = NaiveTime::from_hms_opt(13, 0, 0).unwrap()..=NaiveTime::from_hms_opt(15, 0, 0).unwrap();
+    let morning =
+        NaiveTime::from_hms_opt(9, 30, 0).unwrap()..=NaiveTime::from_hms_opt(11, 30, 0).unwrap();
+    let afternoon =
+        NaiveTime::from_hms_opt(13, 0, 0).unwrap()..=NaiveTime::from_hms_opt(15, 0, 0).unwrap();
     morning.contains(&t) || afternoon.contains(&t)
 }
 
@@ -318,7 +323,9 @@ fn watchlist_load(db: &State<'_, Db>) -> Vec<String> {
     let Ok(conn) = db.0.lock() else {
         return vec![];
     };
-    let Ok(mut stmt) = conn.prepare("SELECT symbol FROM stock_watchlist ORDER BY sort ASC, added_at ASC") else {
+    let Ok(mut stmt) =
+        conn.prepare("SELECT symbol FROM stock_watchlist ORDER BY sort ASC, added_at ASC")
+    else {
         return vec![];
     };
     let rows = stmt.query_map([], |r| r.get::<_, String>(0));
@@ -364,7 +371,12 @@ pub fn stock_watchlist_list(db: State<'_, Db>) -> Result<Vec<WatchItem>, String>
         .prepare("SELECT symbol, sort FROM stock_watchlist ORDER BY sort ASC, added_at ASC")
         .map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map([], |r| Ok(WatchItem { symbol: r.get(0)?, sort: r.get(1)? }))
+        .query_map([], |r| {
+            Ok(WatchItem {
+                symbol: r.get(0)?,
+                sort: r.get(1)?,
+            })
+        })
         .map_err(|e| e.to_string())?;
     let mut out = Vec::new();
     for r in rows {
@@ -380,7 +392,11 @@ pub fn stock_watchlist_add(symbol: String, db: State<'_, Db>) -> Result<(), Stri
     };
     let conn = db.0.lock().map_err(|e| e.to_string())?;
     let next_sort: i64 = conn
-        .query_row("SELECT COALESCE(MAX(sort),-1)+1 FROM stock_watchlist", [], |r| r.get(0))
+        .query_row(
+            "SELECT COALESCE(MAX(sort),-1)+1 FROM stock_watchlist",
+            [],
+            |r| r.get(0),
+        )
         .unwrap_or(0);
     conn.execute(
         "INSERT OR IGNORE INTO stock_watchlist (symbol, sort, added_at) VALUES (?1, ?2, ?3)",

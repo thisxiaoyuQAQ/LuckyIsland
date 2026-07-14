@@ -90,8 +90,11 @@ pub fn todo_update(
             .map_err(|e| e.to_string())?;
     }
     if let Some(d) = done {
-        conn.execute("UPDATE todos SET done=?1 WHERE id=?2", params![d as i64, id])
-            .map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE todos SET done=?1 WHERE id=?2",
+            params![d as i64, id],
+        )
+        .map_err(|e| e.to_string())?;
     }
     if let Some(p) = priority {
         conn.execute("UPDATE todos SET priority=?1 WHERE id=?2", params![p, id])

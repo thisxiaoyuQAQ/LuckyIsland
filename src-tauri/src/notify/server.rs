@@ -65,7 +65,10 @@ pub async fn start(app: AppHandle) {
 }
 
 async fn health() -> Json<Health> {
-    Json(Health { ok: true, port: PORT })
+    Json(Health {
+        ok: true,
+        port: PORT,
+    })
 }
 
 async fn post_notify(

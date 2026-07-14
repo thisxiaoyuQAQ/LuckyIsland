@@ -130,14 +130,13 @@ pub fn run() {
         // 设置窗口点关闭改为隐藏（保持单例，避免销毁后重建）
         // ai-palette 不做失焦自动隐藏：顶部拖动区域会触发焦点变化，失焦隐藏会导致点击标题栏即关闭。
         // AI 面板改为仅 ESC / 显式 hide 关闭，拖动位置由 hide_ai_palette 保存。
-        .on_window_event(|window, event| match window.label() {
-            "settings" => {
+        .on_window_event(|window, event| {
+            if window.label() == "settings" {
                 if let WindowEvent::CloseRequested { api, .. } = event {
                     api.prevent_close();
                     let _ = window.hide();
                 }
             }
-            _ => {}
         })
         // 全局热键：handler 用 HotKey::id() 反查 HotkeyMap 得到动作并分发，
         // 具体绑定由 hotkeys::apply 按设置面板的 hotkeys:<id> KV 注册（支持自定义）。
@@ -327,7 +326,7 @@ pub fn run() {
             // HotkeyMap 供插件 handler 用 HotKey::id() 反查动作分发。
             app.manage(HotkeyMap::default());
             let app_handle = app.handle();
-            for r in hotkeys::apply(&app_handle, app.state::<storage::Db>().inner()) {
+            for r in hotkeys::apply(app_handle, app.state::<storage::Db>().inner()) {
                 if !r.ok {
                     eprintln!(
                         "[hotkeys] 启动注册失败 {:?}: {}",

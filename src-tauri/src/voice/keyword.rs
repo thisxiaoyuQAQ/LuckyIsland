@@ -85,9 +85,7 @@ pub fn encode_keyword(phrase: &str, tokens: &TokenTable) -> Result<String, Encod
     let mut parts: Vec<String> = Vec::new();
 
     for ch in phrase.chars() {
-        let py = ch
-            .to_pinyin()
-            .ok_or(EncodeError::NotChinese(ch))?;
+        let py = ch.to_pinyin().ok_or(EncodeError::NotChinese(ch))?;
         let syllable = py.with_tone(); // 带调拼音，如 "nǐ"
 
         let (initial, r#final) = split_syllable(syllable);

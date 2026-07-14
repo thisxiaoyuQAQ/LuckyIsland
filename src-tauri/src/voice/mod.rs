@@ -432,7 +432,7 @@ fn speak_wake_reply(app: &AppHandle) {
     std::thread::spawn(move || {
         eprintln!("[voice] 唤醒应答线程启动，文案：{reply}");
         let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
-        if let Err(_) = tts::speak(&reply) {
+        if tts::speak(&reply).is_err() {
             eprintln!("[voice] 唤醒应答播报失败（见上 tts 日志）");
         }
         unsafe { CoUninitialize() };
@@ -444,7 +444,7 @@ fn speak_wake_reply(app: &AppHandle) {
 /// 否则"主人我在"的 TTS 声会被麦克风收进去转写成乱七八糟的文字（真机实测串音问题）。
 fn speak_wake_reply_sync(app: &AppHandle) {
     let reply = read_wake_reply(app);
-    if let Err(_) = tts::speak(&reply) {
+    if tts::speak(&reply).is_err() {
         eprintln!("[voice] 唤醒应答同步播报失败：{reply}");
     }
 }
@@ -455,7 +455,7 @@ fn speak_prompt(_app: &AppHandle, text: &str) {
     let text = text.to_string();
     std::thread::spawn(move || {
         let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
-        if let Err(_) = tts::speak(&text) {
+        if tts::speak(&text).is_err() {
             eprintln!("[voice] 提示音播报失败：{text}");
         }
         unsafe { CoUninitialize() };
@@ -513,12 +513,10 @@ fn run_listen_loop(
 
     // 三种设备采样格式统一转换成单声道 f32（多声道取平均），做法照抄 sherpa-onnx 官方
     // rust-api-examples/streaming_zipformer_microphone.rs 的转换逻辑。
-    // build_input_stream 要 StreamConfig 值（非引用），三个分支各 clone 一份（stream_config
-    // 后面 onnx_path 等不再用到，但仍需 clone 因为 match 只会走一个分支，其它分支代码仍会被
-    // 类型检查器检查参数类型，clone 避免每分支消费同一个变量报 move 冲突）。
+    // build_input_stream 要 StreamConfig 值；StreamConfig 实现 Copy，三个 match 分支可直接传值。
     let cpal_stream = match sample_format {
         cpal::SampleFormat::F32 => device.build_input_stream(
-            stream_config.clone(),
+            stream_config,
             move |data: &[f32], _: &cpal::InputCallbackInfo| {
                 let mono: Vec<f32> = to_mono_f32(data, channels, |s| s);
                 let _ = tx.send(mono);
@@ -527,7 +525,7 @@ fn run_listen_loop(
             None,
         ),
         cpal::SampleFormat::I16 => device.build_input_stream(
-            stream_config.clone(),
+            stream_config,
             move |data: &[i16], _: &cpal::InputCallbackInfo| {
                 let mono: Vec<f32> = to_mono_f32(data, channels, |s| s as f32 / i16::MAX as f32);
                 let _ = tx.send(mono);
@@ -536,7 +534,7 @@ fn run_listen_loop(
             None,
         ),
         cpal::SampleFormat::U16 => device.build_input_stream(
-            stream_config.clone(),
+            stream_config,
             move |data: &[u16], _: &cpal::InputCallbackInfo| {
                 let mono: Vec<f32> =
                     to_mono_f32(data, channels, |s| (s as f32 - 32768.0) / 32768.0);
@@ -618,9 +616,12 @@ fn run_listen_loop(
                                 let _ = app.emit("voice://listening", true);
                                 match handle.join() {
                                     Ok(Ok(Some(asr))) => {
-                                        if let Err(e) =
-                                            record_single_utterance(&app, &asr, &rx, listening.clone())
-                                        {
+                                        if let Err(e) = record_single_utterance(
+                                            &app,
+                                            &asr,
+                                            &rx,
+                                            listening.clone(),
+                                        ) {
                                             let _ = app.emit("voice://listen-error", e);
                                         }
                                     }
@@ -914,7 +915,7 @@ fn record_utterance_blocking(
 
     let cpal_stream = match sample_format {
         cpal::SampleFormat::F32 => device.build_input_stream(
-            stream_config.clone(),
+            stream_config,
             move |data: &[f32], _: &cpal::InputCallbackInfo| {
                 let _ = tx.send(to_mono_f32(data, channels, |sample| sample));
             },
@@ -922,7 +923,7 @@ fn record_utterance_blocking(
             None,
         ),
         cpal::SampleFormat::I16 => device.build_input_stream(
-            stream_config.clone(),
+            stream_config,
             move |data: &[i16], _: &cpal::InputCallbackInfo| {
                 let _ = tx.send(to_mono_f32(data, channels, |sample| {
                     sample as f32 / i16::MAX as f32
@@ -932,7 +933,7 @@ fn record_utterance_blocking(
             None,
         ),
         cpal::SampleFormat::U16 => device.build_input_stream(
-            stream_config.clone(),
+            stream_config,
             move |data: &[u16], _: &cpal::InputCallbackInfo| {
                 let _ = tx.send(to_mono_f32(data, channels, |sample| {
                     (sample as f32 / u16::MAX as f32) * 2.0 - 1.0

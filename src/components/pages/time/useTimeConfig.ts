@@ -8,14 +8,19 @@ export function useTimeSetting<T>(key: string, parse: (v: string | null) => T, f
   parseRef.current = parse;
   const [value, setValue] = useState<T>(fallback);
   useEffect(() => {
-    void settingGet(key).then((v) => setValue(parseRef.current(v)));
+    let disposed = false;
     let un: UnlistenFn | undefined;
+    void settingGet(key).then((v) => {
+      if (!disposed) setValue(parseRef.current(v));
+    });
     void onSettingsChanged((k, v) => {
-      if (k === key) setValue(parseRef.current(v));
+      if (!disposed && k === key) setValue(parseRef.current(v));
     }).then((fn) => {
-      un = fn;
+      if (disposed) fn();
+      else un = fn;
     });
     return () => {
+      disposed = true;
       un?.();
     };
   }, [key]);

@@ -1,38 +1,51 @@
 # 当前执行入口
 
-> 当前阶段：插件系统专项 / 阶段 0 威胁模型与产品规则
-> 状态：✅ 已完成，停在阶段边界
+> 当前阶段：模块 10「审计整改」/ REF-10B-01 统一 Tauri event 生命周期
+> 状态：🚧 待方案评估
 > 更新时间：2026-07-15
-> 阶段记录：[12-plugin-system-phase-0.md](./12-plugin-system-phase-0.md)
-> 设计规格：[阶段 0 威胁模型](../docs/superpowers/specs/2026-07-14-plugin-system-phase-0-threat-model-design.md)
+> 总控：[10-审计整改.md](./10-审计整改.md)
+> 执行单：[10b-工程基线与低风险重构.md](./10b-工程基线与低风险重构.md)
 
 ## 五条执行规则
 
 1. **本文件是唯一当前执行入口。**
-2. 阶段 0 只完成安全与产品规则，没有插件运行时代码。
-3. 阶段 1 尚未立项；未经新的 brainstorming、设计批准和实施计划，不得创建插件代码。
-4. 默认主 Agent 串行；必要时最多使用 1 个独立审查 Agent，禁止大规模扇出。
-5. 不覆盖、暂存或提交工作区已有模块 10/11 改动；未经明确授权不 push、tag、发布或改写历史。
+2. 本 session 只处理审计整改，不开发新功能。
+3. 默认主 Agent 串行；必要时最多使用 1 个独立审查 Agent，禁止大规模扇出。
+4. 高风险候选无新复现/设计结论不得直接编码；产品项无用户决策不得实施。
+5. 不覆盖、暂存或提交工作区已有模块 10/11/12 改动；未经明确授权不 push、tag、发布或改写历史。
 
-## 阶段 0 完成证据
+## 已完成状态
 
-- 用户已批准书面规格；
-- 独立安全复核 LI-SEC-001～010 全部解决；
-- 复审没有新增高或中严重度问题，最终 verdict 为 Pass；
-- 本阶段未新增运行时、依赖、设置入口或迁移代码。
+- DOC-10A、FIX-10A：✅。
+- BASE-10B-01：✅ 统一验证入口与严格门禁。
+- BASE-10B-02：✅ Node + happy-dom React 生命周期测试层。
+- BASE-10B-03：✅ Node/pnpm/Rust 声明、registry 诊断、原生 DLL 来源与默认 release 打包前置检查。
+- 插件系统阶段 0：✅ 威胁模型与产品规则已完成；阶段 1 未立项，禁止直接创建插件运行时代码。
+- 模块 11：Task 1～4 已完成，继续暂停于 Task 5。
 
-## 当前唯一下一动作
+## BASE-10B-03 最终证据
 
-**等待用户选择后续方向。**
+- DLL checker RED：实现模块缺失；GREEN fixture 4/4（完整、缺文件、空文件、缺映射）。
+- `pnpm check:native-runtime`：默认 release target 的 4 个 Tauri 映射源 DLL 均存在且非空。
+- 声明环境与实机一致：Node 22、pnpm 10.15.0、Rust 1.92.0 stable-msvc。
+- 最新连续 `pnpm verify`：TypeScript、前端 14 files / 127 tests、三入口 build、Rust fmt、严格 Clippy、Rust lib 74/74、cargo check 全部 exit 0。
+- 未重新打包或安装；不声称 NSIS 内部清单、安装后 DLL 加载、PATH 或真机语音通过。
 
-- 若继续插件专项：只可启动阶段 1 的独立 brainstorming，不能直接编码；
-- 若返回原项目：恢复模块 10 `BASE-10B-03` 可复现环境与打包前置方案评估；模块 11 继续暂停于 Task 5。
+## 唯一下一动作
 
-当前没有获授权的阶段 1 实施任务。
+**只读评估 REF-10B-01：以 BASE-10B-02 的生命周期测试层为基础，盘点直接 `listen()` / Promise subscription 的调用点，区分已正确 disposed、存在卸载竞态、需要 handler ref 的三类；提出共享 `useAsyncSubscription` / `useTauriEvent` 的最小 API、分批迁移顺序和回归矩阵，先交用户确认。评估阶段不迁移 App、Stock、Notify、Weather、Terminal。**
 
-## 保留现场
+## REF-10B-01 边界
 
-- 模块 10「审计整改」：DOC-10A、FIX-10A、BASE-10B-01/02 已完成；原入口已前进到 BASE-10B-03；
-- BASE-10B-02 最新证据：TypeScript 通过，Vitest 13 files / 121 tests，三入口 Vite build 通过，全量 Rust fmt、严格 Clippy、Rust lib 74/74 和 cargo check 通过；未执行 GUI、安装态或真机；
-- 模块 11「更新、窗口策略与七日天气」：Task 1～4 已完成，暂停于 Task 5；
-- 工作区包含上述模块的未提交改动，不得覆盖、清理或夹带提交。
+- 先保护“卸载前 resolve 正常 cleanup”和“卸载后 resolve 立即 cleanup”；
+- handler 必须读取最新闭包，不因订阅重建造成事件空窗；
+- Promise rejection 统一处理但不吞掉可诊断错误；
+- 分批迁移，单批只改一类入口；
+- 不借机拆 App、改主题同步、改变导航/窗口策略或让隐藏页面 keep-alive；
+- 模块 11 与插件阶段 1 均不在本项实施范围。
+
+## 当前环境约束
+
+- 工作区包含模块 10/11/12 大量未提交改动，不得覆盖或清理。
+- Cargo 验证使用独立 `CARGO_TARGET_DIR`；正式 Tauri 打包使用默认 target。
+- GUI、安装态和真机证据必须与自动化分开记录。

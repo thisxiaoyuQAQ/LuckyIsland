@@ -7,13 +7,20 @@ use std::path::PathBuf;
 #[derive(Parser, Debug)]
 #[command(name = "lucky-notify", about = "Send a notification to LuckyIsland")]
 struct Args {
-    #[arg(long)] title: String,
-    #[arg(long)] body: Option<String>,
-    #[arg(long, default_value = "custom")] source: String,
-    #[arg(long, default_value = "info")] level: String,
-    #[arg(long)] cwd: Option<String>,
-    #[arg(long, default_value_t = 9753)] port: u16,
-    #[arg(long)] token: Option<String>,
+    #[arg(long)]
+    title: String,
+    #[arg(long)]
+    body: Option<String>,
+    #[arg(long, default_value = "custom")]
+    source: String,
+    #[arg(long, default_value = "info")]
+    level: String,
+    #[arg(long)]
+    cwd: Option<String>,
+    #[arg(long, default_value_t = 9753)]
+    port: u16,
+    #[arg(long)]
+    token: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -46,10 +53,10 @@ fn run(args: Args) -> Result<(), String> {
         .or_else(|| std::env::var("LUCKY_TOKEN").ok())
         .or_else(read_token_from_db)
         .ok_or_else(|| "token not found; start LuckyIsland once or set LUCKY_TOKEN".to_string())?;
-    let action = args
-        .cwd
-        .filter(|s| !s.trim().is_empty())
-        .map(|cwd| Action { action_type: "open_terminal".into(), cwd });
+    let action = args.cwd.filter(|s| !s.trim().is_empty()).map(|cwd| Action {
+        action_type: "open_terminal".into(),
+        cwd,
+    });
     let payload = Payload {
         title: args.title,
         body: args.body,

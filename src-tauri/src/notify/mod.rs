@@ -2,7 +2,7 @@ use crate::storage::Db;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_notification::NotificationExt;
 use uuid::Uuid;
 
@@ -221,11 +221,7 @@ pub fn dispatch_notification(
 ) -> Result<Notification, String> {
     let n = insert_notification(db, input)?;
     let _ = app.emit("notify://incoming", n.clone());
-    let _ = app.emit("window://state-changed", "expanded".to_string());
-    if let Some(window) = app.get_webview_window("island") {
-        let _ = window.show();
-        let _ = window.set_focus();
-    }
+    crate::window_policy::present_notification(app)?;
     // OS 系统通知（Windows toast）：默认开启，可由 M7 设置面板 general:toast 关闭。
     let toast_enabled = db
         .setting_get("general:toast")

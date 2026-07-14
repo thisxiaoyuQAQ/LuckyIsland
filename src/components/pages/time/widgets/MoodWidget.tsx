@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTimeSetting } from "../useTimeConfig";
 import { settingGet, settingSet, settingsList, timeWidgetKey } from "@/lib/settings";
 import { parseMoodConfig, DEFAULT_MOOD } from "../widgetConfig";
-import { moodStreak, localDateKey, type MoodLevel } from "../date";
+import { moodStreak, type MoodLevel } from "../date";
+import { useLocalDay } from "../useLocalDay";
 
 const LEVELS: { id: MoodLevel; emoji: string; label: string }[] = [
   { id: "great", emoji: "😄", label: "很棒" },
@@ -16,33 +17,50 @@ function moodKey(day: string) {
   return `time:data:mood:${day}`;
 }
 
+async function loadMood(day: string) {
+  const value = await settingGet(moodKey(day));
+  const today = value && LEVELS.some((level) => level.id === value) ? (value as MoodLevel) : null;
+  const all = await settingsList("time:data:mood:");
+  const records: Record<string, MoodLevel> = {};
+  for (const [key, record] of Object.entries(all)) {
+    const date = key.replace("time:data:mood:", "");
+    if (LEVELS.some((level) => level.id === record)) records[date] = record as MoodLevel;
+  }
+  return { today, streak: moodStreak(records, day) };
+}
+
 export function MoodWidget() {
   const { value: cfg } = useTimeSetting(timeWidgetKey("mood"), parseMoodConfig, DEFAULT_MOOD);
+  const day = useLocalDay();
+  const dayRef = useRef(day);
+  dayRef.current = day;
   const [today, setToday] = useState<MoodLevel | null>(null);
   const [streak, setStreak] = useState(0);
-  const day = localDateKey(new Date());
 
-  const refresh = async () => {
-    const v = await settingGet(moodKey(day));
-    setToday(v && LEVELS.some((l) => l.id === v) ? (v as MoodLevel) : null);
-    const all = await settingsList("time:data:mood:");
-    const records: Record<string, MoodLevel> = {};
-    for (const [k, val] of Object.entries(all)) {
-      const d = k.replace("time:data:mood:", "");
-      if (LEVELS.some((l) => l.id === val)) records[d] = val as MoodLevel;
-    }
-    setStreak(moodStreak(records, day));
+  const applyLoadedMood = async (requestedDay: string) => {
+    const loaded = await loadMood(requestedDay);
+    if (dayRef.current !== requestedDay) return;
+    setToday(loaded.today);
+    setStreak(loaded.streak);
   };
 
   useEffect(() => {
-    void refresh();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    let disposed = false;
+    void loadMood(day).then((loaded) => {
+      if (disposed || dayRef.current !== day) return;
+      setToday(loaded.today);
+      setStreak(loaded.streak);
+    });
+    return () => {
+      disposed = true;
+    };
+  }, [day]);
 
   const pick = async (lv: MoodLevel) => {
+    const requestedDay = day;
     setToday(lv);
-    await settingSet(moodKey(day), lv);
-    void refresh();
+    await settingSet(moodKey(requestedDay), lv);
+    await applyLoadedMood(requestedDay);
   };
 
   return (

@@ -204,11 +204,7 @@ struct ApiMyIp {
 
 #[tauri::command]
 pub async fn weather_locate(http: State<'_, reqwest::Client>) -> Result<LocatedCity, String> {
-    let resp = http
-        .get(MYIP_URL)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
+    let resp = http.get(MYIP_URL).send().await.map_err(|e| e.to_string())?;
     if !resp.status().is_success() {
         return Err(format!("HTTP {}", resp.status()));
     }
@@ -257,7 +253,11 @@ pub fn weather_cities_add(city: String, db: State<'_, Db>) -> Result<(), String>
     }
     let conn = db.0.lock().map_err(|e| e.to_string())?;
     let next_sort: i64 = conn
-        .query_row("SELECT COALESCE(MAX(sort),-1)+1 FROM weather_cities", [], |r| r.get(0))
+        .query_row(
+            "SELECT COALESCE(MAX(sort),-1)+1 FROM weather_cities",
+            [],
+            |r| r.get(0),
+        )
         .unwrap_or(0);
     conn.execute(
         "INSERT OR IGNORE INTO weather_cities (city, sort, added_at) VALUES (?1, ?2, ?3)",
@@ -270,8 +270,11 @@ pub fn weather_cities_add(city: String, db: State<'_, Db>) -> Result<(), String>
 #[tauri::command]
 pub fn weather_cities_remove(city: String, db: State<'_, Db>) -> Result<(), String> {
     let conn = db.0.lock().map_err(|e| e.to_string())?;
-    conn.execute("DELETE FROM weather_cities WHERE city=?1", params![city.trim()])
-        .map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM weather_cities WHERE city=?1",
+        params![city.trim()],
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
