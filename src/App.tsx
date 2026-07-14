@@ -33,6 +33,7 @@ import {
   ISLAND_LAYERED_EASE,
 } from "@/lib/anim";
 import {
+  containerExpandedForPhase,
   createHoverController,
   createIslandTransitionController,
   setIslandState as submitIslandState,
@@ -114,7 +115,10 @@ function App() {
     transitionControllerRef.current = createIslandTransitionController({
       collapseDelay: ISLAND_CONTENT_EXIT_DURATION_MS,
       reducedMotion: () => reducedMotionRef.current ?? false,
-      setVisualPhase,
+      setVisualPhase: (phase) => {
+        visualPhaseRef.current = phase;
+        setVisualPhase(phase);
+      },
       submit: submitIslandState,
       acceptSnapshot: (snapshot) => {
         setPolicy(snapshot);
@@ -147,7 +151,7 @@ function App() {
   }, [pagesEnabled, pagesOrder]);
 
   const islandState = policy?.effectiveState ?? "compact";
-  const expanded = visualPhase === "expanding" || visualPhase === "expanded";
+  const expanded = containerExpandedForPhase(visualPhase);
   const effectiveTheme: Theme = themeMode === "auto" ? systemTheme : themeMode;
   const CurrentPage = pages[pageIndex]?.Component ?? TimePage;
 

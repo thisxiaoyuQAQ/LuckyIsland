@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createHoverController,
   createIslandTransitionController,
+  containerExpandedForPhase,
   shouldSyncExternalVisualPhase,
   type WindowPolicySnapshot,
 } from "../window-policy";
@@ -118,7 +119,14 @@ describe("hover controller", () => {
   });
 });
 
-describe("external policy snapshots", () => {
+describe("visual phases", () => {
+  it("keeps the container expanded while content is collapsing", () => {
+    expect(containerExpandedForPhase("compact")).toBe(false);
+    expect(containerExpandedForPhase("expanding")).toBe(true);
+    expect(containerExpandedForPhase("expanded")).toBe(true);
+    expect(containerExpandedForPhase("collapsing")).toBe(true);
+  });
+
   it("preserves an in-flight local animation phase", () => {
     expect(shouldSyncExternalVisualPhase("expanding")).toBe(false);
     expect(shouldSyncExternalVisualPhase("collapsing")).toBe(false);
