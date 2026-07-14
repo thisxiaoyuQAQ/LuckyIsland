@@ -306,7 +306,7 @@ function App() {
         ref={islandRef}
         className={cn(
           "flex w-full max-w-[700px] flex-col rounded-2xl border border-border/60 px-4 shadow-2xl transition-[height] duration-[var(--island-duration)] ease-[var(--island-ease)]",
-          expanded ? "h-[380px] py-3" : "h-14 py-0",
+          expanded ? "h-[380px]" : "h-14",
           blur && "backdrop-blur-xl",
         )}
         style={{
