@@ -5,6 +5,11 @@ use tauri::State;
 
 use crate::storage::Db;
 
+#[allow(dead_code)]
+pub mod model;
+#[allow(dead_code)]
+pub(crate) mod open_meteo;
+
 const API_URL: &str = "https://uapis.cn/api/v1/misc/weather";
 const MYIP_URL: &str = "https://uapis.cn/api/v1/network/myip";
 const SETTING_CITY: &str = "weather:city";
