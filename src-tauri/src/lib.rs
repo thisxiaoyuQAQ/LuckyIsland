@@ -292,7 +292,7 @@ pub fn run() {
                         }
                     }
                     "settings" => {
-                        let _ = open_settings(app.clone());
+                        let _ = open_settings(app.clone(), None);
                     }
                     "ai" => toggle_ai_palette(app),
                     "restart" => app.request_restart(),

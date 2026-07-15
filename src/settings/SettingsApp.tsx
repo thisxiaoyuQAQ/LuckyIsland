@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { AppearancePanel } from "./AppearancePanel";
 import { GeneralPanel } from "./GeneralPanel";
 import { HotkeysPanel } from "./HotkeysPanel";
@@ -13,21 +14,14 @@ import { VoicePanel } from "./VoicePanel";
 import { TimeAppearancePanel } from "./TimeAppearancePanel";
 import { TimeWidgetsPanel } from "./TimeWidgetsPanel";
 import { cn } from "@/lib/utils";
+import {
+  parseSettingsTab,
+  shouldCheckUpdateOnNavigation,
+  type SettingsTab,
+} from "@/lib/settings";
+import { checkForUpdate, getUpdateSnapshot } from "@/lib/update-store";
 
-type Tab =
-  | "general"
-  | "appearance"
-  | "pages"
-  | "notify"
-  | "terminal"
-  | "weather"
-  | "stock"
-  | "ai"
-  | "voice"
-  | "hotkeys"
-  | "time_widgets"
-  | "time_appearance"
-  | "about";
+type Tab = SettingsTab;
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "general", label: "总体" },
@@ -46,6 +40,27 @@ const TABS: { id: Tab; label: string }[] = [
 
 function SettingsApp() {
   const [tab, setTab] = useState<Tab>("general");
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listen<unknown>("settings://navigate", (event) => {
+      const next = parseSettingsTab(event.payload);
+      if (!disposed && next) {
+        setTab(next);
+        if (shouldCheckUpdateOnNavigation(next, getUpdateSnapshot().phase)) {
+          void checkForUpdate("manual");
+        }
+      }
+    }).then((fn) => {
+      if (disposed) fn();
+      else unlisten = fn;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
 
   return (
     <div className="flex h-screen w-screen bg-background text-foreground">

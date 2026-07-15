@@ -49,6 +49,7 @@ export function GeneralPanel() {
   const [clickThrough, setClickThrough] = useState(false);
   const [hoverExpand, setHoverExpand] = useState(false);
   const [hideInFullscreen, setHideInFullscreen] = useState(false);
+  const [autoCheckUpdates, setAutoCheckUpdates] = useState(true);
   const [fullscreenSupported, setFullscreenSupported] = useState(false);
   const [clickThroughError, setClickThroughError] = useState<string | null>(null);
   const [hoverExpandError, setHoverExpandError] = useState<string | null>(null);
@@ -79,12 +80,13 @@ export function GeneralPanel() {
           }
         });
 
-      const [auto, ds, t, th, b, policy] = await Promise.all([
+      const [auto, ds, t, th, b, updateAutoCheck, policy] = await Promise.all([
         autostartGet().catch(() => false),
         settingGet(KEYS.defaultState),
         settingGet(KEYS.toast),
         settingGet(KEYS.theme),
         settingGet(KEYS.blur),
+        settingGet(KEYS.updateAutoCheck),
         windowPolicyGet().catch(() => null),
       ]);
       if (disposed) return;
@@ -93,6 +95,7 @@ export function GeneralPanel() {
       setToast(parseBool(t, true));
       if (th === "light" || th === "dark" || th === "auto") setTheme(th);
       setBlur(parseBool(b, true));
+      setAutoCheckUpdates(parseBool(updateAutoCheck, true));
       setClickThrough(policy?.clickThrough ?? false);
       setHoverExpand(policy?.hoverExpand ?? false);
       setHideInFullscreen(policy?.hideInFullscreen ?? false);
@@ -170,6 +173,16 @@ export function GeneralPanel() {
       const actual = await windowPolicyGet().catch(() => null);
       if (actual) setHideInFullscreen(actual.hideInFullscreen);
       setFullscreenError(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const toggleAutoCheckUpdates = async (enabled: boolean) => {
+    setAutoCheckUpdates(enabled);
+    try {
+      await settingSetEmit(KEYS.updateAutoCheck, enabled ? "true" : "false");
+    } catch (error) {
+      setAutoCheckUpdates(!enabled);
+      console.error("自动更新检查设置失败", error);
     }
   };
 
@@ -350,6 +363,10 @@ export function GeneralPanel() {
             </p>
           )}
         </div>
+      </Row>
+
+      <Row label="启动后自动检查更新" desc="启动稳定约 10 秒后静默检查 stable 更新；每次运行最多一次">
+        <Switch checked={autoCheckUpdates} onCheckedChange={toggleAutoCheckUpdates} />
       </Row>
 
       <Row label="Windows 通知弹窗" desc="通知到达时是否弹出系统 toast">

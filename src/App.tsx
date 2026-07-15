@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FC } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { ChevronDown, ChevronUp, Moon, Settings, Sun } from "lucide-react";
+import { ChevronDown, ChevronUp, Download, Moon, Settings, Sun } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { TimePage } from "@/components/pages/time/TimePage";
@@ -50,6 +50,13 @@ import {
 } from "@/lib/islandWheel";
 import { useAsyncSubscription } from "@/lib/useAsyncSubscription";
 import { useTauriEvent } from "@/lib/useTauriEvent";
+import {
+  acknowledgeAvailableUpdate,
+  getUpdateSnapshot,
+  scheduleAutoCheck,
+  setUpdateFullscreenBlocked,
+  subscribeUpdate,
+} from "@/lib/update-store";
 
 type Theme = "light" | "dark";
 type ThemeMode = Theme | "auto";
@@ -97,6 +104,8 @@ function App() {
   const reducedMotionRef = useRef(reducedMotion);
   const [blur, setBlur] = useState(true);
   const [opacity, setOpacity] = useState(0.7);
+  const [autoCheckUpdates, setAutoCheckUpdates] = useState(true);
+  const [updateSnapshot, setUpdateSnapshot] = useState(getUpdateSnapshot);
   const [pageIndex, setPageIndex] = useState(0);
   const [pagesEnabled, setPagesEnabled] = useState(parsePagesEnabled(null));
   const [pagesOrder, setPagesOrder] = useState(parsePagesOrder(null));
@@ -231,13 +240,14 @@ function App() {
   // settings KV 初始化：各项独立应用，单个读取失败不影响其余设置。
   useEffect(() => {
     (async () => {
-      const [enabled, order, theme, blurResult, opacityResult] =
+      const [enabled, order, theme, blurResult, opacityResult, updateAutoCheckResult] =
         await Promise.allSettled([
           settingGet(KEYS.pagesEnabled),
           settingGet(KEYS.pagesOrder),
           settingGet(KEYS.theme),
           settingGet(KEYS.blur),
           settingGet(KEYS.windowOpacity),
+          settingGet(KEYS.updateAutoCheck),
         ]);
 
       const applySetting = (
@@ -267,6 +277,9 @@ function App() {
       applySetting(KEYS.windowOpacity, opacityResult, (value) => {
         setOpacity(parseOpacity(value));
       });
+      applySetting(KEYS.updateAutoCheck, updateAutoCheckResult, (value) => {
+        setAutoCheckUpdates(parseBool(value, true));
+      });
     })();
   }, []);
 
@@ -278,10 +291,19 @@ function App() {
       if (key === KEYS.theme) setThemeMode(normalizeThemeMode(value) ?? "auto");
       if (key === KEYS.blur) setBlur(parseBool(value, true));
       if (key === KEYS.windowOpacity) setOpacity(parseOpacity(value));
+      if (key === KEYS.updateAutoCheck) setAutoCheckUpdates(parseBool(value, true));
     }),
     [],
     { label: "settings://changed" },
   );
+
+  useEffect(() => scheduleAutoCheck(autoCheckUpdates), [autoCheckUpdates]);
+
+  useEffect(() => subscribeUpdate(() => setUpdateSnapshot(getUpdateSnapshot())), []);
+
+  useEffect(() => {
+    setUpdateFullscreenBlocked(policy?.fullscreenBlock ?? false);
+  }, [policy?.fullscreenBlock]);
 
   // 页面列表变化后，当前 index 超界则回到第一个可见页。
   useEffect(() => {
@@ -462,6 +484,22 @@ function App() {
           )}
 
           <div className="ml-auto flex items-center gap-1">
+            {updateSnapshot.phase === "available" &&
+              updateSnapshot.pendingAvailable &&
+              !updateSnapshot.fullscreenBlocked && (
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    acknowledgeAvailableUpdate();
+                    void openSettings("about");
+                  }}
+                  aria-label={`发现 LuckyIsland ${updateSnapshot.latestVersion ?? "新版本"}，打开关于页更新`}
+                >
+                  <Download />
+                </Button>
+              )}
             <Button
               variant="ghost"
               size="icon-xs"

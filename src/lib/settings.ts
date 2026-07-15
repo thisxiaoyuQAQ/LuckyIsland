@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type { UpdatePhase } from "@/lib/update-store";
 
 /** 配置 key 约定（与 vault/07 / 后端对齐） */
 export const KEYS = {
@@ -29,6 +30,8 @@ export const KEYS = {
   windowHoverExpand: "window:hover_expand",
   /** 岛所在显示器出现真正全屏窗口时自动隐藏，默认关闭。 */
   windowHideInFullscreen: "window:hide_in_fullscreen",
+  /** 启动后静默检查 stable 更新，默认开启。 */
+  updateAutoCheck: "update:auto_check",
   /** 时间页：布局 JSON（clockRegion + widgets）。 */
   timeLayout: "time:layout",
   /** 时间页：外观 JSON（颜色/渐变/字号/制式）。 */
@@ -61,7 +64,35 @@ export const DEFAULTS = {
   windowClickThrough: "false",
   windowHoverExpand: "false",
   windowHideInFullscreen: "false",
+  updateAutoCheck: "true",
 } as const;
+
+export const SETTINGS_TABS = [
+  "general",
+  "appearance",
+  "pages",
+  "notify",
+  "terminal",
+  "weather",
+  "stock",
+  "ai",
+  "voice",
+  "hotkeys",
+  "time_widgets",
+  "time_appearance",
+  "about",
+] as const;
+export type SettingsTab = (typeof SETTINGS_TABS)[number];
+
+export function parseSettingsTab(value: unknown): SettingsTab | null {
+  return typeof value === "string" && (SETTINGS_TABS as readonly string[]).includes(value)
+    ? (value as SettingsTab)
+    : null;
+}
+
+export function shouldCheckUpdateOnNavigation(tab: SettingsTab, phase: UpdatePhase): boolean {
+  return tab === "about" && (phase === "idle" || phase === "error");
+}
 
 export interface MonitorPoint {
   x: number;
@@ -262,9 +293,9 @@ export async function autostartSet(enabled: boolean): Promise<void> {
   await invoke("autostart_set", { enabled });
 }
 
-/** 打开设置窗口（岛内按钮调用） */
-export async function openSettings(): Promise<void> {
-  await invoke("open_settings");
+/** 打开设置窗口；可选 tab 仅由后端 allowlist 接受。 */
+export async function openSettings(tab: SettingsTab | null = null): Promise<void> {
+  await invoke("open_settings", { tab });
 }
 
 /** 07a 实时应用偏移（不切屏）：写 window:offset_x/y + 让灵动岛窗口真正 set_position。

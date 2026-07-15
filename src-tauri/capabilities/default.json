@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "Capability for the island window",
   "windows": ["island"],
-  "permissions": ["core:default", "dialog:default", "opener:default"]
+  "permissions": ["core:default", "dialog:default", "opener:default", "updater:allow-check"]
 }

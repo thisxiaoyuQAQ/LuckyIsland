@@ -14,6 +14,26 @@ use tauri_plugin_autostart::ManagerExt;
 use crate::monitor::{OFFSET_X_KEY, OFFSET_Y_KEY};
 use crate::storage::Db;
 
+const SETTINGS_TABS: &[&str] = &[
+    "general",
+    "appearance",
+    "pages",
+    "notify",
+    "terminal",
+    "weather",
+    "stock",
+    "ai",
+    "voice",
+    "hotkeys",
+    "time_widgets",
+    "time_appearance",
+    "about",
+];
+
+fn allowed_settings_tab(tab: Option<String>) -> Option<String> {
+    tab.filter(|value| SETTINGS_TABS.contains(&value.as_str()))
+}
+
 /// `settings://changed` 事件载荷
 #[derive(Serialize, Clone)]
 pub struct SettingsChanged {
@@ -79,12 +99,16 @@ struct ImportCityRow {
     sort: i64,
 }
 
-/// 打开设置面板窗口：静态窗口 show + 聚焦（CloseRequested 在 lib.rs 改为 hide）。
+/// 打开设置面板窗口：静态窗口 show + 聚焦；可选 tab 通过白名单后定向导航。
 #[tauri::command]
-pub fn open_settings(app: tauri::AppHandle) -> Result<(), String> {
+pub fn open_settings(app: tauri::AppHandle, tab: Option<String>) -> Result<(), String> {
     if let Some(win) = app.get_webview_window("settings") {
         win.show().map_err(|e| e.to_string())?;
         win.set_focus().map_err(|e| e.to_string())?;
+        if let Some(tab) = allowed_settings_tab(tab) {
+            win.emit("settings://navigate", tab)
+                .map_err(|e| e.to_string())?;
+        }
     }
     Ok(())
 }
@@ -273,4 +297,23 @@ pub fn config_import(
     }
 
     Ok(summary)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::allowed_settings_tab;
+
+    #[test]
+    fn settings_navigation_only_accepts_allowlisted_tabs() {
+        assert_eq!(
+            allowed_settings_tab(Some("about".into())).as_deref(),
+            Some("about")
+        );
+        assert_eq!(
+            allowed_settings_tab(Some("general".into())).as_deref(),
+            Some("general")
+        );
+        assert_eq!(allowed_settings_tab(Some("unknown".into())), None);
+        assert_eq!(allowed_settings_tab(None), None);
+    }
 }

@@ -217,6 +217,7 @@ impl Db {
             || key.starts_with("window:")
             || key.starts_with("wake:")
             || key.starts_with("hotkeys:")
+            || key == "update:auto_check"
             || (key.starts_with("time:") && !key.starts_with("time:data:"))
             || matches!(
                 key,
@@ -450,6 +451,7 @@ mod portable_tests {
         assert!(Db::is_portable_setting("hotkeys:toggle_click_through"));
         assert!(Db::is_portable_setting("window:click_through"));
         assert!(Db::is_portable_setting("window:hide_in_fullscreen"));
+        assert!(Db::is_portable_setting("update:auto_check"));
         assert!(!Db::is_portable_setting("notify:http_token"));
         assert!(!Db::is_portable_setting("ai:chat_api_key"));
     }
