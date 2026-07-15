@@ -213,6 +213,7 @@ vault/                    模块任务拆解
 - [技术栈规划](docs/技术栈规划.md)
 - [开发进度](docs/开发进度.md)
 - [Claude/Codex hook 配置](docs/Claude-Codex-hook配置.md)
+- [稳定版本发布与签名维护](docs/releasing.md)
 - [时间页组件设计](docs/superpowers/specs/2026-07-11-time-page-widgets-design.md)
 
 ## 许可证

@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { execFile } from "node:child_process";
 import { checkVersions } from "../check-version.mjs";
 import { validateUpdaterAssets } from "../validate-updater-assets.mjs";
+import { createUpdaterManifest } from "../generate-updater-manifest.mjs";
 
 const tempDirs: string[] = [];
 const execFileAsync = promisify(execFile);
@@ -91,6 +92,68 @@ describe("release version validation", () => {
     const script = join(process.cwd(), "scripts", "check-version.mjs");
     await expect(execFileAsync(process.execPath, [script, "--", "--tag", "v0.2.1"], { cwd: root }))
       .resolves.toMatchObject({ stdout: expect.stringContaining("versions aligned: 0.2.1") });
+  });
+});
+
+describe("local release fallback safety", () => {
+  it("defaults to dry-run and gates every GitHub write behind Publish", async () => {
+    const script = await readFile(join(process.cwd(), "scripts", "release-local.ps1"), "utf8");
+    expect(script).toContain("[switch]$Publish");
+    expect(script).toContain("$env:OS");
+    expect(script).not.toContain("$IsWindows");
+    expect(script).toContain("TAURI_SIGNING_PRIVATE_KEY");
+    expect(script).toContain("TAURI_SIGNING_PRIVATE_KEY_PASSWORD");
+    expect(script).toContain("git status --porcelain");
+    expect(script).toContain("release:validate-assets");
+    expect(script).toContain("generate-updater-manifest.mjs");
+    expect(script).toContain("gh release create");
+    expect(script).toContain("gh release edit");
+    expect(script).toMatch(/if \(\$Publish\)[\s\S]*gh release create/);
+    expect(script).not.toMatch(/BEGIN[^\n]*PRIVATE KEY/);
+  });
+});
+
+describe("updater manifest generation", () => {
+  it("creates the validator-compatible GitHub download manifest without exposing secrets", () => {
+    const manifest = createUpdaterManifest({
+      version: "0.2.1",
+      tag: "v0.2.1",
+      filename: "LuckyIsland_0.2.1_x64-setup.exe",
+      signature: "public-signature",
+    });
+    expect(manifest).toEqual({
+      version: "0.2.1",
+      platforms: {
+        "windows-x86_64": {
+          url: "https://github.com/thisxiaoyuQAQ/LuckyIsland/releases/download/v0.2.1/LuckyIsland_0.2.1_x64-setup.exe",
+          signature: "public-signature",
+        },
+      },
+    });
+  });
+
+  it("rejects unsafe filenames, tags and empty signatures", () => {
+    const base = { version: "0.2.1", tag: "v0.2.1", filename: "setup.exe", signature: "sig" };
+    expect(() => createUpdaterManifest({ ...base, tag: "latest" })).toThrow();
+    expect(() => createUpdaterManifest({ ...base, filename: "../setup.exe" })).toThrow();
+    expect(() => createUpdaterManifest({ ...base, signature: "" })).toThrow();
+  });
+});
+
+describe("release workflow safety", () => {
+  it("publishes only signed tag builds through a validated draft-first flow", async () => {
+    const workflow = await readFile(join(process.cwd(), ".github", "workflows", "release.yml"), "utf8");
+    expect(workflow).toContain('tags: ["v*"]');
+    expect(workflow).toContain("contents: write");
+    expect(workflow).toContain("secrets.TAURI_SIGNING_PRIVATE_KEY");
+    expect(workflow).toContain("secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD");
+    expect(workflow).toContain("releaseDraft: true");
+    expect(workflow).toContain("prerelease: false");
+    expect(workflow).not.toMatch(/workflow_dispatch|branches:/);
+    expect(workflow).not.toMatch(/BEGIN[^\n]*PRIVATE KEY/);
+    expect(workflow.indexOf("release:validate-assets")).toBeLessThan(workflow.indexOf("gh release edit"));
+    expect(workflow).toContain("--expected-draft true");
+    expect(workflow).toContain("--expected-draft false");
   });
 });
 
