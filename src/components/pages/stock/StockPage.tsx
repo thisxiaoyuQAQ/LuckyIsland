@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { cn } from "@/lib/utils";
+import { useAsyncSubscription } from "@/lib/useAsyncSubscription";
 import { useReorder } from "@/lib/useReorder";
+import { useTauriEvent } from "@/lib/useTauriEvent";
 import { KEYS, onSettingsChanged, parseBool, settingGet } from "@/lib/settings";
 import { StockAdd } from "./StockAdd";
 import { StockRow, colorFor, type Quote } from "./StockRow";
@@ -30,31 +31,31 @@ export function StockPage({ compact }: { compact: boolean }) {
     void invoke<string | null>("setting_get", { key: COMPACT_KEY }).then((s) => {
       if (s) setCompactSymbol(s);
     });
-    const unlisteners: Array<() => void> = [];
-    void listen<Quote[]>("stock://tick", (e) => setQuotes(e.payload)).then((fn) => {
-      unlisteners.push(fn);
-    });
-    // 07a 配置导入会全量覆盖自选股表；导入完成后立即重读，避免当前页面保留旧列表。
-    void listen("config://imported", () => {
-      setSelected(null);
-      void refresh();
-    }).then((fn) => {
-      unlisteners.push(fn);
-    });
-    return () => unlisteners.forEach((un) => un());
   }, [refresh]);
+
+  useTauriEvent<Quote[]>("stock://tick", (e) => {
+    setQuotes(e.payload);
+  });
+
+  // 07a 配置导入会全量覆盖自选股表；导入完成后立即重读，避免当前页面保留旧列表。
+  useTauriEvent("config://imported", () => {
+    setSelected(null);
+    void refresh();
+  });
 
   // 红涨绿跌方向：读 settings + 监听即时生效
   useEffect(() => {
     void settingGet(KEYS.stockRedUp).then((v) => setRedUp(parseBool(v, true)));
-    let un: (() => void) | undefined;
-    onSettingsChanged((key, value) => {
-      if (key === KEYS.stockRedUp) setRedUp(parseBool(value, true));
-    }).then((fn) => {
-      un = fn;
-    });
-    return () => un?.();
   }, []);
+
+  useAsyncSubscription(
+    () =>
+      onSettingsChanged((key, value) => {
+        if (key === KEYS.stockRedUp) setRedUp(parseBool(value, true));
+      }),
+    [],
+    { label: "settings://changed:stock" },
+  );
 
   const remove = async (symbol: string) => {
     try {

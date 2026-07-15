@@ -1,7 +1,7 @@
 # 当前执行入口
 
 > 当前阶段：模块 10「审计整改」/ REF-10B-01 统一 Tauri event 生命周期
-> 状态：🚧 首批共享 hook 已实现并通过统一门禁；业务迁移待确认
+> 状态：🚧 NotifyPage 批已完成并通过统一门禁；下一业务批待单独只读评估
 > 更新时间：2026-07-15
 > 总控：[10-审计整改.md](./10-审计整改.md)
 > 执行单：[10b-工程基线与低风险重构.md](./10b-工程基线与低风险重构.md)
@@ -36,12 +36,18 @@
 - 共享层：新增 `useAsyncSubscription` / `useTauriEvent`，专项 2 files / 17 tests；独立审查修复未提交 render ref 泄漏和旧订阅错误误归，复核无新增 finding。
 - App 批：settings、window-state、notify 三类订阅已迁移；App 集成测试 4/4 覆盖通知稳定订阅、最新页面设置、window payload、卸载晚 resolve 与 StrictMode。
 - App 批独立审查补强 blur/opacity 与旧字符串 payload 的可观察断言后，复核无 finding；并行 hover `enable()` hunk完整保留。
-- 最新连续 `pnpm verify` 使用独立 `.superpowers/target-check`，TypeScript、前端 19 files / 155 tests、三入口 build、Rust fmt、严格 Clippy、Rust lib 90/90、cargo check全部 exit 0。
-- 未迁移 Stock、NotifyPage、Weather、Terminal、设置窗口或 AI listener；未做 GUI、安装态或真机 Tauri 验证。
+- Stock 批：只迁移 `stock://tick`、`config://imported` 与 `stock:red_up` settings 三类订阅；初始 `stock_get`、compact-symbol 和 setting 读取边界保持不变。
+- Stock 集成测试 RED 为 7 项中 3 项失败，准确复现晚 resolve cleanup、StrictMode cleanup 和 rejection 诊断缺口；GREEN 专项 Stock + 共享 hook 为 3 files / 24 tests，TypeScript exit 0。
+- Stock 批独立只读审查无可执行 finding；确认行为保持、稳定 listener、两种 cleanup 时序、StrictMode 精确清理和 scoped rejection 断言有效。
+- NotifyPage 批：只迁移 `notify://incoming` 与 `notify:filter_sources` settings 两类订阅；初始 history/settings Promise、module-scope loader、prepend-before-filter、已读、清理、分页与动画行为保持不变。
+- NotifyPage 集成测试 RED 为 8 项中 3 项失败，准确复现晚 resolve cleanup、StrictMode cleanup 和 rejection 诊断缺口；GREEN 加强后 NotifyPage 9/9，NotifyPage + 共享 hook 为 3 files / 26 tests，TypeScript exit 0。
+- NotifyPage 批独立审查发现初始 setting 读取缺少可观察证明；补强 key、次数和过滤结果后复核无可执行 finding。既有“初始 settings 晚 resolve 覆盖更新事件”竞态未在本批处理。
+- 最新完整 `pnpm verify` 使用独立 `.superpowers/target-check`，TypeScript、前端 24 files / 199 tests、三入口 build、Rust fmt、严格 Clippy、Rust lib 94/94、cargo check 全部 exit 0；build 仅保留既有主 chunk 超过 500 kB 警告。
+- 未迁移 Weather、Terminal、设置窗口或 AI listener；未处理 Stock 或 NotifyPage 初始读取的晚到 Promise；未做 GUI、安装态或真机 Tauri 验证。
 
 ## 唯一下一动作
 
-**App 批已完成并通过统一门禁。下一候选按既定顺序是 Stock listener 迁移；实施前需单独只读评估 Stock 的 tick、config imported、settings 三类订阅与现有异步读取边界，不连带迁移 NotifyPage、Weather 或 Terminal。**
+**NotifyPage 批已完成并通过统一门禁。下一候选按既定顺序是 Weather listener 迁移；实施前需单独只读评估 config-import、settings、refresh timer 与请求并发/晚到边界，不连带迁移 Terminal。**
 
 ## REF-10B-01 边界
 

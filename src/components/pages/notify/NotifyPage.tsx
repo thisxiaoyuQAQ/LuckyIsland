@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import { AnimatePresence, motion } from "motion/react";
 import { Bell } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { useAsyncSubscription } from "@/lib/useAsyncSubscription";
+import { useTauriEvent } from "@/lib/useTauriEvent";
 import { NotifyCard, type NotificationItem } from "./NotifyCard";
 import {
   createNotificationHistoryLoader,
@@ -29,30 +30,31 @@ export function NotifyPage({ compact }: { compact: boolean }) {
 
   // 来源过滤：读 settings + 监听即时生效（listener 用 ref 避免闭包过期）
   useEffect(() => {
-    void settingGet(KEYS.notifyFilterSources).then((v) => {
-      filterRef.current = parseFilterSources(v);
+    void settingGet(KEYS.notifyFilterSources).then((value) => {
+      filterRef.current = parseFilterSources(value);
     });
-    let un: (() => void) | undefined;
-    onSettingsChanged((key, value) => {
-      if (key === KEYS.notifyFilterSources) filterRef.current = parseFilterSources(value);
-    }).then((fn) => {
-      un = fn;
-    });
-    return () => un?.();
   }, []);
+
+  useAsyncSubscription(
+    () =>
+      onSettingsChanged((key, value) => {
+        if (key === KEYS.notifyFilterSources) {
+          filterRef.current = parseFilterSources(value);
+        }
+      }),
+    [],
+    { label: "settings://changed:notify" },
+  );
 
   useEffect(() => {
     void historyLoader.load().then(setItems);
-    let un: (() => void) | undefined;
-    listen<NotificationItem>("notify://incoming", (e) => {
-      const next = historyLoader.prepend(e.payload);
-      if (!filterRef.current[e.payload.source as NotifySource]) return; // 被过滤来源不弹卡片
-      setItems(next);
-    }).then((fn) => {
-      un = fn;
-    });
-    return () => un?.();
   }, []);
+
+  useTauriEvent<NotificationItem>("notify://incoming", (event) => {
+    const next = historyLoader.prepend(event.payload);
+    if (!filterRef.current[event.payload.source as NotifySource]) return; // 被过滤来源不弹卡片
+    setItems(next);
+  });
 
   // 展开态打开通知页 → 全部标已读
   useEffect(() => {
