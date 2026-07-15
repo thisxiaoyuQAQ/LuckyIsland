@@ -1,7 +1,7 @@
 # 当前执行入口
 
 > 当前阶段：模块 10「审计整改」/ REF-10B-01 统一 Tauri event 生命周期
-> 状态：🚧 待方案评估
+> 状态：🚧 首批共享 hook 已实现并通过统一门禁；业务迁移待确认
 > 更新时间：2026-07-15
 > 总控：[10-审计整改.md](./10-审计整改.md)
 > 执行单：[10b-工程基线与低风险重构.md](./10b-工程基线与低风险重构.md)
@@ -31,9 +31,17 @@
 - 最新连续 `pnpm verify`：TypeScript、前端 14 files / 127 tests、三入口 build、Rust fmt、严格 Clippy、Rust lib 74/74、cargo check 全部 exit 0。
 - 未重新打包或安装；不声称 NSIS 内部清单、安装后 DLL 加载、PATH 或真机语音通过。
 
+## REF-10B-01 当前证据
+
+- 共享层：新增 `useAsyncSubscription` / `useTauriEvent`，专项 2 files / 17 tests；独立审查修复未提交 render ref 泄漏和旧订阅错误误归，复核无新增 finding。
+- App 批：settings、window-state、notify 三类订阅已迁移；App 集成测试 4/4 覆盖通知稳定订阅、最新页面设置、window payload、卸载晚 resolve 与 StrictMode。
+- App 批独立审查补强 blur/opacity 与旧字符串 payload 的可观察断言后，复核无 finding；并行 hover `enable()` hunk完整保留。
+- 最新连续 `pnpm verify` 使用独立 `.superpowers/target-check`，TypeScript、前端 19 files / 155 tests、三入口 build、Rust fmt、严格 Clippy、Rust lib 90/90、cargo check全部 exit 0。
+- 未迁移 Stock、NotifyPage、Weather、Terminal、设置窗口或 AI listener；未做 GUI、安装态或真机 Tauri 验证。
+
 ## 唯一下一动作
 
-**只读评估 REF-10B-01：以 BASE-10B-02 的生命周期测试层为基础，盘点直接 `listen()` / Promise subscription 的调用点，区分已正确 disposed、存在卸载竞态、需要 handler ref 的三类；提出共享 `useAsyncSubscription` / `useTauriEvent` 的最小 API、分批迁移顺序和回归矩阵，先交用户确认。评估阶段不迁移 App、Stock、Notify、Weather、Terminal。**
+**App 批已完成并通过统一门禁。下一候选按既定顺序是 Stock listener 迁移；实施前需单独只读评估 Stock 的 tick、config imported、settings 三类订阅与现有异步读取边界，不连带迁移 NotifyPage、Weather 或 Terminal。**
 
 ## REF-10B-01 边界
 

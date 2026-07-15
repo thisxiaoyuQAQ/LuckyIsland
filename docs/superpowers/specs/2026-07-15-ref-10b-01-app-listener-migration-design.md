@@ -1,7 +1,7 @@
 # REF-10B-01 App Listener 迁移设计
 
 > 日期：2026-07-15
-> 状态：已批准，待实施
+> 状态：已实现、复核并通过统一门禁
 > 范围：只迁移 `src/App.tsx` 的三类订阅并增加 App happy-dom 集成回归
 > 上游：`2026-07-15-ref-10b-01-tauri-event-lifecycle-design.md`、`vault/CURRENT.md`
 
@@ -147,6 +147,15 @@ useTauriEvent("notify://incoming", () => {
 - `git diff -- src/App.tsx` 确认原有并行悬停改动保留；
 - diff 不包含 Stock、NotifyPage、Weather、Terminal、设置窗口或 AI listener；
 - 不把自动化结果描述为 GUI、安装态或真机 Tauri 证据。
+
+## 实施与验证记录
+
+- 已将 App 的 `settings://changed` 迁移到 `useAsyncSubscription`，将 `window://state-changed` 与 `notify://incoming` 迁移到 `useTauriEvent`；未迁移其他业务 listener。
+- RED：旧实现下 App 集成测试出现通知 listener 重建、卸载后晚 resolve 未清理、StrictMode 额外订阅三类失败；GREEN 后 App 4/4，连同共享 hook 共 3 files / 21 tests。
+- 集成测试真实挂载 App，验证设置即时更新、旧字符串 hidden/compact payload、结构化 snapshot、通知跳页、页面设置变化后 listener 稳定、卸载后晚 resolve 和 StrictMode。
+- 独立审查发现测试曾未直接断言 blur/opacity 和旧字符串 payload；补充可观察断言后，同一审查 Agent 复核确认覆盖失真已解决，无新增高置信度 finding，且既有 hover `enable()` hunk 完整保留。
+- 最新连续 `pnpm verify` 使用独立 `.superpowers/target-check` 全部 exit 0：TypeScript；前端 19 files / 155 tests；三入口 build；Rust fmt；严格 Clippy；Rust lib 90/90；cargo check。build 仅有既有主 chunk >500 kB 警告。
+- 未做 GUI、安装态或真机 Tauri 验证。
 
 ## 后续
 

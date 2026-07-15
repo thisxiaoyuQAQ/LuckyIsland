@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FC } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { listen } from "@tauri-apps/api/event";
 import { ChevronDown, ChevronUp, Moon, Settings, Sun } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -49,6 +48,8 @@ import {
   getIslandWheelDirection,
   updateWheelGestureLock,
 } from "@/lib/islandWheel";
+import { useAsyncSubscription } from "@/lib/useAsyncSubscription";
+import { useTauriEvent } from "@/lib/useTauriEvent";
 
 type Theme = "light" | "dark";
 type ThemeMode = Theme | "auto";
@@ -220,7 +221,10 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (policy?.hoverExpand && !policy.clickThrough) return;
+    if (policy?.hoverExpand && !policy.clickThrough) {
+      hoverControllerRef.current?.enable();
+      return;
+    }
     hoverControllerRef.current?.disable();
   }, [policy?.clickThrough, policy?.hoverExpand]);
 
@@ -267,19 +271,17 @@ function App() {
   }, []);
 
   // settings://changed：设置窗口改写后即时重算页面与主题。
-  useEffect(() => {
-    let un: (() => void) | undefined;
-    onSettingsChanged((key, value) => {
+  useAsyncSubscription(
+    () => onSettingsChanged((key, value) => {
       if (key === KEYS.pagesEnabled) setPagesEnabled(parsePagesEnabled(value));
       if (key === KEYS.pagesOrder) setPagesOrder(parsePagesOrder(value));
       if (key === KEYS.theme) setThemeMode(normalizeThemeMode(value) ?? "auto");
       if (key === KEYS.blur) setBlur(parseBool(value, true));
       if (key === KEYS.windowOpacity) setOpacity(parseOpacity(value));
-    }).then((fn) => {
-      un = fn;
-    });
-    return () => un?.();
-  }, []);
+    }),
+    [],
+    { label: "settings://changed" },
+  );
 
   // 页面列表变化后，当前 index 超界则回到第一个可见页。
   useEffect(() => {
@@ -304,7 +306,6 @@ function App() {
 
   // 监听 Rust 推送的结构化策略快照；启动读取不得覆盖更新后的运行态。
   useEffect(() => {
-    let un: (() => void) | undefined;
     void windowPolicyGet()
       .then((snapshot) => {
         islandStateChangedRef.current = true;
@@ -312,48 +313,38 @@ function App() {
         setVisualPhase(snapshot.effectiveState === "expanded" ? "expanded" : "compact");
       })
       .catch((error) => console.error("[window-policy] 读取初始状态失败:", error));
-    listen<WindowPolicySnapshot | IslandState>("window://state-changed", (event) => {
-      islandStateChangedRef.current = true;
-      if (typeof event.payload === "string") {
-        // Task 8 迁移通知展示前，通知后端仍可能发送旧字符串事件。
-        setPolicy((current) => ({
-          desiredState: event.payload as IslandState,
-          effectiveState: event.payload as IslandState,
-          shouldFocus: false,
-          clickThrough: current?.clickThrough ?? false,
-          hoverExpand: current?.hoverExpand ?? false,
-          hovered: current?.hovered ?? false,
-          hideInFullscreen: current?.hideInFullscreen ?? false,
-          fullscreenSupported: current?.fullscreenSupported ?? true,
-          fullscreenBlock: current?.fullscreenBlock ?? false,
-          priorityOverrideActive: current?.priorityOverrideActive ?? false,
-          priorityOverrideGeneration: current?.priorityOverrideGeneration ?? 0,
-        }));
-      } else {
-        setPolicy(event.payload);
-        if (shouldSyncExternalVisualPhase(visualPhaseRef.current)) {
-          setVisualPhase(
-            event.payload.effectiveState === "expanded" ? "expanded" : "compact",
-          );
-        }
-      }
-    }).then((fn) => {
-      un = fn;
-    });
-    return () => un?.();
   }, []);
 
+  useTauriEvent<WindowPolicySnapshot | IslandState>("window://state-changed", (event) => {
+    islandStateChangedRef.current = true;
+    if (typeof event.payload === "string") {
+      // Task 8 迁移通知展示前，通知后端仍可能发送旧字符串事件。
+      setPolicy((current) => ({
+        desiredState: event.payload as IslandState,
+        effectiveState: event.payload as IslandState,
+        shouldFocus: false,
+        clickThrough: current?.clickThrough ?? false,
+        hoverExpand: current?.hoverExpand ?? false,
+        hovered: current?.hovered ?? false,
+        hideInFullscreen: current?.hideInFullscreen ?? false,
+        fullscreenSupported: current?.fullscreenSupported ?? true,
+        fullscreenBlock: current?.fullscreenBlock ?? false,
+        priorityOverrideActive: current?.priorityOverrideActive ?? false,
+        priorityOverrideGeneration: current?.priorityOverrideGeneration ?? 0,
+      }));
+    } else {
+      setPolicy(event.payload);
+      if (shouldSyncExternalVisualPhase(visualPhaseRef.current)) {
+        setVisualPhase(event.payload.effectiveState === "expanded" ? "expanded" : "compact");
+      }
+    }
+  });
+
   // 通知到达：只切通知页；窗口显示由后端策略统一裁决。
-  useEffect(() => {
-    let un: (() => void) | undefined;
-    listen("notify://incoming", () => {
-      const i = pages.findIndex((p) => p.id === "notify");
-      if (i >= 0) setPage(i);
-    }).then((fn) => {
-      un = fn;
-    });
-    return () => un?.();
-  }, [pages, setPage]);
+  useTauriEvent("notify://incoming", () => {
+    const index = pages.findIndex((page) => page.id === "notify");
+    if (index >= 0) setPage(index);
+  });
 
   // 局部快捷键（仅展开态，需窗口焦点）。
   useEffect(() => {
