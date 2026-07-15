@@ -1,8 +1,16 @@
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use reqwest::blocking::Client;
 use rusqlite::{params, Connection};
 use serde::Serialize;
 use std::path::PathBuf;
+
+#[derive(Clone, Copy, Debug, Serialize, ValueEnum)]
+#[serde(rename_all = "lowercase")]
+enum Priority {
+    Normal,
+    High,
+    Critical,
+}
 
 #[derive(Parser, Debug)]
 #[command(name = "lucky-notify", about = "Send a notification to LuckyIsland")]
@@ -15,6 +23,8 @@ struct Args {
     source: String,
     #[arg(long, default_value = "info")]
     level: String,
+    #[arg(long, value_enum, default_value_t = Priority::Normal)]
+    priority: Priority,
     #[arg(long)]
     cwd: Option<String>,
     #[arg(long, default_value_t = 9753)]
@@ -36,6 +46,7 @@ struct Payload {
     body: Option<String>,
     source: String,
     level: String,
+    priority: Priority,
     action: Option<Action>,
 }
 
@@ -62,6 +73,7 @@ fn run(args: Args) -> Result<(), String> {
         body: args.body,
         source: args.source,
         level: args.level,
+        priority: args.priority,
         action,
     };
     let url = format!("http://127.0.0.1:{}/notify", args.port);

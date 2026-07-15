@@ -2,6 +2,48 @@ use rusqlite::{params, Connection};
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager};
 
+#[derive(Debug)]
+struct NotificationColumn {
+    name: String,
+    #[cfg(test)]
+    not_null: bool,
+    #[cfg(test)]
+    default_value: Option<String>,
+}
+
+fn notification_columns(conn: &Connection) -> Result<Vec<NotificationColumn>, String> {
+    let mut stmt = conn
+        .prepare("PRAGMA table_info(notifications)")
+        .map_err(|error| error.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(NotificationColumn {
+                name: row.get(1)?,
+                #[cfg(test)]
+                not_null: row.get::<_, i64>(3)? != 0,
+                #[cfg(test)]
+                default_value: row.get(4)?,
+            })
+        })
+        .map_err(|error| error.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())
+}
+
+fn migrate_notifications(conn: &Connection) -> Result<(), String> {
+    if !notification_columns(conn)?
+        .iter()
+        .any(|column| column.name == "priority")
+    {
+        conn.execute(
+            "ALTER TABLE notifications ADD COLUMN priority TEXT NOT NULL DEFAULT 'normal'",
+            [],
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
 pub struct Db(pub Mutex<Connection>);
 
 impl Db {
@@ -39,6 +81,7 @@ impl Db {
                 body TEXT,
                 source TEXT NOT NULL,
                 level TEXT NOT NULL,
+                priority TEXT NOT NULL DEFAULT 'normal',
                 created_at INTEGER NOT NULL,
                 read INTEGER NOT NULL DEFAULT 0,
                 action_type TEXT,
@@ -51,6 +94,7 @@ impl Db {
                 created_at INTEGER NOT NULL
             );",
         )?;
+        migrate_notifications(&conn).map_err(std::io::Error::other)?;
         // 首次启动：播种默认自选股（贵州茅台 + 平安银行），方便即时实测
         let count: i64 =
             conn.query_row("SELECT COUNT(*) FROM stock_watchlist", [], |r| r.get(0))?;
@@ -336,7 +380,9 @@ fn now_ts() -> i64 {
 
 #[cfg(test)]
 mod portable_tests {
+    use super::{migrate_notifications, notification_columns};
     use crate::storage::Db;
+    use rusqlite::Connection;
 
     #[test]
     fn time_settings_portable_but_data_not() {
@@ -346,6 +392,54 @@ mod portable_tests {
         assert!(!Db::is_portable_setting("time:data:saying:last"));
         assert!(!Db::is_portable_setting("time:data:wooden_fish"));
         assert!(!Db::is_portable_setting("time:data:mood:2026-07-12"));
+    }
+
+    #[test]
+    fn notifications_priority_migration_is_idempotent() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE notifications (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                body TEXT,
+                source TEXT NOT NULL,
+                level TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                read INTEGER NOT NULL DEFAULT 0,
+                action_type TEXT,
+                action_cwd TEXT
+            );
+            INSERT INTO notifications (id,title,source,level,created_at)
+            VALUES ('old','legacy','custom','error',1);",
+        )
+        .unwrap();
+
+        migrate_notifications(&conn).unwrap();
+        migrate_notifications(&conn).unwrap();
+
+        let columns = notification_columns(&conn).unwrap();
+        assert_eq!(
+            columns
+                .iter()
+                .filter(|column| column.name == "priority")
+                .count(),
+            1
+        );
+        let priority = columns
+            .iter()
+            .find(|column| column.name == "priority")
+            .unwrap();
+        assert!(priority.not_null);
+        assert_eq!(priority.default_value.as_deref(), Some("'normal'"));
+        assert_eq!(
+            conn.query_row(
+                "SELECT priority FROM notifications WHERE id='old'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+            "normal"
+        );
     }
 
     #[test]

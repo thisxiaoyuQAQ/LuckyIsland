@@ -7,7 +7,7 @@ LuckyIsland M5 提供本地通知端点 `127.0.0.1:9753/notify` 和 CLI `lucky-n
 ## CLI 用法
 
 ```powershell
-lucky-notify --title "Claude 完成" --body "任务已结束" --source claude --level success
+lucky-notify --title "Claude 完成" --body "任务已结束" --source claude --level success --priority normal
 ```
 
 可选 cwd 动作（通知卡片显示「在终端打开」）：
@@ -21,7 +21,8 @@ lucky-notify --title "Codex 完成" --source codex --level success --cwd "<Lucky
 - `--title <text>` 必填
 - `--body <text>` 可选
 - `--source <claude|codex|custom>` 默认 `custom`
-- `--level <info|success|warn|error>` 默认 `info`
+- `--level <info|success|warn|error>` 默认 `info`，只控制通知外观
+- `--priority <normal|high|critical>` 默认 `normal`，控制全屏期间是否临时展示
 - `--cwd <path>` 可选，生成 `open_terminal` action
 - `--port <number>` 默认 `9753`
 - `--token <token>` 可选，覆盖自动读取
@@ -42,7 +43,7 @@ $token = $env:LUCKY_TOKEN
 Invoke-RestMethod -Method POST "http://127.0.0.1:9753/notify" `
   -Headers @{ Authorization = "Bearer $token" } `
   -ContentType "application/json" `
-  -Body (@{ title="测试"; source="custom"; level="info" } | ConvertTo-Json)
+  -Body (@{ title="测试"; source="custom"; level="info"; priority="normal" } | ConvertTo-Json)
 ```
 
 也支持 `?token=<token>` 查询参数：

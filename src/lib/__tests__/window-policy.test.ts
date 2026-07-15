@@ -100,6 +100,28 @@ describe("hover controller", () => {
     expect(submit).not.toHaveBeenCalled();
   });
 
+  it("disabled controller ignores future pointer events until re-enabled", () => {
+    vi.useFakeTimers();
+    const submit = vi.fn();
+    const controller = createHoverController({
+      enterDelay: 180,
+      leaveDelay: 300,
+      submit,
+    });
+
+    controller.disable();
+    controller.enter();
+    vi.advanceTimersByTime(180);
+    controller.leave();
+    vi.advanceTimersByTime(300);
+    expect(submit).not.toHaveBeenCalled();
+
+    controller.enable();
+    controller.enter();
+    vi.advanceTimersByTime(180);
+    expect(submit).toHaveBeenCalledWith(true);
+  });
+
   it("disable and dispose clear timers and submit false once", () => {
     vi.useFakeTimers();
     const submit = vi.fn();

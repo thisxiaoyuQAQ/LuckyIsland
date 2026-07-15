@@ -13,6 +13,7 @@ export interface NotificationItem {
   body: string | null;
   source: "claude" | "codex" | "custom" | string;
   level: "info" | "success" | "warn" | "error" | string;
+  priority: "normal" | "high" | "critical";
   created_at: number;
   read: boolean;
   action: NotifyAction | null;

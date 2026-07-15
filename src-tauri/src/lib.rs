@@ -41,7 +41,7 @@ use monitor::{
     monitor_get_selection, monitor_list, monitor_select, restore_island_monitor,
     start_runtime_watch, window_offset_apply,
 };
-use notify::{notify_create, notify_get_token, notify_list, notify_mark_read};
+use notify::{notify_clear, notify_create, notify_get_token, notify_list, notify_mark_read};
 use settings::{setting_get, setting_set};
 use settings_window::{
     autostart_get, autostart_set, config_export, config_import, open_settings,
@@ -225,6 +225,7 @@ pub fn run() {
             ai_reset_position,
             notify_list,
             notify_mark_read,
+            notify_clear,
             notify_create,
             notify_get_token,
             term_create,

@@ -434,14 +434,74 @@ fn apply_hover_expand_setting(inputs: &mut WindowPolicyInputs, enabled: bool) {
     }
 }
 
-fn apply_notification_intent(inputs: &mut WindowPolicyInputs) {
-    if inputs.desired_state != IslandState::Hidden {
-        inputs.desired_state = IslandState::Expanded;
+fn apply_notification_intent(
+    inputs: &mut WindowPolicyInputs,
+    elevated_priority: bool,
+) -> Option<u64> {
+    if inputs.desired_state == IslandState::Hidden {
+        return None;
+    }
+    if inputs.hide_in_fullscreen && inputs.fullscreen_block {
+        if !elevated_priority {
+            return None;
+        }
+        inputs.priority_override_generation = inputs.priority_override_generation.wrapping_add(1);
+        inputs.priority_override_active = true;
+        return Some(inputs.priority_override_generation);
+    }
+    inputs.desired_state = IslandState::Expanded;
+    None
+}
+
+fn priority_override_expired(inputs: &mut WindowPolicyInputs, generation: u64) -> bool {
+    if !inputs.priority_override_active || inputs.priority_override_generation != generation {
+        return false;
+    }
+    inputs.priority_override_active = false;
+    true
+}
+
+pub fn present_notification(
+    app: &AppHandle,
+    elevated_priority: bool,
+) -> Result<(WindowPolicySnapshot, Option<u64>), String> {
+    let mut override_generation = None;
+    match update_and_apply(
+        app,
+        |inputs| override_generation = apply_notification_intent(inputs, elevated_priority),
+        FocusIntent::Preserve,
+    ) {
+        Ok(snapshot) => Ok((snapshot, override_generation)),
+        Err(error) => {
+            if let Some(generation) = override_generation {
+                cancel_priority_override(app, generation);
+            }
+            Err(error)
+        }
     }
 }
 
-pub fn present_notification(app: &AppHandle) -> Result<WindowPolicySnapshot, String> {
-    update_and_apply(app, apply_notification_intent, FocusIntent::Preserve)
+fn cancel_priority_override(app: &AppHandle, generation: u64) {
+    let policy = app.state::<WindowPolicy>();
+    if let Ok(mut runtime) = policy.0.lock() {
+        if priority_override_expired(&mut runtime.inputs, generation) {
+            runtime.operation_generation = runtime.operation_generation.wrapping_add(1);
+        }
+    }
+    let _ = reapply(app);
+}
+
+pub fn expire_priority_override(
+    app: &AppHandle,
+    generation: u64,
+) -> Result<WindowPolicySnapshot, String> {
+    update_and_apply(
+        app,
+        |inputs| {
+            priority_override_expired(inputs, generation);
+        },
+        FocusIntent::Preserve,
+    )
 }
 
 pub fn toggle_visibility(app: &AppHandle) -> Result<WindowPolicySnapshot, String> {
@@ -859,9 +919,45 @@ mod tests {
     }
 
     #[test]
+    fn fullscreen_notification_priority_uses_generation_without_mutating_desired_state() {
+        let mut normal = inputs(IslandState::Compact, true, false);
+        assert_eq!(apply_notification_intent(&mut normal, false), None);
+        assert_eq!(normal.desired_state, IslandState::Compact);
+        assert!(!normal.priority_override_active);
+
+        let mut high = inputs(IslandState::Compact, true, false);
+        let first = apply_notification_intent(&mut high, true).unwrap();
+        assert!(high.priority_override_active);
+        assert_eq!(high.desired_state, IslandState::Compact);
+        assert_eq!(
+            reduce(high, FocusIntent::Focus),
+            WindowDecision {
+                effective_state: IslandState::Expanded,
+                focus: FocusIntent::Preserve,
+            }
+        );
+        let second = apply_notification_intent(&mut high, true).unwrap();
+        assert_ne!(first, second);
+        assert!(!priority_override_expired(&mut high, first));
+        assert!(priority_override_expired(&mut high, second));
+        assert!(!high.priority_override_active);
+    }
+
+    #[test]
+    fn hidden_user_intent_rejects_priority_override() {
+        let mut policy_inputs = inputs(IslandState::Hidden, true, false);
+        assert_eq!(apply_notification_intent(&mut policy_inputs, true), None);
+        assert!(!policy_inputs.priority_override_active);
+        assert_eq!(
+            reduce(policy_inputs, FocusIntent::Focus).effective_state,
+            IslandState::Hidden
+        );
+    }
+
+    #[test]
     fn notification_from_compact_expands_without_focus() {
         let mut policy_inputs = inputs(IslandState::Compact, false, false);
-        apply_notification_intent(&mut policy_inputs);
+        apply_notification_intent(&mut policy_inputs, false);
         assert_eq!(
             reduce(policy_inputs, FocusIntent::Preserve),
             WindowDecision {
@@ -874,7 +970,7 @@ mod tests {
     #[test]
     fn notification_does_not_override_user_hidden() {
         let mut policy_inputs = inputs(IslandState::Hidden, false, false);
-        apply_notification_intent(&mut policy_inputs);
+        apply_notification_intent(&mut policy_inputs, false);
         assert_eq!(policy_inputs.desired_state, IslandState::Hidden);
     }
 

@@ -10,6 +10,15 @@ pub mod server;
 
 const TOKEN_KEY: &str = "notify:http_token";
 
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum NotifyPriority {
+    #[default]
+    Normal,
+    High,
+    Critical,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct NotifyAction {
     #[serde(rename = "type")]
@@ -25,6 +34,8 @@ pub struct NotifyInput {
     pub source: String,
     #[serde(default = "default_level")]
     pub level: String,
+    #[serde(default)]
+    pub priority: NotifyPriority,
     pub action: Option<NotifyAction>,
 }
 
@@ -35,6 +46,7 @@ pub struct Notification {
     pub body: Option<String>,
     pub source: String,
     pub level: String,
+    pub priority: NotifyPriority,
     pub created_at: i64,
     pub read: bool,
     pub action: Option<NotifyAction>,
@@ -108,6 +120,7 @@ fn validate_input(input: NotifyInput) -> Result<NotifyInput, String> {
         body,
         source: normalize_source(&input.source)?,
         level: normalize_level(&input.level)?,
+        priority: input.priority,
         action,
     })
 }
@@ -138,14 +151,19 @@ fn insert_notification(db: &Db, input: NotifyInput) -> Result<Notification, Stri
     let action_cwd = input.action.as_ref().map(|a| a.cwd.clone());
     let conn = db.0.lock().map_err(|e| e.to_string())?;
     conn.execute(
-        "INSERT INTO notifications (id,title,body,source,level,created_at,read,action_type,action_cwd)
-         VALUES (?1,?2,?3,?4,?5,?6,0,?7,?8)",
+        "INSERT INTO notifications (id,title,body,source,level,priority,created_at,read,action_type,action_cwd)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,0,?8,?9)",
         params![
             id,
             input.title,
             input.body,
             input.source,
             input.level,
+            match input.priority {
+                NotifyPriority::Normal => "normal",
+                NotifyPriority::High => "high",
+                NotifyPriority::Critical => "critical",
+            },
             created_at,
             action_type,
             action_cwd
@@ -158,6 +176,7 @@ fn insert_notification(db: &Db, input: NotifyInput) -> Result<Notification, Stri
         body: input.body,
         source: input.source,
         level: input.level,
+        priority: input.priority,
         created_at,
         read: false,
         action: input.action,
@@ -169,14 +188,14 @@ pub fn list_notifications(db: &Db, limit: Option<i64>) -> Result<Vec<Notificatio
     let conn = db.0.lock().map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare(
-            "SELECT id,title,body,source,level,created_at,read,action_type,action_cwd
+            "SELECT id,title,body,source,level,priority,created_at,read,action_type,action_cwd
              FROM notifications ORDER BY created_at DESC LIMIT ?1",
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map(params![limit], |row| {
-            let action_type: Option<String> = row.get(7)?;
-            let action_cwd: Option<String> = row.get(8)?;
+            let action_type: Option<String> = row.get(8)?;
+            let action_cwd: Option<String> = row.get(9)?;
             let action = match (action_type, action_cwd) {
                 (Some(action_type), Some(cwd)) if action_type == "open_terminal" => {
                     Some(NotifyAction { action_type, cwd })
@@ -189,8 +208,13 @@ pub fn list_notifications(db: &Db, limit: Option<i64>) -> Result<Vec<Notificatio
                 body: row.get(2)?,
                 source: row.get(3)?,
                 level: row.get(4)?,
-                created_at: row.get(5)?,
-                read: row.get::<_, i64>(6)? != 0,
+                priority: match row.get::<_, String>(5)?.as_str() {
+                    "high" => NotifyPriority::High,
+                    "critical" => NotifyPriority::Critical,
+                    _ => NotifyPriority::Normal,
+                },
+                created_at: row.get(6)?,
+                read: row.get::<_, i64>(7)? != 0,
                 action,
             })
         })
@@ -200,6 +224,12 @@ pub fn list_notifications(db: &Db, limit: Option<i64>) -> Result<Vec<Notificatio
         out.push(row.map_err(|e| e.to_string())?);
     }
     Ok(out)
+}
+
+pub fn clear_notifications(db: &Db) -> Result<usize, String> {
+    let conn = db.0.lock().map_err(|error| error.to_string())?;
+    conn.execute("DELETE FROM notifications", [])
+        .map_err(|error| error.to_string())
 }
 
 pub fn mark_read(db: &Db, id: Option<String>) -> Result<(), String> {
@@ -221,7 +251,22 @@ pub fn dispatch_notification(
 ) -> Result<Notification, String> {
     let n = insert_notification(db, input)?;
     let _ = app.emit("notify://incoming", n.clone());
-    crate::window_policy::present_notification(app)?;
+    let elevated = matches!(n.priority, NotifyPriority::High | NotifyPriority::Critical);
+    match crate::window_policy::present_notification(app, elevated) {
+        Ok((_, Some(generation))) => {
+            let policy_app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(6)).await;
+                if let Err(error) =
+                    crate::window_policy::expire_priority_override(&policy_app, generation)
+                {
+                    eprintln!("[window-policy] expire notification override failed: {error}");
+                }
+            });
+        }
+        Ok((_, None)) => {}
+        Err(error) => eprintln!("[window-policy] present notification failed: {error}"),
+    }
     // OS 系统通知（Windows toast）：默认开启，可由 M7 设置面板 general:toast 关闭。
     let toast_enabled = db
         .setting_get("general:toast")
@@ -249,6 +294,11 @@ pub fn notify_mark_read(id: Option<String>, db: State<'_, Db>) -> Result<(), Str
 }
 
 #[tauri::command]
+pub fn notify_clear(db: State<'_, Db>) -> Result<usize, String> {
+    clear_notifications(&db)
+}
+
+#[tauri::command]
 pub fn notify_create(
     app: AppHandle,
     input: NotifyInput,
@@ -260,4 +310,82 @@ pub fn notify_create(
 #[tauri::command]
 pub fn notify_get_token(db: State<'_, Db>) -> Result<String, String> {
     ensure_http_token(&db)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn input(level: &str, priority: NotifyPriority) -> NotifyInput {
+        NotifyInput {
+            title: "test".into(),
+            body: None,
+            source: "custom".into(),
+            level: level.into(),
+            priority,
+            action: None,
+        }
+    }
+
+    fn db_with_notification_and_setting() -> Db {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             CREATE TABLE notifications (
+               id TEXT PRIMARY KEY,
+               title TEXT NOT NULL,
+               body TEXT,
+               source TEXT NOT NULL,
+               level TEXT NOT NULL,
+               priority TEXT NOT NULL DEFAULT 'normal',
+               created_at INTEGER NOT NULL,
+               read INTEGER NOT NULL DEFAULT 0,
+               action_type TEXT,
+               action_cwd TEXT
+             );
+             INSERT INTO settings (key, value) VALUES ('notify:http_token', 'keep-me');
+             INSERT INTO notifications
+               (id, title, source, level, priority, created_at)
+             VALUES ('n1', 'test', 'custom', 'info', 'normal', 1);",
+        )
+        .unwrap();
+        Db(std::sync::Mutex::new(conn))
+    }
+
+    #[test]
+    fn clear_notifications_deletes_history_without_touching_settings() {
+        let db = db_with_notification_and_setting();
+
+        assert_eq!(clear_notifications(&db).unwrap(), 1);
+        assert!(list_notifications(&db, Some(100)).unwrap().is_empty());
+        assert_eq!(
+            db.setting_get("notify:http_token").as_deref(),
+            Some("keep-me")
+        );
+    }
+
+    #[test]
+    fn missing_priority_deserializes_as_normal() {
+        let input: NotifyInput = serde_json::from_str(
+            r#"{"title":"legacy","source":"custom","level":"error","action":null}"#,
+        )
+        .unwrap();
+        assert_eq!(input.priority, NotifyPriority::Normal);
+    }
+
+    #[test]
+    fn high_and_critical_are_accepted_but_illegal_priority_is_rejected() {
+        assert!(validate_input(input("info", NotifyPriority::High)).is_ok());
+        assert!(validate_input(input("info", NotifyPriority::Critical)).is_ok());
+        assert!(
+            serde_json::from_str::<NotifyInput>(r#"{"title":"bad","priority":"urgent"}"#).is_err()
+        );
+    }
+
+    #[test]
+    fn error_level_does_not_infer_high_priority() {
+        let validated = validate_input(input("error", NotifyPriority::Normal)).unwrap();
+        assert_eq!(validated.level, "error");
+        assert_eq!(validated.priority, NotifyPriority::Normal);
+    }
 }

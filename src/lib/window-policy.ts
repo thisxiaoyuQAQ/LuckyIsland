@@ -68,6 +68,7 @@ export function createHoverController({
 }: HoverControllerOptions) {
   let generation = 0;
   let active = false;
+  let enabled = true;
   let suppressed = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
 
@@ -77,6 +78,7 @@ export function createHoverController({
   };
 
   const schedule = (hovered: boolean, delay: number) => {
+    if (!enabled) return;
     const currentGeneration = ++generation;
     clearTimer();
     if (suppressed) {
@@ -99,7 +101,11 @@ export function createHoverController({
     clearTimer();
     suppressed = true;
   };
+  const enable = () => {
+    enabled = true;
+  };
   const disable = () => {
+    enabled = false;
     generation += 1;
     clearTimer();
     if (active) {
@@ -112,7 +118,7 @@ export function createHoverController({
     clearTimer();
   };
 
-  return { enter, leave, suppressCurrentCycle, disable, dispose };
+  return { enter, leave, suppressCurrentCycle, enable, disable, dispose };
 }
 
 interface IslandTransitionControllerOptions {
