@@ -218,6 +218,7 @@ impl Db {
             || key.starts_with("wake:")
             || key.starts_with("hotkeys:")
             || key == "update:auto_check"
+            || key.starts_with("weather:location:")
             || (key.starts_with("time:") && !key.starts_with("time:data:"))
             || matches!(
                 key,
@@ -441,6 +442,13 @@ mod portable_tests {
             .unwrap(),
             "normal"
         );
+    }
+
+    #[test]
+    fn weather_location_mapping_is_portable_but_cache_is_not() {
+        assert!(Db::is_portable_setting("weather:location:无锡"));
+        assert!(!Db::is_portable_setting("weather:cache:open-meteo:1790923"));
+        assert!(!Db::is_portable_setting("weather:last"));
     }
 
     #[test]

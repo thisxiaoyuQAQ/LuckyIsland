@@ -1,20 +1,52 @@
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::State;
 
 use crate::storage::Db;
 
-#[allow(dead_code)]
+pub(crate) mod cache;
 pub mod model;
-#[allow(dead_code)]
 pub(crate) mod open_meteo;
+
+use cache::{merge_weather, migrate_legacy_current, CachedWeather};
+use model::{WeatherBundle, WeatherLocation};
 
 const API_URL: &str = "https://uapis.cn/api/v1/misc/weather";
 const MYIP_URL: &str = "https://uapis.cn/api/v1/network/myip";
 const SETTING_CITY: &str = "weather:city";
 const SETTING_CACHE: &str = "weather:last";
+const LOCATION_PREFIX: &str = "weather:location:";
+const CACHE_PREFIX: &str = "weather:cache:open-meteo:";
 const DEFAULT_CITY: &str = "北京";
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "code", rename_all = "snake_case")]
+pub enum WeatherCommandError {
+    AmbiguousLocation {
+        message: String,
+        candidates: Vec<WeatherLocation>,
+    },
+    NotFound {
+        message: String,
+    },
+    Unavailable {
+        message: String,
+    },
+}
+
+impl fmt::Display for WeatherCommandError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::AmbiguousLocation { message, .. }
+            | Self::NotFound { message }
+            | Self::Unavailable { message } => formatter.write_str(message),
+        }
+    }
+}
+
+impl std::error::Error for WeatherCommandError {}
 
 fn now_ts() -> i64 {
     SystemTime::now()
@@ -138,41 +170,213 @@ async fn try_fetch(client: &reqwest::Client, city: &str) -> Result<WeatherNow, S
     Ok(map_weather(api))
 }
 
-fn cache_write(db: &State<'_, Db>, w: &WeatherNow) -> Result<(), String> {
-    let s = serde_json::to_string(w).map_err(|e| e.to_string())?;
-    db.setting_set(SETTING_CACHE, &s)
-}
-
 fn cache_read(db: &State<'_, Db>) -> Option<WeatherNow> {
     let s = db.setting_get(SETTING_CACHE)?;
     serde_json::from_str(&s).ok()
 }
 
-/// 拉取当前天气：成功则刷新缓存；失败则回退最近一次缓存（offline=true）；都没有则报错。
+fn normalize_city(value: &str) -> String {
+    value
+        .trim()
+        .trim_end_matches(['市', '区', '县'])
+        .to_lowercase()
+}
+
+fn location_setting_key(city: &str) -> String {
+    format!("{LOCATION_PREFIX}{}", normalize_city(city))
+}
+
+fn location_cache_key(location: &WeatherLocation) -> String {
+    if !location.provider_id.is_empty() {
+        format!("{CACHE_PREFIX}{}", location.provider_id)
+    } else {
+        format!(
+            "{CACHE_PREFIX}{:.4}:{:.4}",
+            location.latitude, location.longitude
+        )
+    }
+}
+
+fn valid_selected_location(location: &WeatherLocation, candidates: &[WeatherLocation]) -> bool {
+    !location.provider_id.is_empty()
+        && location.latitude.is_finite()
+        && location.longitude.is_finite()
+        && (-90.0..=90.0).contains(&location.latitude)
+        && (-180.0..=180.0).contains(&location.longitude)
+        && !location.display_name.is_empty()
+        && !location.country.is_empty()
+        && !location.timezone.is_empty()
+        && candidates.iter().any(|candidate| candidate == location)
+}
+
+fn uniquely_matching_candidate(
+    city: &str,
+    candidates: &[WeatherLocation],
+) -> Option<WeatherLocation> {
+    let city = normalize_city(city);
+    let matches = candidates
+        .iter()
+        .filter(|candidate| {
+            let display = candidate.display_name.split(" · ").next().unwrap_or("");
+            normalize_city(display) == city
+                && candidate
+                    .province
+                    .as_deref()
+                    .is_some_and(|province| normalize_city(province) == city)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    (matches.len() == 1).then(|| matches[0].clone())
+}
+
+async fn resolve_location(
+    client: &reqwest::Client,
+    db: &Db,
+    city: &str,
+    selected: Option<WeatherLocation>,
+) -> Result<WeatherLocation, WeatherCommandError> {
+    let candidates = open_meteo::search_locations(client, city)
+        .await
+        .map_err(|error| WeatherCommandError::Unavailable {
+            message: format!("地点查询失败：{error}"),
+        })?;
+    if candidates.is_empty() {
+        return Err(WeatherCommandError::NotFound {
+            message: format!("未找到城市：{city}"),
+        });
+    }
+    if let Some(location) = selected {
+        if !valid_selected_location(&location, &candidates) {
+            return Err(WeatherCommandError::Unavailable {
+                message: "所选地点无效或已过期，请重新选择".into(),
+            });
+        }
+        let value =
+            serde_json::to_string(&location).map_err(|error| WeatherCommandError::Unavailable {
+                message: error.to_string(),
+            })?;
+        db.setting_set(&location_setting_key(city), &value)
+            .map_err(|message| WeatherCommandError::Unavailable { message })?;
+        return Ok(location);
+    }
+    if let Some(stored) = db.setting_get(&location_setting_key(city)) {
+        if let Ok(location) = serde_json::from_str::<WeatherLocation>(&stored) {
+            if valid_selected_location(&location, &candidates) {
+                return Ok(location);
+            }
+        }
+    }
+    if candidates.len() == 1 {
+        return Ok(candidates.into_iter().next().unwrap());
+    }
+    if let Some(location) = uniquely_matching_candidate(city, &candidates) {
+        return Ok(location);
+    }
+    Err(WeatherCommandError::AmbiguousLocation {
+        message: format!("“{city}”对应多个地点，请选择具体地区"),
+        candidates,
+    })
+}
+
+fn read_location_cache(db: &Db, key: &str) -> Option<CachedWeather> {
+    db.setting_get(key)
+        .and_then(|json| serde_json::from_str(&json).ok())
+}
+
+fn write_location_cache(db: &Db, key: &str, cache: &CachedWeather) -> Result<(), String> {
+    let json = serde_json::to_string(cache).map_err(|error| error.to_string())?;
+    db.setting_set(key, &json)
+}
+
+/// 拉取同一地点的当前天气与未来预报；仅允许同地点缓存补齐失败侧。
 #[tauri::command]
 pub async fn weather_get(
     city: Option<String>,
+    location: Option<WeatherLocation>,
     db: State<'_, Db>,
     http: State<'_, reqwest::Client>,
-) -> Result<WeatherNow, String> {
+) -> Result<WeatherBundle, WeatherCommandError> {
     let city = city
         .or_else(|| db.setting_get(SETTING_CITY))
         .unwrap_or_else(|| DEFAULT_CITY.to_string());
-
-    match try_fetch(http.inner(), &city).await {
-        Ok(mut w) => {
-            w.fetched_at = now_ts();
-            let _ = cache_write(&db, &w);
-            Ok(w)
+    let location = resolve_location(http.inner(), db.inner(), &city, location).await?;
+    let location_key = location_cache_key(&location);
+    let mut cached = read_location_cache(db.inner(), &location_key);
+    if cached.is_none() {
+        if let Some(legacy) = cache_read(&db)
+            .and_then(|current| migrate_legacy_current(&city, &location.query_name, current))
+        {
+            cached = Some(CachedWeather {
+                location_key: location_key.clone(),
+                now_fetched_at: Some(legacy.fetched_at),
+                now: Some(legacy),
+                forecast: None,
+                forecast_timezone: None,
+                forecast_fetched_at: None,
+            });
         }
-        Err(e) => match cache_read(&db) {
-            Some(mut c) => {
-                c.offline = true;
-                Ok(c)
-            }
-            None => Err(format!("天气获取失败且无缓存：{e}")),
-        },
     }
+
+    let fetched_at = now_ts();
+    let (now_result, forecast_result) = tokio::join!(
+        try_fetch(http.inner(), &city),
+        open_meteo::fetch_forecast(http.inner(), &location)
+    );
+    let merged = merge_weather(
+        now_result,
+        forecast_result,
+        cached.clone(),
+        &location_key,
+        fetched_at,
+    )
+    .map_err(|message| WeatherCommandError::Unavailable { message })?;
+
+    let next_cache = CachedWeather {
+        location_key: location_key.clone(),
+        now: Some(merged.now.clone()),
+        now_fetched_at: if merged.now_fresh {
+            Some(fetched_at)
+        } else {
+            cached.as_ref().and_then(|value| value.now_fetched_at)
+        },
+        forecast: Some(merged.forecast.clone()),
+        forecast_timezone: Some(merged.timezone.clone()),
+        forecast_fetched_at: if merged.forecast_fresh {
+            Some(fetched_at)
+        } else {
+            cached.as_ref().and_then(|value| value.forecast_fetched_at)
+        },
+    };
+    let _ = write_location_cache(db.inner(), &location_key, &next_cache);
+
+    Ok(WeatherBundle {
+        now: merged.now,
+        forecast: merged.forecast,
+        source: open_meteo::source_info(),
+        location,
+        timezone: merged.timezone,
+        offline: merged.offline,
+        partial: merged.partial,
+        fetched_at: merged.fetched_at,
+    })
+}
+
+#[tauri::command]
+pub async fn weather_location_search(
+    query: String,
+    http: State<'_, reqwest::Client>,
+) -> Result<Vec<WeatherLocation>, WeatherCommandError> {
+    let query = query.trim();
+    if query.is_empty() {
+        return Err(WeatherCommandError::NotFound {
+            message: "城市不能为空".into(),
+        });
+    }
+    open_meteo::search_locations(http.inner(), query)
+        .await
+        .map_err(|error| WeatherCommandError::Unavailable {
+            message: format!("地点查询失败：{error}"),
+        })
 }
 
 #[tauri::command]
@@ -295,4 +499,75 @@ pub fn weather_cities_reorder(cities: Vec<String>, db: State<'_, Db>) -> Result<
         .map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn location(id: &str, name: &str, province: Option<&str>) -> WeatherLocation {
+        WeatherLocation {
+            query_name: name.into(),
+            display_name: name.into(),
+            province: province.map(str::to_string),
+            country: "中国".into(),
+            latitude: 31.5,
+            longitude: 120.2,
+            timezone: "Asia/Shanghai".into(),
+            provider_id: id.into(),
+        }
+    }
+
+    #[test]
+    fn location_keys_use_provider_id_without_user_text() {
+        let value = location("1790923", "无锡", Some("江苏"));
+        assert_eq!(
+            location_cache_key(&value),
+            "weather:cache:open-meteo:1790923"
+        );
+        assert_eq!(location_setting_key(" 无锡市 "), "weather:location:无锡");
+    }
+
+    #[test]
+    fn selected_location_must_match_a_fresh_candidate_exactly() {
+        let candidate = location("1790923", "无锡", Some("江苏"));
+        assert!(valid_selected_location(
+            &candidate,
+            std::slice::from_ref(&candidate)
+        ));
+        let mut forged = candidate.clone();
+        forged.latitude = 0.0;
+        assert!(!valid_selected_location(&forged, &[candidate]));
+    }
+
+    #[test]
+    fn exact_city_and_province_can_resolve_one_candidate_but_not_many() {
+        let beijing = location("1", "北京", Some("北京市"));
+        let other = location("2", "北京 · 万州区", Some("重庆市"));
+        assert_eq!(
+            uniquely_matching_candidate("北京", &[beijing.clone(), other])
+                .unwrap()
+                .provider_id,
+            "1"
+        );
+        assert!(uniquely_matching_candidate(
+            "滨湖",
+            &[
+                location("3", "滨湖 · 南京市", Some("江苏")),
+                location("4", "滨湖 · 无锡市", Some("江苏")),
+            ]
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn structured_weather_errors_keep_code_and_candidates() {
+        let error = WeatherCommandError::AmbiguousLocation {
+            message: "请选择".into(),
+            candidates: vec![location("1", "滨湖 · 无锡市", Some("江苏"))],
+        };
+        let json = serde_json::to_value(error).unwrap();
+        assert_eq!(json["code"], "ambiguous_location");
+        assert_eq!(json["candidates"][0]["providerId"], "1");
+    }
 }

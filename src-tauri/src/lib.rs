@@ -34,7 +34,7 @@ use data::time_api::{time_programmer_history_get, time_saying_get};
 use data::todo::{todo_create, todo_delete, todo_list, todo_update};
 use data::weather::{
     weather_cities_add, weather_cities_list, weather_cities_remove, weather_cities_reorder,
-    weather_get, weather_get_city, weather_locate, weather_set_city,
+    weather_get, weather_get_city, weather_locate, weather_location_search, weather_set_city,
 };
 use hotkeys::{
     hotkeys_apply, hotkeys_list, hotkeys_reload, hotkeys_reset, hotkeys_suspend, HotkeyMap,
@@ -193,6 +193,7 @@ pub fn run() {
             todo_delete,
             calendar_month,
             weather_get,
+            weather_location_search,
             weather_get_city,
             weather_set_city,
             weather_locate,
