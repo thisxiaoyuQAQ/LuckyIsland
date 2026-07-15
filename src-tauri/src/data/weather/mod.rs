@@ -100,6 +100,7 @@ struct ApiAlert {
 
 /// 对前端暴露的天气数据
 #[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct WeatherAlert {
     pub title: String,
     pub alert_type: String,
@@ -110,6 +111,7 @@ pub struct WeatherAlert {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct WeatherNow {
     pub province: String,
     pub city: String,
@@ -558,6 +560,37 @@ mod tests {
             ]
         )
         .is_none());
+    }
+
+    #[test]
+    fn current_weather_serializes_with_frontend_camel_case_fields() {
+        let now = WeatherNow {
+            province: "江苏".into(),
+            city: "无锡".into(),
+            district: None,
+            weather: "晴".into(),
+            weather_icon: "☀️".into(),
+            temperature: 28.0,
+            wind_direction: "东".into(),
+            wind_power: "2".into(),
+            humidity: 50.0,
+            report_time: "10:00".into(),
+            alerts: vec![WeatherAlert {
+                title: "高温".into(),
+                alert_type: "高温".into(),
+                level: "黄色".into(),
+                text: "测试".into(),
+                publish_time: "09:00".into(),
+                publisher: "气象台".into(),
+            }],
+            offline: false,
+            fetched_at: 1,
+        };
+        let value = serde_json::to_value(now).unwrap();
+        assert_eq!(value["weatherIcon"], "☀️");
+        assert_eq!(value["windDirection"], "东");
+        assert_eq!(value["alerts"][0]["publishTime"], "09:00");
+        assert!(value.get("weather_icon").is_none());
     }
 
     #[test]

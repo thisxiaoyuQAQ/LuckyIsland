@@ -7,6 +7,10 @@ import { useReorder } from "@/lib/useReorder";
 import { CITIES } from "@/components/pages/weather/cities";
 import { invoke } from "@tauri-apps/api/core";
 import { KEYS, parseRefreshMin, settingGet, settingSetEmit } from "@/lib/settings";
+import {
+  parseWeatherCommandError,
+  type WeatherLocation,
+} from "@/components/pages/weather/model";
 
 /** 天气页配置：刷新间隔 + 城市管理（F9.8，与天气页同步） */
 export function WeatherPanel() {
@@ -14,6 +18,8 @@ export function WeatherPanel() {
   const [cities, setCities] = useState<string[]>([]);
   const [draft, setDraft] = useState("");
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [candidates, setCandidates] = useState<{ city: string; values: WeatherLocation[] } | null>(null);
 
   const refreshCities = useCallback(async () => {
     try {
@@ -51,15 +57,29 @@ export function WeatherPanel() {
     })();
   }, [refreshCities]);
 
+  const persistResolvedCity = async (city: string, location: WeatherLocation) => {
+    await invoke("weather_get", { city, location });
+    await invoke("weather_cities_add", { city });
+    setDraft("");
+    setCandidates(null);
+    await refreshCities();
+  };
+
   const addCity = async (c: string) => {
     const city = c.trim();
     if (!city) return;
+    setError(null);
     try {
-      await invoke("weather_cities_add", { city });
-      setDraft("");
-      await refreshCities();
-    } catch {
-      /* ignore */
+      const locations = await invoke<WeatherLocation[]>("weather_location_search", { query: city });
+      if (locations.length === 0) {
+        setError(`未找到城市：${city}`);
+      } else if (locations.length === 1) {
+        await persistResolvedCity(city, locations[0]);
+      } else {
+        setCandidates({ city, values: locations });
+      }
+    } catch (reason) {
+      setError(parseWeatherCommandError(reason)?.message ?? String(reason));
     }
   };
 
@@ -141,6 +161,25 @@ export function WeatherPanel() {
           </div>
         )}
       </div>
+      {error && <p className="text-xs text-destructive">{error}</p>}
+      {candidates && (
+        <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-2">
+          <p className="mb-1 text-xs">“{candidates.city}”对应多个地点，请选择：</p>
+          <div className="flex flex-wrap gap-1">
+            {candidates.values.map((location) => (
+              <Button
+                key={location.providerId}
+                size="sm"
+                variant="outline"
+                className="h-7 text-xs"
+                onClick={() => void persistResolvedCity(candidates.city, location)}
+              >
+                {[location.displayName, location.province, location.country].filter(Boolean).join(" / ")}
+              </Button>
+            ))}
+          </div>
+        </div>
+      )}
       <div className="flex flex-col gap-2">
         {cities.map((c, i) => (
           <div
