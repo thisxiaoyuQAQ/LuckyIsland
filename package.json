@@ -20,6 +20,8 @@
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml --lib --locked",
     "check:rust": "cargo check --manifest-path src-tauri/Cargo.toml --locked",
     "check:native-runtime": "node scripts/check-native-runtime.mjs",
+    "release:check-version": "node scripts/check-version.mjs",
+    "release:validate-assets": "node scripts/validate-updater-assets.mjs",
     "verify": "pnpm typecheck && pnpm test:frontend && pnpm build:frontend && pnpm fmt:rust && pnpm clippy:rust && pnpm test:rust && pnpm check:rust",
     "preview": "vite preview",
     "tauri": "tauri"

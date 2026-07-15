@@ -64,6 +64,7 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -80,6 +81,17 @@
     "windows": {
       "nsis": {
         "installMode": "currentUser"
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDM3M0YyOTlBQTAwNEExQ0UKUldUT29RU2dtaWsvTjIzM0R1YnlvRDNDUnFQcFdLbldFMytSK3N3TnJOakRFUG5Jbi9idmlrN0IK",
+      "endpoints": [
+        "https://github.com/thisxiaoyuQAQ/LuckyIsland/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
       }
     }
   }
