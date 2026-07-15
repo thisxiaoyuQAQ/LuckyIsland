@@ -1,3 +1,4 @@
+mod about;
 mod ai;
 mod data;
 mod fullscreen;
@@ -19,6 +20,7 @@ use tauri::{
 use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_global_shortcut::ShortcutState;
 
+use about::about_diagnostics;
 use ai::{
     ai_cancel, ai_chat, ai_clear_history, ai_get_position, ai_history_list, ai_reset_position,
     ai_save_position, ai_switch_provider, hide_ai_palette, open_ai_palette, runtime::AiRuntime,
@@ -172,6 +174,7 @@ pub fn run() {
                 .build(),
         )
         .invoke_handler(tauri::generate_handler![
+            about_diagnostics,
             window_policy::set_island_state,
             window_policy::window_policy_get,
             window_policy::window_click_through_set,

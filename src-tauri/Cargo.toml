@@ -2,7 +2,7 @@
 name = "lucky-island"
 version = "0.2.1"
 description = "LuckyIsland - Windows 灵动岛式桌面助手"
-authors = ["you"]
+authors = ["Zhi Yu"]
 edition = "2021"
 default-run = "lucky-island"
 
@@ -78,6 +78,7 @@ windows = { version = "0.61", features = [
     "Win32_System_Com",
     "Win32_UI_WindowsAndMessaging",
 ] }
+windows-version = "0.1"
 
 # release 优化：thin LTO + strip 符号，减小安装包体积（需求 <15MB）
 [profile.release]
