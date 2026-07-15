@@ -8,6 +8,7 @@ use crate::storage::Db;
 
 pub const CLICK_THROUGH_KEY: &str = "window:click_through";
 pub const HOVER_EXPAND_KEY: &str = "window:hover_expand";
+pub const HIDE_IN_FULLSCREEN_KEY: &str = "window:hide_in_fullscreen";
 
 const COMPACT_HEIGHT_LOGICAL: f64 = 80.0;
 const EXPANDED_HEIGHT_LOGICAL: f64 = 400.0;
@@ -353,19 +354,38 @@ fn update_and_apply(
     focus: FocusIntent,
 ) -> Result<WindowPolicySnapshot, String> {
     let policy = app.state::<WindowPolicy>();
-    let (previous, inputs, generation) = {
+    let (previous, previous_inputs, inputs, generation) = {
         let mut runtime = policy.0.lock().map_err(|error| error.to_string())?;
         let previous = runtime.last_applied;
+        let previous_inputs = runtime.inputs;
         mutate(&mut runtime.inputs);
         runtime.operation_generation = runtime.operation_generation.wrapping_add(1);
-        (previous, runtime.inputs, runtime.operation_generation)
+        (
+            previous,
+            previous_inputs,
+            runtime.inputs,
+            runtime.operation_generation,
+        )
     };
 
     let decision = reduce(inputs, focus);
-    let window = app
-        .get_webview_window("island")
-        .ok_or_else(|| "找不到灵动岛窗口".to_string())?;
-    apply_effects(&window, previous, decision)?;
+    let Some(window) = app.get_webview_window("island") else {
+        let mut runtime = policy.0.lock().map_err(|error| error.to_string())?;
+        if runtime.operation_generation == generation {
+            runtime.inputs = previous_inputs;
+        }
+        return Err("找不到灵动岛窗口".to_string());
+    };
+    if let Err(error) = apply_effects(&window, previous, decision) {
+        let mut runtime = policy
+            .0
+            .lock()
+            .map_err(|lock_error| lock_error.to_string())?;
+        if runtime.operation_generation == generation {
+            runtime.inputs = previous_inputs;
+        }
+        return Err(error);
+    }
 
     let current = {
         let mut runtime = policy.0.lock().map_err(|error| error.to_string())?;
@@ -439,6 +459,32 @@ pub fn toggle_visibility(app: &AppHandle) -> Result<WindowPolicySnapshot, String
 
 pub fn reapply(app: &AppHandle) -> Result<WindowPolicySnapshot, String> {
     update_and_apply(app, |_| {}, FocusIntent::Preserve)
+}
+
+fn apply_fullscreen_block(inputs: &mut WindowPolicyInputs, blocked: bool) {
+    inputs.fullscreen_block = blocked;
+    if !blocked && inputs.priority_override_active {
+        inputs.priority_override_active = false;
+        inputs.priority_override_generation = inputs.priority_override_generation.wrapping_add(1);
+    }
+}
+
+fn apply_fullscreen_setting(inputs: &mut WindowPolicyInputs, enabled: bool) {
+    inputs.hide_in_fullscreen = enabled;
+    if !enabled {
+        apply_fullscreen_block(inputs, false);
+    }
+}
+
+pub fn set_fullscreen_block(
+    app: &AppHandle,
+    blocked: bool,
+) -> Result<WindowPolicySnapshot, String> {
+    update_and_apply(
+        app,
+        |inputs| apply_fullscreen_block(inputs, blocked),
+        FocusIntent::Preserve,
+    )
 }
 
 pub fn set_click_through(
@@ -516,9 +562,60 @@ pub fn restore_hover_expand(app: &AppHandle, db: &Db) -> Result<WindowPolicySnap
     )
 }
 
+pub fn restore_hide_in_fullscreen(
+    app: &AppHandle,
+    db: &Db,
+) -> Result<WindowPolicySnapshot, String> {
+    let enabled = db
+        .setting_get(HIDE_IN_FULLSCREEN_KEY)
+        .map(|value| value == "true")
+        .unwrap_or(false);
+    let snapshot = update_and_apply(
+        app,
+        |inputs| apply_fullscreen_setting(inputs, enabled),
+        FocusIntent::Preserve,
+    )?;
+    app.state::<crate::fullscreen::FullscreenController>()
+        .set_enabled(enabled && cfg!(windows));
+    Ok(snapshot)
+}
+
 pub fn reload_persisted_settings(app: &AppHandle, db: &Db) -> Result<WindowPolicySnapshot, String> {
     restore_click_through(app, db)?;
-    restore_hover_expand(app, db)
+    restore_hover_expand(app, db)?;
+    restore_hide_in_fullscreen(app, db)
+}
+
+#[tauri::command]
+pub fn window_hide_in_fullscreen_set(
+    app: AppHandle,
+    db: State<'_, Db>,
+    enabled: bool,
+) -> Result<WindowPolicySnapshot, String> {
+    let previous_inputs = {
+        let policy = app.state::<WindowPolicy>();
+        let runtime = policy.0.lock().map_err(|error| error.to_string())?;
+        runtime.inputs
+    };
+    let snapshot = update_and_apply(
+        &app,
+        |inputs| apply_fullscreen_setting(inputs, enabled),
+        FocusIntent::Preserve,
+    )?;
+    if let Err(error) = db.setting_set(
+        HIDE_IN_FULLSCREEN_KEY,
+        if enabled { "true" } else { "false" },
+    ) {
+        let _ = update_and_apply(
+            &app,
+            |inputs| *inputs = previous_inputs,
+            FocusIntent::Preserve,
+        );
+        return Err(error);
+    }
+    app.state::<crate::fullscreen::FullscreenController>()
+        .set_enabled(enabled && cfg!(windows));
+    Ok(snapshot)
 }
 
 #[tauri::command]
@@ -693,6 +790,25 @@ mod tests {
                 effective_state: IslandState::Hidden,
                 focus: FocusIntent::Preserve,
             }
+        );
+    }
+
+    #[test]
+    fn fullscreen_setting_controls_block_and_clears_override_on_exit() {
+        let mut policy_inputs = inputs(IslandState::Compact, true, true);
+
+        apply_fullscreen_setting(&mut policy_inputs, false);
+        assert!(!policy_inputs.hide_in_fullscreen);
+        assert!(!policy_inputs.fullscreen_block);
+
+        policy_inputs.hide_in_fullscreen = true;
+        policy_inputs.priority_override_active = true;
+        let generation = policy_inputs.priority_override_generation;
+        apply_fullscreen_block(&mut policy_inputs, false);
+        assert!(!policy_inputs.priority_override_active);
+        assert_eq!(
+            policy_inputs.priority_override_generation,
+            generation.wrapping_add(1)
         );
     }
 

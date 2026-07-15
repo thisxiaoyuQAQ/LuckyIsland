@@ -355,6 +355,7 @@ mod portable_tests {
         assert!(Db::is_portable_setting("hotkeys:toggle_ai"));
         assert!(Db::is_portable_setting("hotkeys:toggle_click_through"));
         assert!(Db::is_portable_setting("window:click_through"));
+        assert!(Db::is_portable_setting("window:hide_in_fullscreen"));
         assert!(!Db::is_portable_setting("notify:http_token"));
         assert!(!Db::is_portable_setting("ai:chat_api_key"));
     }

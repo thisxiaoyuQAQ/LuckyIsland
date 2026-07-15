@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { Switch } from "@/components/ui/switch";
 import {
   windowClickThroughSet,
+  windowHideInFullscreenSet,
   windowHoverExpandSet,
   windowPolicyGet,
   type WindowPolicySnapshot,
@@ -47,8 +48,11 @@ export function GeneralPanel() {
   const [blur, setBlur] = useState(true);
   const [clickThrough, setClickThrough] = useState(false);
   const [hoverExpand, setHoverExpand] = useState(false);
+  const [hideInFullscreen, setHideInFullscreen] = useState(false);
+  const [fullscreenSupported, setFullscreenSupported] = useState(false);
   const [clickThroughError, setClickThroughError] = useState<string | null>(null);
   const [hoverExpandError, setHoverExpandError] = useState<string | null>(null);
+  const [fullscreenError, setFullscreenError] = useState<string | null>(null);
   const [theme, setTheme] = useState<Theme>("auto");
   const [monitors, setMonitors] = useState<MonitorInfo[]>([]);
   const [monitorState, setMonitorState] = useState<MonitorSelectionState>({
@@ -91,6 +95,8 @@ export function GeneralPanel() {
       setBlur(parseBool(b, true));
       setClickThrough(policy?.clickThrough ?? false);
       setHoverExpand(policy?.hoverExpand ?? false);
+      setHideInFullscreen(policy?.hideInFullscreen ?? false);
+      setFullscreenSupported(policy?.fullscreenSupported ?? false);
       await monitorLoad;
       if (!disposed) setLoading(false);
     })().catch((error) => {
@@ -154,6 +160,19 @@ export function GeneralPanel() {
     }
   };
 
+  const toggleHideInFullscreen = async (enabled: boolean) => {
+    setFullscreenError(null);
+    try {
+      const snapshot = await windowHideInFullscreenSet(enabled);
+      setHideInFullscreen(snapshot.hideInFullscreen);
+      setFullscreenSupported(snapshot.fullscreenSupported);
+    } catch (error) {
+      const actual = await windowPolicyGet().catch(() => null);
+      if (actual) setHideInFullscreen(actual.hideInFullscreen);
+      setFullscreenError(error instanceof Error ? error.message : String(error));
+    }
+  };
+
   const changeTheme = async (v: Theme) => {
     setTheme(v);
     await settingSetEmit(KEYS.theme, v);
@@ -203,6 +222,8 @@ export function GeneralPanel() {
       if (!disposed) {
         setClickThrough(event.payload.clickThrough);
         setHoverExpand(event.payload.hoverExpand);
+        setHideInFullscreen(event.payload.hideInFullscreen);
+        setFullscreenSupported(event.payload.fullscreenSupported);
       }
     }).then((fn) => {
       if (disposed) fn();
@@ -304,6 +325,28 @@ export function GeneralPanel() {
           {hoverExpandError && (
             <p className="text-right text-xs text-destructive">
               悬停展开设置失败：{hoverExpandError}
+            </p>
+          )}
+        </div>
+      </Row>
+
+      <Row
+        label="全屏时隐藏"
+        desc={
+          fullscreenSupported
+            ? "岛所在显示器出现真正全屏窗口时自动隐藏；普通最大化不受影响"
+            : "当前仅支持 Windows 10/11"
+        }
+      >
+        <div className="flex flex-col items-end gap-1">
+          <Switch
+            checked={hideInFullscreen}
+            onCheckedChange={toggleHideInFullscreen}
+            disabled={!fullscreenSupported}
+          />
+          {fullscreenError && (
+            <p className="text-right text-xs text-destructive">
+              全屏隐藏设置失败：{fullscreenError}
             </p>
           )}
         </div>

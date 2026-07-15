@@ -49,6 +49,12 @@ export function windowHoverExpandSet(
   return invoke<WindowPolicySnapshot>("window_hover_expand_set", { enabled });
 }
 
+export function windowHideInFullscreenSet(
+  enabled: boolean,
+): Promise<WindowPolicySnapshot> {
+  return invoke<WindowPolicySnapshot>("window_hide_in_fullscreen_set", { enabled });
+}
+
 interface HoverControllerOptions {
   enterDelay: number;
   leaveDelay: number;

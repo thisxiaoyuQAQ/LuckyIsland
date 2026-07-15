@@ -27,6 +27,8 @@ export const KEYS = {
   windowClickThrough: "window:click_through",
   /** 紧凑态悬停自动展开，默认关闭。 */
   windowHoverExpand: "window:hover_expand",
+  /** 岛所在显示器出现真正全屏窗口时自动隐藏，默认关闭。 */
+  windowHideInFullscreen: "window:hide_in_fullscreen",
   /** 时间页：布局 JSON（clockRegion + widgets）。 */
   timeLayout: "time:layout",
   /** 时间页：外观 JSON（颜色/渐变/字号/制式）。 */
@@ -58,6 +60,7 @@ export const DEFAULTS = {
   windowOffsetY: "0",
   windowClickThrough: "false",
   windowHoverExpand: "false",
+  windowHideInFullscreen: "false",
 } as const;
 
 export interface MonitorPoint {

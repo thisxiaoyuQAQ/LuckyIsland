@@ -211,7 +211,9 @@ pub fn config_import(
     let needs_window_policy_reload = old_keys.contains(crate::window_policy::CLICK_THROUGH_KEY)
         || new_keys.contains(crate::window_policy::CLICK_THROUGH_KEY)
         || old_keys.contains(crate::window_policy::HOVER_EXPAND_KEY)
-        || new_keys.contains(crate::window_policy::HOVER_EXPAND_KEY);
+        || new_keys.contains(crate::window_policy::HOVER_EXPAND_KEY)
+        || old_keys.contains(crate::window_policy::HIDE_IN_FULLSCREEN_KEY)
+        || new_keys.contains(crate::window_policy::HIDE_IN_FULLSCREEN_KEY);
 
     let settings_count = settings_vec.len();
     let watchlist_count = watchlist_vec.len();

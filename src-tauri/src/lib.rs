@@ -1,5 +1,6 @@
 mod ai;
 mod data;
+mod fullscreen;
 mod hotkeys;
 mod monitor;
 mod notify;
@@ -176,6 +177,7 @@ pub fn run() {
             window_policy::window_click_through_set,
             window_policy::window_hover_set,
             window_policy::window_hover_expand_set,
+            window_policy::window_hide_in_fullscreen_set,
             monitor_list,
             monitor_get_selection,
             monitor_select,
@@ -321,6 +323,9 @@ pub fn run() {
             app.manage(window_policy::WindowPolicy::new(
                 window_policy::WindowPolicyInputs::new(default_state),
             ));
+            let fullscreen_controller = fullscreen::FullscreenController::default();
+            app.manage(fullscreen_controller.clone());
+            fullscreen::start(app.handle().clone(), fullscreen_controller);
 
             // 自定义全局热键：按用户绑定注册（DB 无值则默认 alt+KeyX / alt+Space）。
             // HotkeyMap 供插件 handler 用 HotKey::id() 反查动作分发。
@@ -395,6 +400,12 @@ pub fn run() {
             ) {
                 eprintln!("[window-policy] restore hover-expand failed: {error}");
             }
+            if let Err(error) = window_policy::restore_hide_in_fullscreen(
+                app.handle(),
+                app.state::<storage::Db>().inner(),
+            ) {
+                eprintln!("[window-policy] restore fullscreen setting failed: {error}");
+            }
 
             // 运行时显示器变化监听：副屏断开时立即临时跳回主屏（不改持久化选择）。
             start_runtime_watch(app.handle().clone());
@@ -409,6 +420,10 @@ pub fn run() {
             // 变化并退出，Drop 里会关掉 cpal 音频流。进程马上就要退出，不等线程真正
             // 结束也无妨（OS 会在进程退出时回收所有句柄）。
             if let tauri::RunEvent::Exit = event {
+                if let Some(controller) = app_handle.try_state::<fullscreen::FullscreenController>()
+                {
+                    controller.shutdown();
+                }
                 cleanup_runtime_resources(app_handle);
             }
         });
