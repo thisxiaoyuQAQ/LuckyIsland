@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { useTauriEvent } from "@/lib/useTauriEvent";
 import { Download, Check, Loader2, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
@@ -84,25 +84,19 @@ export function VoicePanel() {
   }, []);
 
   // 监听下载进度（KWS 与 ASR 共用事件通道，按当前 downloadingModel 判断刷新哪个就绪态）
-  useEffect(() => {
-    let un: (() => void) | undefined;
-    listen<DownloadProgress>("voice://download-progress", (e) => {
-      const p = e.payload;
-      setProgress(p);
-      if (p.stage === "done") {
-        setDownloading(false);
-        if (downloadingModel === "asr") setAsrReady(true);
-        else setModelReady(true);
-      } else if (p.stage === "error") {
-        setDownloading(false);
-      } else {
-        setDownloading(true);
-      }
-    }).then((fn) => {
-      un = fn;
-    });
-    return () => un?.();
-  }, [downloadingModel]);
+  useTauriEvent<DownloadProgress>("voice://download-progress", (event) => {
+    const progress = event.payload;
+    setProgress(progress);
+    if (progress.stage === "done") {
+      setDownloading(false);
+      if (downloadingModel === "asr") setAsrReady(true);
+      else setModelReady(true);
+    } else if (progress.stage === "error") {
+      setDownloading(false);
+    } else {
+      setDownloading(true);
+    }
+  });
 
   // 已下载就绪时同步本地开关态：避免用户在别处下载完后开关仍显示禁用文案
   useEffect(() => {
