@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, type DependencyList } from "react";
 
 export type Dispose = () => void;
+export type IsSubscriptionActive = () => boolean;
 
 export interface AsyncSubscriptionOptions {
   label: string;
@@ -8,7 +9,7 @@ export interface AsyncSubscriptionOptions {
 }
 
 export function useAsyncSubscription(
-  subscribe: () => Promise<Dispose>,
+  subscribe: (isActive: IsSubscriptionActive) => Promise<Dispose>,
   deps: DependencyList,
   options: AsyncSubscriptionOptions,
 ): void {
@@ -38,8 +39,10 @@ export function useAsyncSubscription(
       }
     };
 
+    const isActive: IsSubscriptionActive = () => !disposed;
+
     try {
-      void subscribeRef.current().then(
+      void subscribeRef.current(isActive).then(
         (candidate) => {
           if (disposed) {
             dispose(candidate);

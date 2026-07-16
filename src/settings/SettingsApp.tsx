@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
+import { useState } from "react";
+import { useTauriEvent } from "@/lib/useTauriEvent";
 import { AppearancePanel } from "./AppearancePanel";
 import { GeneralPanel } from "./GeneralPanel";
 import { HotkeysPanel } from "./HotkeysPanel";
@@ -41,26 +41,14 @@ const TABS: { id: Tab; label: string }[] = [
 function SettingsApp() {
   const [tab, setTab] = useState<Tab>("general");
 
-  useEffect(() => {
-    let disposed = false;
-    let unlisten: (() => void) | undefined;
-    void listen<unknown>("settings://navigate", (event) => {
-      const next = parseSettingsTab(event.payload);
-      if (!disposed && next) {
-        setTab(next);
-        if (shouldCheckUpdateOnNavigation(next, getUpdateSnapshot().phase)) {
-          void checkForUpdate("manual");
-        }
-      }
-    }).then((fn) => {
-      if (disposed) fn();
-      else unlisten = fn;
-    });
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
-  }, []);
+  useTauriEvent<unknown>("settings://navigate", (event) => {
+    const next = parseSettingsTab(event.payload);
+    if (!next) return;
+    setTab(next);
+    if (shouldCheckUpdateOnNavigation(next, getUpdateSnapshot().phase)) {
+      void checkForUpdate("manual");
+    }
+  });
 
   return (
     <div className="flex h-screen w-screen bg-background text-foreground">

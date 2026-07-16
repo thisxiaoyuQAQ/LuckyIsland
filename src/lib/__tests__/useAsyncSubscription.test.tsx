@@ -27,7 +27,7 @@ function SubscriptionProbe({
   onError,
 }: {
   identity?: string;
-  subscribe: () => Promise<() => void>;
+  subscribe: (isActive: () => boolean) => Promise<() => void>;
   onError: (error: unknown) => void;
 }) {
   useAsyncSubscription(subscribe, [identity], { label: `probe:${identity}`, onError });
@@ -71,6 +71,54 @@ describe("useAsyncSubscription", () => {
     await flushReactWork();
 
     expect(dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it("marks the subscription generation inactive immediately on unmount", async () => {
+    let isActive!: () => boolean;
+    const subscription = deferred<() => void>();
+    const tree = await mountReactTree(
+      <SubscriptionProbe
+        subscribe={(active) => {
+          isActive = active;
+          return subscription.promise;
+        }}
+        onError={vi.fn()}
+      />,
+    );
+
+    expect(isActive()).toBe(true);
+    await tree.unmount();
+    expect(isActive()).toBe(false);
+
+    subscription.resolve(vi.fn());
+    await flushReactWork();
+  });
+
+  it("keeps a cleaned StrictMode generation inactive after the next setup", async () => {
+    const generations: Array<() => boolean> = [];
+    const subscriptions: Array<Deferred<() => void>> = [];
+    const tree = await mountReactTree(
+      <StrictMode>
+        <SubscriptionProbe
+          subscribe={(isActive) => {
+            generations.push(isActive);
+            const subscription = deferred<() => void>();
+            subscriptions.push(subscription);
+            return subscription.promise;
+          }}
+          onError={vi.fn()}
+        />
+      </StrictMode>,
+    );
+
+    expect(generations).toHaveLength(2);
+    expect(generations[0]()).toBe(false);
+    expect(generations[1]()).toBe(true);
+
+    subscriptions.forEach((subscription) => subscription.resolve(vi.fn()));
+    await flushReactWork();
+    await tree.unmount();
+    expect(generations[1]()).toBe(false);
   });
 
   it("disposes every StrictMode subscription exactly once", async () => {

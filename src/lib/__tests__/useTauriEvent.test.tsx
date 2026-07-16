@@ -148,6 +148,41 @@ describe("useTauriEvent", () => {
     await tree.unmount();
   });
 
+  it("ignores a pending listener callback after unmount", async () => {
+    const onValue = vi.fn();
+    const tree = await mountReactTree(
+      <EventProbe prefix="value" onValue={onValue} />,
+    );
+    const stale = listenCalls[0];
+
+    await tree.unmount();
+    stale.handler(event("late"));
+
+    expect(onValue).not.toHaveBeenCalled();
+    stale.subscription.resolve(vi.fn());
+    await flushReactWork();
+  });
+
+  it("never reactivates the first StrictMode listener generation", async () => {
+    const onValue = vi.fn();
+    const tree = await mountReactTree(
+      <StrictMode>
+        <EventProbe prefix="value" onValue={onValue} />
+      </StrictMode>,
+    );
+
+    expect(listenCalls).toHaveLength(2);
+    listenCalls[0].handler(event("stale"));
+    listenCalls[1].handler(event("current"));
+
+    expect(onValue).toHaveBeenCalledTimes(1);
+    expect(onValue).toHaveBeenCalledWith("value:current");
+
+    listenCalls.forEach((call) => call.subscription.resolve(vi.fn()));
+    await flushReactWork();
+    await tree.unmount();
+  });
+
   it("immediately disposes a listener that resolves after unmount", async () => {
     const tree = await mountReactTree(
       <EventProbe prefix="value" onValue={vi.fn()} />,

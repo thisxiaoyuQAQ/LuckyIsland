@@ -19,9 +19,11 @@ export function useTauriEvent<T>(
   const enabled = options.enabled ?? true;
 
   useAsyncSubscription(
-    () => {
+    (isActive) => {
       if (!enabled) return Promise.resolve(() => undefined);
-      return listen<T>(eventName, (incoming) => handlerRef.current(incoming));
+      return listen<T>(eventName, (incoming) => {
+        if (isActive()) handlerRef.current(incoming);
+      });
     },
     [eventName, enabled],
     { label: `listen:${eventName}`, onError: options.onError },
