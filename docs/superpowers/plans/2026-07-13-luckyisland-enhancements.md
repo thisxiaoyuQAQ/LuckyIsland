@@ -1695,13 +1695,9 @@ Record pass/fail for: click-through behind-window clicks/restart/settings recove
 
 Record Beijing, Wuxi and district candidate; 1–7 honest days, timezone order, optional rainfall, fast switch, full offline cache, current failure, forecast failure, cross-city refusal and no-cache retry error.
 
-- [ ] **Step 5: Perform a two-version signed update bootstrap in a non-public test channel**
+- [x] **Step 5: Signed update acceptance requirement removed**
 
-First ensure `TAURI_SIGNING_PRIVATE_KEY` / password are provisioned in GitHub Secrets, an encrypted offline backup exists, and a signing smoke build proves the private key matches the committed public key. Existing v0.2.1 releases do not contain updater configuration, so they cannot retroactively auto-update: manually build/install updater-capable baseline N, then validate N → N+1.
-
-This requires user authorization and a disposable test release/repository or a separately approved test endpoint; do not point the production stable build at a prerelease channel. Build version N and N+1 with the same updater key, install N, check/download/verify/install into N+1, and confirm the Windows updater-driven restart reaches N+1. Then alter the manifest signature (or serve a test manifest/package with invalid signature) and record rejection with no bypass and N still runnable. Do not expose the private key or test endpoint credentials in the doc.
-
-If no authorized test channel exists, leave module 11 as `🚧` with “真实签名升级/坏签名拒绝待验收”; do not mark complete.
+2026-07-16 用户取消非公开测试通道的 N → N+1 与坏签名人工验收需求。保留 updater 验签实现、签名失败不可绕过的安全规则，以及 CI/本机发布资产自动化校验；不再把创建临时端点、测试 Release 或本机安装两版本作为模块 11 完成门禁。
 
 - [ ] **Step 6: Update user/release documentation**
 
