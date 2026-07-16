@@ -86,7 +86,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDM3M0YyOTlBQTAwNEExQ0UKUldUT29RU2dtaWsvTjIzM0R1YnlvRDNDUnFQcFdLbldFMytSK3N3TnJOakRFUG5Jbi9idmlrN0IK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDIwRTM2OUJBMEQxMzkzQjUKUldTMWt4TU51bW5qSUFuUGhFdE5QS3BLWnpNcEpqc3VKbXgybldYNlJTRXRRK3YrQTdaSk9Pay8K",
       "endpoints": [
         "https://github.com/thisxiaoyuQAQ/LuckyIsland/releases/latest/download/latest.json"
       ],
