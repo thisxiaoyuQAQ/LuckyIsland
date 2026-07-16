@@ -1,5 +1,5 @@
-import { useEffect, useState, type ReactNode } from "react";
-import { listen } from "@tauri-apps/api/event";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useTauriEvent } from "@/lib/useTauriEvent";
 import { Switch } from "@/components/ui/switch";
 import {
   windowClickThroughSet,
@@ -64,6 +64,13 @@ export function GeneralPanel() {
   const [monitorSwitching, setMonitorSwitching] = useState(false);
   const [monitorError, setMonitorError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const monitorLifecycleGeneration = useRef(0);
+
+  useEffect(() => {
+    return () => {
+      monitorLifecycleGeneration.current += 1;
+    };
+  }, []);
 
   useEffect(() => {
     let disposed = false;
@@ -208,45 +215,29 @@ export function GeneralPanel() {
 
   // 后端运行时显示器变化（副屏热插拔）emit monitor://changed，
   // 同步更新本页的回退提示与可用显示器列表。
-  useEffect(() => {
-    let disposed = false;
-    let un: (() => void) | undefined;
-    void listen<MonitorSelectionState>("monitor://changed", (event) => {
-      if (disposed) return;
-      setMonitorState(event.payload);
-      void monitorList().then((list) => {
-        if (!disposed) setMonitors(list);
-      });
-    }).then((fn) => {
-      if (disposed) fn();
-      else un = fn;
-    });
-    return () => {
-      disposed = true;
-      un?.();
-    };
-  }, []);
+  useTauriEvent<MonitorSelectionState>("monitor://changed", (event) => {
+    setMonitorState(event.payload);
+    setMonitorError(null);
+    const generation = monitorLifecycleGeneration.current;
+    void monitorList().then(
+      (list) => {
+        if (generation === monitorLifecycleGeneration.current) setMonitors(list);
+      },
+      (error: unknown) => {
+        if (generation === monitorLifecycleGeneration.current) {
+          setMonitorError(error instanceof Error ? error.message : String(error));
+        }
+      },
+    );
+  });
 
   // 策略事件可由岛窗口、全局热键或配置导入触发；设置窗口保持实时一致。
-  useEffect(() => {
-    let disposed = false;
-    let un: (() => void) | undefined;
-    void listen<WindowPolicySnapshot>("window://policy-changed", (event) => {
-      if (!disposed) {
-        setClickThrough(event.payload.clickThrough);
-        setHoverExpand(event.payload.hoverExpand);
-        setHideInFullscreen(event.payload.hideInFullscreen);
-        setFullscreenSupported(event.payload.fullscreenSupported);
-      }
-    }).then((fn) => {
-      if (disposed) fn();
-      else un = fn;
-    });
-    return () => {
-      disposed = true;
-      un?.();
-    };
-  }, []);
+  useTauriEvent<WindowPolicySnapshot>("window://policy-changed", (event) => {
+    setClickThrough(event.payload.clickThrough);
+    setHoverExpand(event.payload.hoverExpand);
+    setHideInFullscreen(event.payload.hideInFullscreen);
+    setFullscreenSupported(event.payload.fullscreenSupported);
+  });
 
   const primaryMonitor = monitors.find((monitor) => monitor.isPrimary);
   const selectedMonitorAvailable = monitors.some(
