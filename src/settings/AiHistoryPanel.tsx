@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useTauriEvent } from "@/lib/useTauriEvent";
 import { Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Row, selectCls } from "./shared";
@@ -32,6 +32,13 @@ export function AiHistoryPanel() {
   const [resetting, setResetting] = useState(false);
   const [providerSwitching, setProviderSwitching] = useState(false);
   const [providerError, setProviderError] = useState<string | null>(null);
+  const lifecycleGeneration = useRef(0);
+
+  useEffect(() => {
+    return () => {
+      lifecycleGeneration.current += 1;
+    };
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -54,34 +61,27 @@ export function AiHistoryPanel() {
   }, []);
 
   // AI 对话后（ai://action-result）自动刷新历史
-  useEffect(() => {
-    let un: (() => void) | undefined;
-    listen("ai://action-result", () => {
-      void aiHistoryList(500).then(setMessages);
-    }).then((fn) => {
-      un = fn;
-    });
-    return () => un?.();
-  }, []);
+  useTauriEvent("ai://action-result", () => {
+    const generation = lifecycleGeneration.current;
+    void aiHistoryList(500).then(
+      (history) => {
+        if (generation === lifecycleGeneration.current) setMessages(history);
+      },
+      (error: unknown) => {
+        if (generation === lifecycleGeneration.current) {
+          console.error("刷新 AI 对话历史失败", error);
+        }
+      },
+    );
+  });
 
-  useEffect(() => {
-    let disposed = false;
-    let unlisten: (() => void) | undefined;
-    void listen<string>("ai://provider-changed", (event) => {
-      const next = event.payload;
-      if (!disposed && (next === "claude-cli" || next === "codex-cli" || next === "chat-api")) {
-        setProvider(next);
-        setProviderError(null);
-      }
-    }).then((fn) => {
-      if (disposed) fn();
-      else unlisten = fn;
-    });
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
-  }, []);
+  useTauriEvent<string>("ai://provider-changed", (event) => {
+    const next = event.payload;
+    if (next === "claude-cli" || next === "codex-cli" || next === "chat-api") {
+      setProvider(next);
+      setProviderError(null);
+    }
+  });
 
   const filtered = useMemo(() => {
     const q = query.trim();
