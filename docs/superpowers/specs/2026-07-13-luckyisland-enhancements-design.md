@@ -434,48 +434,9 @@ channel = stable (不可配置)
 - Tauri updater signature 认证更新源和完整性，不等同于 Windows Authenticode。没有代码签名证书时仍可能出现 SmartScreen，文档不得声称已消除该提示。
 - 公钥轮换需要独立迁移设计；私钥丢失不是简单替换配置即可恢复。
 
-## 12. 双发布流程
+## 12. 双发布流程（已取消）
 
-### 12.1 GitHub Actions 主路径
-
-新增 Windows Release workflow，仅由 `v*` 标签触发：
-
-1. 校验标签与 `package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json` 四处版本一致；
-2. 安装固定 Node、pnpm、Rust 和 Tauri 工具；
-3. 执行前端测试、TypeScript 检查、前端构建、Rust 单元测试和必要构建检查；
-4. 构建 Windows x86_64 NSIS 与 updater artifacts；
-5. 使用 GitHub Secrets 中的 Tauri 私钥签名；
-6. 生成并上传 NSIS 安装包、更新包、`.sig`、`latest.json`；
-7. 创建非 draft、非 prerelease 的稳定 Release；
-8. 任一测试、签名或资产校验失败则不发布不完整版本。
-
-Secrets：
-
-```text
-TAURI_SIGNING_PRIVATE_KEY
-TAURI_SIGNING_PRIVATE_KEY_PASSWORD
-```
-
-workflow 权限最小化到构建所需的 read 和 Release 写入权限；第三方 Action 固定到可信版本或 commit。
-
-### 12.2 本机备用路径
-
-仓库提供维护者脚本，和 CI 使用同一资产与校验规则：
-
-1. 必须在干净 `main`，确认标签/版本；
-2. 运行同一测试集合；
-3. 从进程环境或系统安全存储读取同一 Tauri 私钥；
-4. 构建签名更新产物；
-5. 校验 `latest.json` 版本、平台 URL、签名和资产完整性；
-6. 用 `gh release create` 发布完整集合；
-7. 发布后重新下载 `latest.json` 并验证结构和 URL。
-
-约束：
-
-- CI 是正式主路径，本机仅用于 CI 故障或紧急维护；
-- 同一版本不能由两条路径并发发布；
-- 私钥不放 `.env`、仓库目录、Artifact、Release 或日志；
-- 私钥加密备份和恢复流程写入维护文档。
+2026-07-19 用户取消「双发布流程」并行任务。现状保留 `.github/workflows/release.yml`（CI 单路径）与 `docs/releasing.md`（维护者发布文档，含紧急本机备用）的写实描述；不再把「CI 主路径 + 本机备用路径并行」作为独立设计目标或后续承诺。updater 验签实现与签名失败不可绕过的安全规则不受影响。
 
 ## 13. 七日天气
 
@@ -681,7 +642,7 @@ hotkeys:toggle_click_through  未绑定
 
 更新：
 
-- 自动化覆盖更新状态机、签名资产完整性和发布流程安全门禁；
+- 自动化覆盖更新状态机、签名资产完整性安全门禁；
 - 签名失败不得提供绕过入口；
 - Release 备用链接可用。
 

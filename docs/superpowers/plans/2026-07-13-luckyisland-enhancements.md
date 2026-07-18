@@ -1285,108 +1285,9 @@ git add src-tauri/tauri.conf.json scripts/check-version.mjs scripts/validate-upd
 git commit -m "build(release): 配置签名更新资产校验"
 ```
 
-### Task 12: Add the GitHub Actions main release path and local fallback
+### Task 12: GitHub Actions 主发布路径与本机备用（已取消）
 
-**Files:**
-- Create: `.github/workflows/release.yml`
-- Create: `scripts/release-local.ps1`
-- Create: `docs/releasing.md`
-- Modify: `README.md`
-- Modify/Test: `scripts/__tests__/release-scripts.test.ts` — workflow safety assertions
-- Test: local script dry-run
-
-**Interfaces:**
-- Precondition: Task 11 Step 5 completed with a real committed public key and `createUpdaterArtifacts=true`; otherwise Task 12 is blocked.
-- CI trigger: pushed tag `v*` only; `contents: write`; Windows x86_64 stable release.
-- Local script: `./scripts/release-local.ps1 -Tag vX.Y.Z` dry-run; `-Publish` is outward-facing and requires separate user authorization.
-
-- [ ] **Step 1: Write the workflow with pinned action commits**
-
-Use exact commits recorded 2026-07-13:
-
-```yaml
-name: release
-on:
-  push:
-    tags: ["v*"]
-permissions:
-  contents: write
-jobs:
-  release-windows:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
-        with: { fetch-depth: 0 }
-      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
-        with: { version: 10.15.0 }
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
-        with: { node-version: 22, cache: pnpm }
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
-        with: { toolchain: 1.92.0, targets: x86_64-pc-windows-msvc }
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-        with: { workspaces: "./src-tauri -> target" }
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm release:check-version -- --tag $env:GITHUB_REF_NAME
-      - run: pnpm test
-      - run: pnpm exec tsc --noEmit
-      - run: pnpm build
-      - run: cargo test --manifest-path src-tauri/Cargo.toml --lib --locked
-      - uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        with:
-          tagName: v__VERSION__
-          releaseName: LuckyIsland v__VERSION__
-          generateReleaseNotes: true
-          releaseDraft: true
-          prerelease: false
-          uploadUpdaterJson: true
-          uploadUpdaterSignatures: true
-          updaterJsonPreferNsis: true
-```
-
-After tauri-action, use its `releaseId`/`artifactPaths` outputs or `gh release download "$env:GITHUB_REF_NAME" --dir release-assets`. Save `gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$env:GITHUB_REF_NAME"` to `release-metadata.json`, then run `pnpm release:validate-assets -- --dir release-assets --version <validated-version> --tag "$env:GITHUB_REF_NAME" --release-metadata release-metadata.json`. The workflow is unconditionally draft-first: keep `releaseDraft: true`; while validating the draft, the metadata validator expects `draft=true, prerelease=false` in a dedicated `--expected-draft true` mode, then `gh release edit ... --draft=false --latest`; fetch metadata again and rerun with `--expected-draft false`. Any failed test, signing step, upload or pre-publish validator leaves a draft rather than publishing an incomplete stable Release.
-
-- [ ] **Step 2: Add a static workflow safety test**
-
-Extend `scripts/__tests__/release-scripts.test.ts` to read `.github/workflows/release.yml` as text and assert it contains secret references but no literal private key, `releaseDraft: true`, `prerelease: false`, only a `v*` tag trigger, asset validation before `gh release edit`, and no branch/workflow-dispatch publication trigger. Missing secrets naturally fail Tauri signing; do not add fallbacks.
-
-- [ ] **Step 3: Implement local fallback with safe default**
-
-`release-local.ps1` must:
-
-1. reject non-Windows, non-`main`, dirty tree, missing/incorrect `v*` tag, or missing signing env;
-2. call the same version/test/tsc/build/cargo test commands;
-3. run `pnpm tauri build -- --target x86_64-pc-windows-msvc`;
-4. locate NSIS + `.sig`; generate/upload `latest.json` using the same tauri-action-compatible schema (prefer invoking a checked-in helper rather than hand-building in PowerShell);
-5. validate before any GitHub write;
-6. print intended `gh release create --draft ...` in dry-run;
-7. only with `-Publish`, and only after a separate user approval, create draft, upload complete asset set, re-download/validate, then publish.
-
-Same tag existing, any incomplete asset, or failing validation aborts; do not overwrite a release silently.
-
-- [ ] **Step 4: Document key operations and trust boundaries**
-
-`docs/releasing.md` covers public/private key roles, encrypted offline backup, GitHub Secrets names, rotation requiring a separate migration design, CI primary/local emergency fallback, no concurrent publication, SmartScreen/AuthentiCode distinction, and rollback/no partial release behavior.
-
-- [ ] **Step 5: Verify without publishing**
-
-```powershell
-./scripts/release-local.ps1 -Tag v0.2.1
-```
-
-Expected: dry-run reaches checks and prints intended operations; if the working tree is dirty because implementation is uncommitted, it must stop with a precise message (unit-test helpers separately with fixture repo state). Do not pass `-Publish` in implementation verification.
-
-Also run YAML parser/static checks, all tests, diff-check.
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add .github/workflows/release.yml scripts/release-local.ps1 scripts/__tests__/release-scripts.test.ts docs/releasing.md README.md
-git commit -m "ci(release): 增加稳定更新双发布流程"
-```
+2026-07-19 用户取消「双发布流程」并行任务；本 Task 不再作为模块 11 的设计目标或后续承诺。仓库中已存在的 `.github/workflows/release.yml`、`scripts/release-local.ps1`、`docs/releasing.md` 均为历史实现产物保留写实描述，不作为「CI 主路径 + 本机备用并行」设计在维护。
 
 ---
 
@@ -1749,14 +1650,14 @@ Task 1 dependency baseline
   → Task 9 about/diagnostics
   → Task 10 updater state machine
   → Task 11 signing config + validators (real public-key gate)
-  → Task 12 CI/local release paths
+  → Task 11 updater signing-config
   → Task 13 supplier probe/model
   → Task 14 cache/degradation
   → Task 15 weather UI/race protection
   → Task 16 full/signed/manual acceptance
 ```
 
-Task 13–15 are architecturally independent of updater Tasks 9–12 after window policy stabilizes, but this project follows the user's lite preference: one main Agent executes serially; at most one read-only reviewer is used at phase/review boundaries, not a large fan-out.
+Task 13–15 are architecturally independent of updater Tasks 9–11 after window policy stabilizes, but this project follows the user's lite preference: one main Agent executes serially; at most one read-only reviewer is used at phase/review boundaries, not a large fan-out.
 
 Each task is a fresh review gate. Do not batch commits across tasks. Before every commit, inspect `git diff --cached --name-only` so existing user changes never enter the commit.
 
