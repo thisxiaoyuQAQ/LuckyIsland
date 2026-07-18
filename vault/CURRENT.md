@@ -1,8 +1,8 @@
 # 当前执行入口
 
-> 当前阶段：模块 10「审计整改」/ REF-10B-01 统一 Tauri event 生命周期
-> 状态：🚧 NotifyPage 批已完成并通过统一门禁；下一业务批待单独只读评估
-> 更新时间：2026-07-15
+> 当前阶段：模块 10「审计整改」/ REF-10B 低风险重构
+> 状态：🚧 REF-10B-01/02/04/05 已完成并通过统一门禁；下一项 REF-10B-03 轻量拆分 App（依赖页面 registry 契约测试）
+> 更新时间：2026-07-18
 > 总控：[10-审计整改.md](./10-审计整改.md)
 > 执行单：[10b-工程基线与低风险重构.md](./10b-工程基线与低风险重构.md)
 
@@ -20,46 +20,26 @@
 - BASE-10B-01：✅ 统一验证入口与严格门禁。
 - BASE-10B-02：✅ Node + happy-dom React 生命周期测试层。
 - BASE-10B-03：✅ Node/pnpm/Rust 声明、registry 诊断、原生 DLL 来源与默认 release 打包前置检查。
+- REF-10B-01：✅ 统一 Tauri event 生命周期；共享 hook + 全量业务 listener 分批迁移收口。
+- REF-10B-02：✅ 共享主题同步（批次 B1）；theme.ts + 三入口接入。
+- REF-10B-04：✅ SQLite 版本化 migration（批次 B3）；user_version + 事务 + 失败回滚 + 防降级。
+- REF-10B-05：✅ 日志脱敏轮转（批次 B4）；tracing 设施 + 启动/退出接入。
 - 插件系统阶段 0：✅ 威胁模型与产品规则已完成；阶段 1 未立项，禁止直接创建插件运行时代码。
 - 模块 11：Task 1～4 已完成，继续暂停于 Task 5。
 
-## BASE-10B-03 最终证据
+## 2026-07-18 并行批次 B1/B3/B4 证据
 
-- DLL checker RED：实现模块缺失；GREEN fixture 4/4（完整、缺文件、空文件、缺映射）。
-- `pnpm check:native-runtime`：默认 release target 的 4 个 Tauri 映射源 DLL 均存在且非空。
-- 声明环境与实机一致：Node 22、pnpm 10.15.0、Rust 1.92.0 stable-msvc。
-- 最新连续 `pnpm verify`：TypeScript、前端 14 files / 127 tests、三入口 build、Rust fmt、严格 Clippy、Rust lib 74/74、cargo check 全部 exit 0。
-- 未重新打包或安装；不声称 NSIS 内部清单、安装后 DLL 加载、PATH 或真机语音通过。
+三路按方案二并行规划、主 Agent 串行 TDD 实施，各自独立 verify。均未提交、未 push。
 
-## REF-10B-01 当前证据
-
-- 共享层：新增 `useAsyncSubscription` / `useTauriEvent`，专项 2 files / 17 tests；独立审查修复未提交 render ref 泄漏和旧订阅错误误归，复核无新增 finding。
-- App 批：settings、window-state、notify 三类订阅已迁移；App 集成测试 4/4 覆盖通知稳定订阅、最新页面设置、window payload、卸载晚 resolve 与 StrictMode。
-- App 批独立审查补强 blur/opacity 与旧字符串 payload 的可观察断言后，复核无 finding；并行 hover `enable()` hunk完整保留。
-- Stock 批：只迁移 `stock://tick`、`config://imported` 与 `stock:red_up` settings 三类订阅；初始 `stock_get`、compact-symbol 和 setting 读取边界保持不变。
-- Stock 集成测试 RED 为 7 项中 3 项失败，准确复现晚 resolve cleanup、StrictMode cleanup 和 rejection 诊断缺口；GREEN 专项 Stock + 共享 hook 为 3 files / 24 tests，TypeScript exit 0。
-- Stock 批独立只读审查无可执行 finding；确认行为保持、稳定 listener、两种 cleanup 时序、StrictMode 精确清理和 scoped rejection 断言有效。
-- NotifyPage 批：只迁移 `notify://incoming` 与 `notify:filter_sources` settings 两类订阅；初始 history/settings Promise、module-scope loader、prepend-before-filter、已读、清理、分页与动画行为保持不变。
-- NotifyPage 集成测试 RED 为 8 项中 3 项失败，准确复现晚 resolve cleanup、StrictMode cleanup 和 rejection 诊断缺口；GREEN 加强后 NotifyPage 9/9，NotifyPage + 共享 hook 为 3 files / 26 tests，TypeScript exit 0。
-- NotifyPage 批独立审查发现初始 setting 读取缺少可观察证明；补强 key、次数和过滤结果后复核无可执行 finding。既有“初始 settings 晚 resolve 覆盖更新事件”竞态未在本批处理。
-- 最新完整 `pnpm verify` 使用独立 `.superpowers/target-check`，TypeScript、前端 24 files / 199 tests、三入口 build、Rust fmt、严格 Clippy、Rust lib 94/94、cargo check 全部 exit 0；build 仅保留既有主 chunk 超过 500 kB 警告。
-- 未迁移 Weather、Terminal、设置窗口或 AI listener；未处理 Stock 或 NotifyPage 初始读取的晚到 Promise；未做 GUI、安装态或真机 Tauri 验证。
-
-## 唯一下一动作
-
-**NotifyPage 批已完成并通过统一门禁。下一候选按既定顺序是 Weather listener 迁移；实施前需单独只读评估 config-import、settings、refresh timer 与请求并发/晚到边界，不连带迁移 Terminal。**
-
-## REF-10B-01 边界
-
-- 先保护“卸载前 resolve 正常 cleanup”和“卸载后 resolve 立即 cleanup”；
-- handler 必须读取最新闭包，不因订阅重建造成事件空窗；
-- Promise rejection 统一处理但不吞掉可诊断错误；
-- 分批迁移，单批只改一类入口；
-- 不借机拆 App、改主题同步、改变导航/窗口策略或让隐藏页面 keep-alive；
-- 模块 11 与插件阶段 1 均不在本项实施范围。
+- **B1（REF-10B-02 主题）**：新增 `src/lib/theme.ts`（parseThemeMode/systemTheme/resolveTheme/applyTheme/startThemeSync/useTheme）；`settings/main.tsx`、`ai-palette/main.tsx` 两份重复 bootstrap 收敛为 `startThemeSync`；`App.tsx` 改用 `useTheme` + `parseThemeMode`。theme 专项 21 + useTheme 专项 5；verify 前端 35 files / 341 tests、Rust lib 119/1 全绿。
+- **B3（REF-10B-04 migration）**：`storage/mod.rs` 收敛为 `PRAGMA user_version` 版本化迁移（v1 基线 + v2 priority），每版事务执行、失败回滚不前进、断点续传、拒绝降级。migration_tests 7/7；verify 前端 341、Rust lib 126/1 全绿。
+- **B4（REF-10B-05 日志）**：新增 `logging.rs`（redact 脱敏 + RedactingWriter + 按天轮转 init_logging，EnvFilter 默认 info、Release 可定位）；接入启动/退出，guard 经 resource 持有到退出 flush；新增 tracing/tracing-subscriber/tracing-appender 依赖（lock 纯新增）。logging 7/7；verify 前端 341、Rust lib 133/1 全绿。
+- 三窗口主题真机同步、真实用户库迁移、Release 日志轮转/密钥扫描均未做真机/安装态验收（归 RUN-10C）。
 
 ## 当前环境约束
 
-- 工作区包含模块 10/11/12 大量未提交改动，不得覆盖或清理。
+- 工作区包含模块 10/11/12 大量未提交改动，不得覆盖或清理；本批 B1/B3/B4 改动同样未提交。
 - Cargo 验证使用独立 `CARGO_TARGET_DIR`；正式 Tauri 打包使用默认 target。
+- **verify 需带 env**：`SHERPA_ONNX_LIB_DIR=<绝对路径>/lib` + `CARGO_HTTP_CHECK_REVOKE=false`（新增 tracing 触发 sherpa 重链时相对 LIBPATH 解析失败、离线 SSL 撤销检查失败，均为环境约束）。
 - GUI、安装态和真机证据必须与自动化分开记录。
+
