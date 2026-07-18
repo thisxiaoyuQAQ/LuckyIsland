@@ -6,18 +6,18 @@ import { cn } from "@/lib/utils";
 import { useReorder } from "@/lib/useReorder";
 import { CITIES } from "@/components/pages/weather/cities";
 import { invoke } from "@tauri-apps/api/core";
-import { KEYS, parseRefreshMin, settingGet, settingSetEmit } from "@/lib/settings";
+import { KEYS, parseRefreshMin, settingGet } from "@/lib/settings";
 import {
   parseWeatherCommandError,
   type WeatherLocation,
 } from "@/components/pages/weather/model";
+import { useDraftField } from "./useDraftField";
 
 /** 天气页配置：刷新间隔 + 城市管理（F9.8，与天气页同步） */
 export function WeatherPanel() {
-  const [min, setMin] = useState(10);
+  const [initialMin, setInitialMin] = useState<number | null>(null);
   const [cities, setCities] = useState<string[]>([]);
   const [draft, setDraft] = useState("");
-  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [candidates, setCandidates] = useState<{ city: string; values: WeatherLocation[] } | null>(null);
 
@@ -51,9 +51,8 @@ export function WeatherPanel() {
   useEffect(() => {
     (async () => {
       const m = await settingGet(KEYS.weatherRefreshMin);
-      setMin(parseRefreshMin(m));
+      setInitialMin(parseRefreshMin(m));
       await refreshCities();
-      setLoading(false);
     })();
   }, [refreshCities]);
 
@@ -88,9 +87,66 @@ export function WeatherPanel() {
     await refreshCities();
   };
 
-  if (loading) {
+  if (initialMin === null) {
     return <p className="text-sm text-muted-foreground">加载中…</p>;
   }
+
+  return (
+    <WeatherPanelContent
+      initialMin={initialMin}
+      cities={cities}
+      draft={draft}
+      error={error}
+      candidates={candidates}
+      suggestions={suggestions}
+      overIndex={overIndex}
+      itemProps={itemProps}
+      onDraftChange={setDraft}
+      onAddCity={(c) => void addCity(c)}
+      onRemoveCity={(c) => void removeCity(c)}
+      onPickCandidate={(city, location) => void persistResolvedCity(city, location)}
+    />
+  );
+}
+
+interface WeatherPanelContentProps {
+  initialMin: number;
+  cities: string[];
+  draft: string;
+  error: string | null;
+  candidates: { city: string; values: WeatherLocation[] } | null;
+  suggestions: string[];
+  overIndex: number | null;
+  itemProps: (index: number, list: string[]) => Record<string, unknown>;
+  onDraftChange: (next: string) => void;
+  onAddCity: (city: string) => void;
+  onRemoveCity: (city: string) => void;
+  onPickCandidate: (city: string, location: WeatherLocation) => void;
+}
+
+function WeatherPanelContent(props: WeatherPanelContentProps) {
+  const {
+    initialMin,
+    cities,
+    draft,
+    error,
+    candidates,
+    suggestions,
+    overIndex,
+    itemProps,
+    onDraftChange,
+    onAddCity,
+    onRemoveCity,
+    onPickCandidate,
+  } = props;
+
+  const refreshMinField = useDraftField<number>({
+    parse: (raw) => parseRefreshMin(raw),
+    serialize: (value) => (Number.isFinite(value) && value >= 1 && value <= 1440 ? String(value) : null),
+    initial: String(initialMin),
+    settingKey: KEYS.weatherRefreshMin,
+    debounceMs: 400,
+  });
 
   return (
     <section className="flex flex-col gap-4">
@@ -101,18 +157,23 @@ export function WeatherPanel() {
         </p>
       </div>
       <Row label="自动刷新间隔" desc="单位分钟（1~1440）">
-        <input
-          type="number"
-          min={1}
-          max={1440}
-          value={min}
-          onChange={async (e) => {
-            const n = parseRefreshMin(e.target.value);
-            setMin(n);
-            await settingSetEmit(KEYS.weatherRefreshMin, String(n));
-          }}
-          className={selectCls + " w-20"}
-        />
+        <div className="flex flex-col items-end gap-1">
+          <input
+            type="number"
+            min={1}
+            max={1440}
+            value={refreshMinField.draft}
+            onChange={(e) => {
+              const n = Number(e.target.value);
+              if (Number.isFinite(n)) refreshMinField.setDraft(n);
+            }}
+            onBlur={refreshMinField.commit}
+            className={selectCls + " w-20"}
+          />
+          {refreshMinField.saveError && (
+            <p className="text-xs text-destructive">保存刷新间隔失败：{refreshMinField.saveError}</p>
+          )}
+        </div>
       </Row>
 
       <div className="flex flex-col gap-1">
@@ -123,12 +184,12 @@ export function WeatherPanel() {
         <div className="flex gap-2">
           <input
             value={draft}
-            onChange={(e) => setDraft(e.target.value)}
+            onChange={(e) => onDraftChange(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter") {
                 e.preventDefault();
-                if (suggestions.length > 0) void addCity(suggestions[0]);
-                else if (draft.trim()) void addCity(draft);
+                if (suggestions.length > 0) onAddCity(suggestions[0]);
+                else if (draft.trim()) onAddCity(draft);
               }
             }}
             placeholder="城市名"
@@ -137,8 +198,8 @@ export function WeatherPanel() {
           <Button
             size="sm"
             onClick={() => {
-              if (suggestions.length > 0) void addCity(suggestions[0]);
-              else if (draft.trim()) void addCity(draft);
+              if (suggestions.length > 0) onAddCity(suggestions[0]);
+              else if (draft.trim()) onAddCity(draft);
             }}
           >
             <Plus className="h-3.5 w-3.5" />
@@ -151,7 +212,7 @@ export function WeatherPanel() {
                 key={c}
                 onMouseDown={(e) => {
                   e.preventDefault();
-                  void addCity(c);
+                  onAddCity(c);
                 }}
                 className="block w-full px-2.5 py-1 text-left text-xs hover:bg-accent"
               >
@@ -172,7 +233,7 @@ export function WeatherPanel() {
                 size="sm"
                 variant="outline"
                 className="h-7 text-xs"
-                onClick={() => void persistResolvedCity(candidates.city, location)}
+                onClick={() => onPickCandidate(candidates.city, location)}
               >
                 {[location.displayName, location.province, location.country].filter(Boolean).join(" / ")}
               </Button>
@@ -197,7 +258,7 @@ export function WeatherPanel() {
               onDragStart={(e) => e.preventDefault()}
             >
               <button
-                onClick={() => void removeCity(c)}
+                onClick={() => onRemoveCity(c)}
                 aria-label="删除"
                 className="text-muted-foreground transition-colors hover:text-destructive"
               >

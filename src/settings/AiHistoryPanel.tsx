@@ -6,6 +6,7 @@ import { Row, selectCls } from "./shared";
 import { cn } from "@/lib/utils";
 import { aiClearHistory, aiHistoryList, aiResetPosition, aiSwitchProvider, type Message, type ProviderKind } from "@/lib/ai";
 import { settingGet, settingSetEmit } from "@/lib/settings";
+import { useDraftField } from "./useDraftField";
 
 const PROVIDERS: ReadonlyArray<{ value: ProviderKind; label: string }> = [
   { value: "claude-cli", label: "Claude CLI" },
@@ -25,13 +26,11 @@ export function AiHistoryPanel() {
   const [query, setQuery] = useState("");
   const [provider, setProvider] = useState<ProviderKind>("claude-cli");
   const [thinking, setThinking] = useState("none");
-  const [chatBaseUrl, setChatBaseUrl] = useState("");
-  const [chatApiKey, setChatApiKey] = useState("");
-  const [chatModel, setChatModel] = useState("");
   const [loading, setLoading] = useState(true);
   const [resetting, setResetting] = useState(false);
   const [providerSwitching, setProviderSwitching] = useState(false);
   const [providerError, setProviderError] = useState<string | null>(null);
+  const [initialChat, setInitialChat] = useState<{ baseUrl: string; apiKey: string; model: string } | null>(null);
   const lifecycleGeneration = useRef(0);
 
   useEffect(() => {
@@ -53,9 +52,11 @@ export function AiHistoryPanel() {
       if (p === "claude-cli" || p === "codex-cli" || p === "chat-api") setProvider(p);
       if (t && ["none", "low", "medium", "high"].includes(t)) setThinking(t);
       setMessages(h);
-      setChatBaseUrl(baseUrl ?? "");
-      setChatApiKey(apiKey ?? "");
-      setChatModel(model ?? "");
+      setInitialChat({
+        baseUrl: baseUrl ?? "",
+        apiKey: apiKey ?? "",
+        model: model ?? "",
+      });
       setLoading(false);
     })();
   }, []);
@@ -83,12 +84,6 @@ export function AiHistoryPanel() {
     }
   });
 
-  const filtered = useMemo(() => {
-    const q = query.trim();
-    if (!q) return messages;
-    return messages.filter((m) => m.content.includes(q));
-  }, [messages, query]);
-
   const clear = async () => {
     await aiClearHistory();
     setMessages([]);
@@ -113,22 +108,94 @@ export function AiHistoryPanel() {
     setThinking(v);
     await settingSetEmit("ai:thinking", v);
   };
-  const changeChatBaseUrl = async (v: string) => {
-    setChatBaseUrl(v);
-    await settingSetEmit("ai:chat_api_base_url", v);
-  };
-  const changeChatApiKey = async (v: string) => {
-    setChatApiKey(v);
-    await settingSetEmit("ai:chat_api_key", v);
-  };
-  const changeChatModel = async (v: string) => {
-    setChatModel(v);
-    await settingSetEmit("ai:chat_api_model", v);
-  };
 
-  if (loading) {
+  if (loading || !initialChat) {
     return <p className="text-sm text-muted-foreground">加载中…</p>;
   }
+
+  return (
+    <AiHistoryPanelContent
+      messages={messages}
+      query={query}
+      provider={provider}
+      thinking={thinking}
+      initialChat={initialChat}
+      providerSwitching={providerSwitching}
+      providerError={providerError}
+      resetting={resetting}
+      onQueryChange={setQuery}
+      onClear={() => void clear()}
+      onProviderChange={(v) => void changeProvider(v)}
+      onThinkingChange={(v) => void changeThinking(v)}
+      onResetPosition={async () => {
+        setResetting(true);
+        try {
+          await aiResetPosition();
+        } finally {
+          setResetting(false);
+        }
+      }}
+    />
+  );
+}
+
+interface AiHistoryPanelContentProps {
+  messages: Message[];
+  query: string;
+  provider: ProviderKind;
+  thinking: string;
+  initialChat: { baseUrl: string; apiKey: string; model: string };
+  providerSwitching: boolean;
+  providerError: string | null;
+  resetting: boolean;
+  onQueryChange: (value: string) => void;
+  onClear: () => void;
+  onProviderChange: (value: ProviderKind) => void;
+  onThinkingChange: (value: string) => void;
+  onResetPosition: () => Promise<void>;
+}
+
+function AiHistoryPanelContent(props: AiHistoryPanelContentProps) {
+  const {
+    messages,
+    query,
+    provider,
+    thinking,
+    initialChat,
+    providerSwitching,
+    providerError,
+    resetting,
+    onQueryChange,
+    onClear,
+    onProviderChange,
+    onThinkingChange,
+    onResetPosition,
+  } = props;
+
+  const baseUrlField = useDraftField<string>({
+    parse: (raw) => raw ?? "",
+    serialize: (value) => value,
+    initial: initialChat.baseUrl,
+    settingKey: "ai:chat_api_base_url",
+  });
+  const apiKeyField = useDraftField<string>({
+    parse: (raw) => raw ?? "",
+    serialize: (value) => value,
+    initial: initialChat.apiKey,
+    settingKey: "ai:chat_api_key",
+  });
+  const modelField = useDraftField<string>({
+    parse: (raw) => raw ?? "",
+    serialize: (value) => (value.trim() === "" ? null : value),
+    initial: initialChat.model,
+    settingKey: "ai:chat_api_model",
+  });
+
+  const filtered = useMemo(() => {
+    const q = query.trim();
+    if (!q) return messages;
+    return messages.filter((m) => m.content.includes(q));
+  }, [messages, query]);
 
   return (
     <section className="flex flex-col gap-4">
@@ -141,7 +208,7 @@ export function AiHistoryPanel() {
           className={selectCls}
           value={provider}
           disabled={providerSwitching}
-          onChange={(e) => void changeProvider(e.target.value as ProviderKind)}
+          onChange={(e) => onProviderChange(e.target.value as ProviderKind)}
         >
           {PROVIDERS.map((o) => (
             <option key={o.value} value={o.value}>
@@ -155,7 +222,7 @@ export function AiHistoryPanel() {
         <select
           className={selectCls}
           value={thinking}
-          onChange={(e) => void changeThinking(e.target.value)}
+          onChange={(e) => onThinkingChange(e.target.value)}
         >
           {THINKING.map((o) => (
             <option key={o.value} value={o.value}>
@@ -168,28 +235,40 @@ export function AiHistoryPanel() {
         <>
           <Row label="Base URL" desc="OpenAI 兼容接口地址，不含 /chat/completions，如 https://api.openai.com/v1">
             <input
-              value={chatBaseUrl}
-              onChange={(e) => void changeChatBaseUrl(e.target.value)}
+              value={baseUrlField.draft}
+              onChange={(e) => baseUrlField.setDraft(e.target.value)}
+              onBlur={baseUrlField.commit}
               placeholder="https://api.openai.com/v1"
               className={selectCls + " w-56"}
             />
+            {baseUrlField.saveError && (
+              <p className="mt-1 text-xs text-destructive">保存 Base URL 失败:{baseUrlField.saveError}</p>
+            )}
           </Row>
           <Row label="API Key" desc="本地无鉴权服务（如 Ollama）可留空">
             <input
               type="password"
-              value={chatApiKey}
-              onChange={(e) => void changeChatApiKey(e.target.value)}
+              value={apiKeyField.draft}
+              onChange={(e) => apiKeyField.setDraft(e.target.value)}
+              onBlur={apiKeyField.commit}
               placeholder="sk-…"
               className={selectCls + " w-56"}
             />
+            {apiKeyField.saveError && (
+              <p className="mt-1 text-xs text-destructive">保存 API Key 失败:{apiKeyField.saveError}</p>
+            )}
           </Row>
           <Row label="模型" desc="如 gpt-4o-mini / llama3 / deepseek-chat">
             <input
-              value={chatModel}
-              onChange={(e) => void changeChatModel(e.target.value)}
+              value={modelField.draft}
+              onChange={(e) => modelField.setDraft(e.target.value)}
+              onBlur={modelField.commit}
               placeholder="gpt-3.5-turbo"
               className={selectCls + " w-56"}
             />
+            {modelField.saveError && (
+              <p className="mt-1 text-xs text-destructive">保存模型失败:{modelField.saveError}</p>
+            )}
           </Row>
         </>
       )}
@@ -201,14 +280,7 @@ export function AiHistoryPanel() {
           size="sm"
           variant="outline"
           disabled={resetting}
-          onClick={async () => {
-            setResetting(true);
-            try {
-              await aiResetPosition();
-            } finally {
-              setResetting(false);
-            }
-          }}
+          onClick={() => void onResetPosition()}
         >
           重置位置
         </Button>
@@ -221,7 +293,7 @@ export function AiHistoryPanel() {
       <Row label="搜索" desc="按内容过滤">
         <input
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          onChange={(e) => onQueryChange(e.target.value)}
           placeholder="搜索历史…"
           className={selectCls + " w-40"}
         />
@@ -231,7 +303,7 @@ export function AiHistoryPanel() {
         <Button
           size="sm"
           variant="ghost"
-          onClick={() => void clear()}
+          onClick={onClear}
           disabled={messages.length === 0}
         >
           <Trash2 className="h-3.5 w-3.5" />

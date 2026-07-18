@@ -12,6 +12,7 @@ import {
   settingSetEmit,
   type Shortcut,
 } from "@/lib/settings";
+import { useDraftField } from "./useDraftField";
 
 const SHELL_OPTIONS = [
   { value: "default", label: "PowerShell 7（默认）" },
@@ -21,11 +22,9 @@ const SHELL_OPTIONS = [
 
 /** 终端页配置：默认 shell + 字号 + 自定义快捷命令 */
 export function TerminalPanel() {
-  const [shell, setShell] = useState("default");
-  const [fontSize, setFontSize] = useState(13);
+  const [initial, setInitial] = useState<{ shell: string; fontSize: number } | null>(null);
   const [shortcuts, setShortcuts] = useState<Shortcut[]>(parseShortcuts(null));
   const [draft, setDraft] = useState({ name: "", command: "", cwd: "" });
-  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     (async () => {
@@ -34,10 +33,11 @@ export function TerminalPanel() {
         settingGet(KEYS.terminalFontSize),
         settingGet(KEYS.terminalShortcuts),
       ]);
-      if (s) setShell(s);
-      setFontSize(parseFontSize(fs));
+      setInitial({
+        shell: s ?? "default",
+        fontSize: parseFontSize(fs),
+      });
       setShortcuts(parseShortcuts(sc));
-      setLoading(false);
     })();
   }, []);
 
@@ -62,9 +62,62 @@ export function TerminalPanel() {
     await persistShortcuts(shortcuts.filter((_, j) => j !== i));
   };
 
-  if (loading) {
+  if (!initial) {
     return <p className="text-sm text-muted-foreground">加载中…</p>;
   }
+
+  return (
+    <TerminalPanelContent
+      initial={initial}
+      shortcuts={shortcuts}
+      draft={draft}
+      overIndex={overIndex}
+      itemProps={itemProps}
+      onDraftChange={setDraft}
+      onAddShortcut={() => void addShortcut()}
+      onRemoveShortcut={(i) => void removeShortcut(i)}
+    />
+  );
+}
+
+interface TerminalPanelContentProps {
+  initial: { shell: string; fontSize: number };
+  shortcuts: Shortcut[];
+  draft: { name: string; command: string; cwd: string };
+  overIndex: number | null;
+  itemProps: (index: number, list: Shortcut[]) => Record<string, unknown>;
+  onDraftChange: (next: { name: string; command: string; cwd: string }) => void;
+  onAddShortcut: () => void;
+  onRemoveShortcut: (index: number) => void;
+}
+
+function TerminalPanelContent(props: TerminalPanelContentProps) {
+  const {
+    initial,
+    shortcuts,
+    draft,
+    overIndex,
+    itemProps,
+    onDraftChange,
+    onAddShortcut,
+    onRemoveShortcut,
+  } = props;
+
+  const shellField = useDraftField<string>({
+    parse: (raw) => raw ?? "default",
+    serialize: (value) => value,
+    initial: initial.shell,
+    settingKey: KEYS.terminalShell,
+    debounceMs: 0,
+  });
+
+  const fontSizeField = useDraftField<number>({
+    parse: (raw) => parseFontSize(raw),
+    serialize: (value) => (Number.isFinite(value) && value >= 6 && value <= 72 ? String(value) : null),
+    initial: String(initial.fontSize),
+    settingKey: KEYS.terminalFontSize,
+    debounceMs: 400,
+  });
 
   return (
     <section className="flex flex-col gap-4">
@@ -75,34 +128,44 @@ export function TerminalPanel() {
         </p>
       </div>
       <Row label="默认 shell" desc="新建终端 tab 使用的 shell">
-        <select
-          className={selectCls}
-          value={shell}
-          onChange={async (e) => {
-            setShell(e.target.value);
-            await settingSetEmit(KEYS.terminalShell, e.target.value);
-          }}
-        >
-          {SHELL_OPTIONS.map((o) => (
-            <option key={o.value} value={o.value}>
-              {o.label}
-            </option>
-          ))}
-        </select>
+        <div className="flex flex-col items-end gap-1">
+          <select
+            className={selectCls}
+            value={shellField.draft}
+            onChange={(e) => {
+              shellField.setDraft(e.target.value);
+              shellField.commit();
+            }}
+          >
+            {SHELL_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+          {shellField.saveError && (
+            <p className="text-xs text-destructive">保存 shell 失败：{shellField.saveError}</p>
+          )}
+        </div>
       </Row>
       <Row label="字号" desc="6~72，即时生效">
-        <input
-          type="number"
-          min={6}
-          max={72}
-          value={fontSize}
-          onChange={async (e) => {
-            const n = parseFontSize(e.target.value);
-            setFontSize(n);
-            await settingSetEmit(KEYS.terminalFontSize, String(n));
-          }}
-          className={selectCls + " w-20"}
-        />
+        <div className="flex flex-col items-end gap-1">
+          <input
+            type="number"
+            min={6}
+            max={72}
+            value={fontSizeField.draft}
+            onChange={(e) => {
+              const n = Number(e.target.value);
+              if (Number.isFinite(n)) fontSizeField.setDraft(n);
+            }}
+            onBlur={fontSizeField.commit}
+            className={selectCls + " w-20"}
+          />
+          {fontSizeField.saveError && (
+            <p className="text-xs text-destructive">保存字号失败：{fontSizeField.saveError}</p>
+          )}
+        </div>
       </Row>
 
       <div className="flex flex-col gap-1">
@@ -127,62 +190,42 @@ export function TerminalPanel() {
                 {s.cwd ? ` @ ${s.cwd}` : ""}
               </div>
             </div>
-            <div
-              onPointerDown={(e) => e.stopPropagation()}
-              onDragStart={(e) => e.preventDefault()}
-            >
-              <button
-                onClick={() => void removeShortcut(i)}
-                aria-label="删除"
-                className="text-muted-foreground transition-colors hover:text-destructive"
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-              </button>
-            </div>
-          </div>
-        ))}
-        {shortcuts.length === 0 && <p className="text-xs text-muted-foreground">暂无快捷命令</p>}
-        <div className="flex flex-col gap-2 rounded-lg border border-dashed border-border/60 p-3">
-          <div className="flex gap-2">
-            <input
-              placeholder="名称"
-              value={draft.name}
-              onChange={(e) => setDraft({ ...draft, name: e.target.value })}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") void addShortcut();
-              }}
-              className={selectCls + " w-28"}
-            />
-            <input
-              placeholder="命令"
-              value={draft.command}
-              onChange={(e) => setDraft({ ...draft, command: e.target.value })}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") void addShortcut();
-              }}
-              className={selectCls + " flex-1"}
-            />
-          </div>
-          <div className="flex gap-2">
-            <input
-              placeholder="工作目录（可选）"
-              value={draft.cwd}
-              onChange={(e) => setDraft({ ...draft, cwd: e.target.value })}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") void addShortcut();
-              }}
-              className={selectCls + " flex-1"}
-            />
             <Button
-              size="sm"
-              onClick={() => void addShortcut()}
-              disabled={!draft.name.trim() || !draft.command.trim()}
+              variant="ghost"
+              size="icon-xs"
+              onClick={() => onRemoveShortcut(i)}
+              aria-label={`删除${s.name}`}
             >
-              <Plus className="h-3.5 w-3.5" />
-              添加
+              <Trash2 />
             </Button>
           </div>
-        </div>
+        ))}
+      </div>
+
+      <div className="flex flex-col gap-2 rounded-lg border border-dashed border-border/60 p-3">
+        <div className="text-sm font-medium">新增快捷命令</div>
+        <input
+          value={draft.name}
+          onChange={(e) => onDraftChange({ ...draft, name: e.target.value })}
+          placeholder="名称（如：构建）"
+          className={selectCls}
+        />
+        <input
+          value={draft.command}
+          onChange={(e) => onDraftChange({ ...draft, command: e.target.value })}
+          placeholder="命令（如：pnpm build）"
+          className={selectCls}
+        />
+        <input
+          value={draft.cwd}
+          onChange={(e) => onDraftChange({ ...draft, cwd: e.target.value })}
+          placeholder="工作目录（可选）"
+          className={selectCls}
+        />
+        <Button size="sm" onClick={onAddShortcut} disabled={!draft.name.trim() || !draft.command.trim()}>
+          <Plus className="h-3.5 w-3.5" />
+          添加
+        </Button>
       </div>
     </section>
   );
