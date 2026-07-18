@@ -16,7 +16,7 @@
 
 ## 唯一当前动作
 
-**11a.1 策略层扩展**：先写归约单元测试（Capsule/floating_ball/hover_stage 优先级与失败回滚），再接平台效果。依赖与门禁见 vault 11a「分阶段任务」。
+**11a.2 悬浮胶囊与左右分区交互**：前端外壳拆左侧内容/wheel 区与右侧 hover/action 区；两段 hover controller（generation/可取消 timer，180ms 入 / 300ms 出）；真实 240×80 原生命中区。11a.1 策略层 ✅（2026-07-19，commit `3e97619`）。
 
 ## 已完成状态
 
