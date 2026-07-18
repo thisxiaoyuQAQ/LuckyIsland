@@ -4,20 +4,26 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, LogicalSize, Manager, Monitor, PhysicalPosition, Size, State};
 
 use crate::storage::Db;
+use crate::window_policy::{self, geometry_for, IslandState};
 
 pub const MONITOR_SETTING_KEY: &str = "window:monitor";
 pub const PRIMARY_SELECTION: &str = "primary";
-pub const ISLAND_WIDTH_LOGICAL: f64 = 720.0;
 pub const TOP_GAP_PHYSICAL: i32 = 16;
 /// 偏移 KV key（07a 窗口外观）；存储为整数字符串，可为负。
 pub const OFFSET_X_KEY: &str = "window:offset_x";
 pub const OFFSET_Y_KEY: &str = "window:offset_y";
-/// 回退时恢复的紧凑态高度（与 lib.rs COMPACT_H 一致）
-const ISLAND_COMPACT_HEIGHT: f64 = 80.0;
-/// 偏移 clamp 按展开态最大高度保守计算（与 lib.rs EXPANDED_H 一致）。
-const ISLAND_EXPANDED_HEIGHT: f64 = 400.0;
 /// 运行时显示器变化轮询间隔。副屏断开后最多延迟此时间即临时跳回主屏。
 const RUNTIME_WATCH_INTERVAL: Duration = Duration::from_secs(2);
+
+/// 当前有效状态的逻辑几何；策略不可用（如极早期启动）时回退 compact。
+fn current_logical_geometry(app: &AppHandle) -> (f64, f64) {
+    window_policy::current_geometry(app)
+}
+
+/// 展开态物理高度：clamp 按最大高度保守计算，避免任何状态下窗口底部越界。
+fn expanded_physical_height(scale_factor: f64) -> u32 {
+    physical_window_height(geometry_for(IslandState::Expanded).1, scale_factor)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RuntimeWatchAction {
@@ -37,7 +43,7 @@ fn runtime_watch_action(fell_back: bool, saved_available: bool) -> RuntimeWatchA
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RecoveryOperation {
-    ResizeCompact,
+    ResizePolicyGeometry,
     Unminimize,
     Move,
     ReapplyPolicy,
@@ -45,7 +51,7 @@ enum RecoveryOperation {
 
 #[cfg(test)]
 const RECOVERY_OPERATIONS: &[RecoveryOperation] = &[
-    RecoveryOperation::ResizeCompact,
+    RecoveryOperation::ResizePolicyGeometry,
     RecoveryOperation::Unminimize,
     RecoveryOperation::Move,
     RecoveryOperation::ReapplyPolicy,
@@ -313,8 +319,9 @@ fn move_island_to_monitor(
         .get_webview_window("island")
         .ok_or_else(|| "找不到灵动岛窗口".to_string())?;
     let scale_factor = monitor.raw.scale_factor();
-    let width = physical_window_width(ISLAND_WIDTH_LOGICAL, scale_factor);
-    let height = physical_window_height(ISLAND_EXPANDED_HEIGHT, scale_factor);
+    let (logical_width, _) = current_logical_geometry(app);
+    let width = physical_window_width(logical_width, scale_factor);
+    let height = expanded_physical_height(scale_factor);
     let (cx, cy) = clamp_offsets(&monitor.info, width, height, offset_x, offset_y);
     let position = top_center_position(&monitor.info, width, cx, cy);
     window
@@ -337,14 +344,15 @@ fn recover_island_to_monitor(
         .get_webview_window("island")
         .ok_or_else(|| "找不到灵动岛窗口".to_string())?;
     let scale_factor = monitor.raw.scale_factor();
-    let width = physical_window_width(ISLAND_WIDTH_LOGICAL, scale_factor);
-    let height = physical_window_height(ISLAND_EXPANDED_HEIGHT, scale_factor);
+    let (logical_width, logical_height) = current_logical_geometry(app);
+    let width = physical_window_width(logical_width, scale_factor);
+    let height = expanded_physical_height(scale_factor);
     let (cx, cy) = clamp_offsets(&monitor.info, width, height, offset_x, offset_y);
     let position = top_center_position(&monitor.info, width, cx, cy);
     window
         .set_size(Size::Logical(LogicalSize {
-            width: ISLAND_WIDTH_LOGICAL,
-            height: ISLAND_COMPACT_HEIGHT,
+            width: logical_width,
+            height: logical_height,
         }))
         .map_err(|error| format!("恢复窗口尺寸失败：{error}"))?;
     let _ = window.unminimize();
@@ -428,8 +436,9 @@ pub fn window_offset_apply(
     let state = selection_state(&set, &current_selection(db.inner()))?;
     let target = resolved_monitor(&set, &state)?;
     let scale_factor = target.raw.scale_factor();
-    let width = physical_window_width(ISLAND_WIDTH_LOGICAL, scale_factor);
-    let height = physical_window_height(ISLAND_EXPANDED_HEIGHT, scale_factor);
+    let (logical_width, _) = current_logical_geometry(&app);
+    let width = physical_window_width(logical_width, scale_factor);
+    let height = expanded_physical_height(scale_factor);
     let (cx, cy) = clamp_offsets(&target.info, width, height, offset_x, offset_y);
     // 先落盘 clamp 后的值，再上屏——即使上屏失败也不会留下跑出屏的持久化值。
     if cx != 0 {
@@ -677,7 +686,7 @@ mod tests {
         assert_eq!(
             RECOVERY_OPERATIONS,
             &[
-                RecoveryOperation::ResizeCompact,
+                RecoveryOperation::ResizePolicyGeometry,
                 RecoveryOperation::Unminimize,
                 RecoveryOperation::Move,
                 RecoveryOperation::ReapplyPolicy,

@@ -26,7 +26,7 @@ import {
   createHoverController,
   createIslandTransitionController,
   setIslandState as submitIslandState,
-  windowHoverSet,
+  windowHoverStageSet,
   windowPolicyGet,
   type IslandState,
   type IslandVisualPhase,
@@ -98,8 +98,10 @@ function App() {
       leaveDelay: 300,
       submit: (hovered) => {
         const target = hovered ? "expanded" : "compact";
+        // 11a.2 前的过渡映射：布尔悬停 → stage 2/0（保持基线单段语义）；
+        // 两段 controller（胶囊→条状→完整面板）在 11a.2 替换此处。
         void transitionControllerRef.current
-          ?.request(target, async () => windowHoverSet(hovered))
+          ?.request(target, async () => windowHoverStageSet(hovered ? 2 : 0))
           .catch((error) => console.error("[window-policy] 提交悬停状态失败:", error));
       },
     });

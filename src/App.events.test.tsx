@@ -128,7 +128,8 @@ const compactSnapshot: WindowPolicySnapshot = {
   shouldFocus: false,
   clickThrough: false,
   hoverExpand: false,
-  hovered: false,
+  floatingBall: false,
+  hoverStage: 0,
   hideInFullscreen: false,
   fullscreenSupported: true,
   fullscreenBlock: false,
@@ -147,7 +148,7 @@ vi.mock("@/lib/window-policy", async (importOriginal) => {
     ...actual,
     windowPolicyGet: vi.fn(async () => compactSnapshot),
     setIslandState: vi.fn(async () => compactSnapshot),
-    windowHoverSet: vi.fn(async () => compactSnapshot),
+    windowHoverStageSet: vi.fn(async () => compactSnapshot),
     createHoverController: vi.fn(() => ({
       enter: vi.fn(),
       leave: vi.fn(),

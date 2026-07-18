@@ -52,3 +52,6 @@ ehthumbs.db
 *.tmp
 *.bak
 .tmp-*/
+
+# 独立 Cargo 验证 target（check/test/clippy 专用，非正式打包）
+target-check/

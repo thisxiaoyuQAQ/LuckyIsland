@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 
-export type IslandState = "hidden" | "compact" | "expanded";
+export type IslandState = "hidden" | "capsule" | "compact" | "expanded";
 export type IslandVisualPhase = "compact" | "expanding" | "expanded" | "collapsing";
 
 export function containerExpandedForPhase(phase: IslandVisualPhase): boolean {
@@ -17,7 +17,9 @@ export interface WindowPolicySnapshot {
   shouldFocus: boolean;
   clickThrough: boolean;
   hoverExpand: boolean;
-  hovered: boolean;
+  floatingBall: boolean;
+  /** 右侧悬停阶段：0=无，1=悬停到条状，2=持续悬停到完整面板。 */
+  hoverStage: number;
   hideInFullscreen: boolean;
   fullscreenSupported: boolean;
   fullscreenBlock: boolean;
@@ -39,8 +41,14 @@ export function windowClickThroughSet(
   return invoke<WindowPolicySnapshot>("window_click_through_set", { enabled });
 }
 
-export function windowHoverSet(hovered: boolean): Promise<WindowPolicySnapshot> {
-  return invoke<WindowPolicySnapshot>("window_hover_set", { hovered });
+export function windowHoverStageSet(stage: number): Promise<WindowPolicySnapshot> {
+  return invoke<WindowPolicySnapshot>("window_hover_stage_set", { stage });
+}
+
+export function windowFloatingBallSet(
+  enabled: boolean,
+): Promise<WindowPolicySnapshot> {
+  return invoke<WindowPolicySnapshot>("window_floating_ball_set", { enabled });
 }
 
 export function windowHoverExpandSet(

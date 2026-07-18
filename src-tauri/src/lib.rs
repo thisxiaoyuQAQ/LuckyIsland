@@ -187,8 +187,9 @@ pub fn run() {
             window_policy::set_island_state,
             window_policy::window_policy_get,
             window_policy::window_click_through_set,
-            window_policy::window_hover_set,
+            window_policy::window_hover_stage_set,
             window_policy::window_hover_expand_set,
+            window_policy::window_floating_ball_set,
             window_policy::window_hide_in_fullscreen_set,
             monitor_list,
             monitor_get_selection,
@@ -423,6 +424,12 @@ pub fn run() {
                 app.state::<storage::Db>().inner(),
             ) {
                 eprintln!("[window-policy] restore hover-expand failed: {error}");
+            }
+            if let Err(error) = window_policy::restore_floating_ball(
+                app.handle(),
+                app.state::<storage::Db>().inner(),
+            ) {
+                eprintln!("[window-policy] restore floating-ball failed: {error}");
             }
             if let Err(error) = window_policy::restore_hide_in_fullscreen(
                 app.handle(),

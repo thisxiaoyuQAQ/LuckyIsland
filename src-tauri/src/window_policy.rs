@@ -1,22 +1,39 @@
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, LogicalSize, Manager, Size, State};
+use tauri::{AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, Size, State};
 
-use crate::monitor::ISLAND_WIDTH_LOGICAL;
 use crate::storage::Db;
 
 pub const CLICK_THROUGH_KEY: &str = "window:click_through";
 pub const HOVER_EXPAND_KEY: &str = "window:hover_expand";
 pub const HIDE_IN_FULLSCREEN_KEY: &str = "window:hide_in_fullscreen";
+pub const FLOATING_BALL_KEY: &str = "window:floating_ball";
 
+/// 悬浮胶囊（浮球休眠投影）逻辑宽度；透明区域不拦截后方点击。
+pub const CAPSULE_WIDTH_LOGICAL: f64 = 240.0;
+/// 条状（compact/expanded）逻辑宽度。
+pub const COMPACT_WIDTH_LOGICAL: f64 = 720.0;
 const COMPACT_HEIGHT_LOGICAL: f64 = 80.0;
 const EXPANDED_HEIGHT_LOGICAL: f64 = 400.0;
+
+/// 各有效状态的窗口几何（逻辑宽 × 逻辑高），全局单一真源。
+/// Hidden 无可见几何，返回 compact 尺寸仅供 clamp 兜底。
+pub fn geometry_for(state: IslandState) -> (f64, f64) {
+    match state {
+        IslandState::Hidden | IslandState::Compact => {
+            (COMPACT_WIDTH_LOGICAL, COMPACT_HEIGHT_LOGICAL)
+        }
+        IslandState::Capsule => (CAPSULE_WIDTH_LOGICAL, COMPACT_HEIGHT_LOGICAL),
+        IslandState::Expanded => (COMPACT_WIDTH_LOGICAL, EXPANDED_HEIGHT_LOGICAL),
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum IslandState {
     Hidden,
+    Capsule,
     Compact,
     Expanded,
 }
@@ -25,6 +42,7 @@ impl IslandState {
     fn parse(value: &str) -> Result<Self, String> {
         match value {
             "hidden" => Ok(Self::Hidden),
+            "capsule" => Ok(Self::Capsule),
             "compact" => Ok(Self::Compact),
             "expanded" => Ok(Self::Expanded),
             _ => Err(format!("未知灵动岛状态：{value}")),
@@ -42,7 +60,9 @@ pub enum FocusIntent {
 pub struct WindowPolicyInputs {
     pub desired_state: IslandState,
     pub hover_expand: bool,
-    pub hovered: bool,
+    /// 右侧悬停阶段：0=无，1=悬停到条状（胶囊→compact），2=持续悬停到完整面板（compact→expanded）。
+    pub hover_stage: u8,
+    pub floating_ball: bool,
     pub click_through: bool,
     pub hide_in_fullscreen: bool,
     pub fullscreen_block: bool,
@@ -55,7 +75,8 @@ impl WindowPolicyInputs {
         Self {
             desired_state,
             hover_expand: false,
-            hovered: false,
+            hover_stage: 0,
+            floating_ball: false,
             click_through: false,
             hide_in_fullscreen: false,
             fullscreen_block: false,
@@ -90,14 +111,26 @@ pub fn reduce(inputs: WindowPolicyInputs, requested_focus: FocusIntent) -> Windo
             focus: FocusIntent::Preserve,
         };
     }
-    if inputs.desired_state == IslandState::Compact
-        && inputs.hover_expand
-        && inputs.hovered
-        && !inputs.click_through
-    {
+    // 悬停只产生 transient intent，绝不请求焦点；手动 Expanded 不被悬停改变。
+    if !inputs.click_through && inputs.desired_state == IslandState::Compact {
+        if inputs.hover_stage >= 2 && inputs.hover_expand {
+            return WindowDecision {
+                effective_state: IslandState::Expanded,
+                focus: FocusIntent::Preserve,
+            };
+        }
+        if inputs.hover_stage == 1 && inputs.floating_ball {
+            return WindowDecision {
+                effective_state: IslandState::Compact,
+                focus: FocusIntent::Preserve,
+            };
+        }
+    }
+    // 浮球开启时 compact 意图的休眠投影是 240×80 胶囊。
+    if inputs.floating_ball && inputs.desired_state == IslandState::Compact {
         return WindowDecision {
-            effective_state: IslandState::Expanded,
-            focus: FocusIntent::Preserve,
+            effective_state: IslandState::Capsule,
+            focus: requested_focus,
         };
     }
     WindowDecision {
@@ -108,8 +141,7 @@ pub fn reduce(inputs: WindowPolicyInputs, requested_focus: FocusIntent) -> Windo
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum WindowOp {
-    ResizeCompact,
-    ResizeExpanded,
+    Resize(IslandState),
     Show,
     Hide,
     Focus,
@@ -142,8 +174,7 @@ impl EffectPlan {
     fn for_transition(next: WindowDecision) -> Self {
         let mut ops = match next.effective_state {
             IslandState::Hidden => vec![WindowOp::Hide],
-            IslandState::Compact => vec![WindowOp::ResizeCompact, WindowOp::Show],
-            IslandState::Expanded => vec![WindowOp::ResizeExpanded, WindowOp::Show],
+            visible => vec![WindowOp::Resize(visible), WindowOp::Show],
         };
         if next.effective_state != IslandState::Hidden && next.focus == FocusIntent::Focus {
             ops.push(WindowOp::Focus);
@@ -160,7 +191,8 @@ pub struct WindowPolicySnapshot {
     pub should_focus: bool,
     pub click_through: bool,
     pub hover_expand: bool,
-    pub hovered: bool,
+    pub floating_ball: bool,
+    pub hover_stage: u8,
     pub hide_in_fullscreen: bool,
     pub fullscreen_supported: bool,
     pub fullscreen_block: bool,
@@ -210,7 +242,7 @@ impl ClickThroughTransactionContext for AppClickThroughContext<'_> {
         let mut next = self.inputs;
         next.click_through = enabled;
         if enabled {
-            next.hovered = false;
+            next.hover_stage = 0;
         }
         let decision = reduce(next, FocusIntent::Preserve);
         if let Err(error) = apply_effects(&window, self.previous, decision) {
@@ -249,7 +281,8 @@ fn snapshot(inputs: WindowPolicyInputs, decision: WindowDecision) -> WindowPolic
         should_focus: decision.focus == FocusIntent::Focus,
         click_through: inputs.click_through,
         hover_expand: inputs.hover_expand,
-        hovered: inputs.hovered,
+        floating_ball: inputs.floating_ball,
+        hover_stage: inputs.hover_stage,
         hide_in_fullscreen: inputs.hide_in_fullscreen,
         fullscreen_supported: cfg!(windows),
         fullscreen_block: inputs.fullscreen_block,
@@ -274,7 +307,7 @@ fn apply_click_through_transaction(
     let mut next = previous;
     next.click_through = enabled;
     if enabled {
-        next.hovered = false;
+        next.hover_stage = 0;
     }
 
     context.set_ignore_cursor_events(enabled)?;
@@ -308,6 +341,35 @@ fn restore_click_through_transaction(
     }
 }
 
+/// 调整窗口到目标状态几何。宽度变化时以「当前顶部中心」为锚点重设水平位置，
+/// 避免 240↔720 切换时横向跳动；读取旧几何失败时仅改尺寸、不移动。
+fn resize_window(window: &tauri::WebviewWindow, state: IslandState) -> Result<(), String> {
+    let (width, height) = geometry_for(state);
+    let anchor = window
+        .outer_size()
+        .and_then(|size| window.outer_position().map(|position| (size, position)))
+        .ok()
+        .and_then(|(size, position)| {
+            window
+                .scale_factor()
+                .ok()
+                .map(|scale| (size, position, scale))
+        });
+    window
+        .set_size(Size::Logical(LogicalSize { width, height }))
+        .map_err(|error| format!("调整灵动岛窗口尺寸失败：{error}"))?;
+    if let Some((old_size, old_position, scale)) = anchor {
+        let new_width_px = (width * scale).round().max(1.0) as i32;
+        let dx = (old_size.width as i32 - new_width_px) / 2;
+        if dx != 0 {
+            window
+                .set_position(PhysicalPosition::new(old_position.x + dx, old_position.y))
+                .map_err(|error| format!("重设灵动岛窗口位置失败：{error}"))?;
+        }
+    }
+    Ok(())
+}
+
 fn apply_effects(
     window: &tauri::WebviewWindow,
     previous: Option<WindowDecision>,
@@ -315,18 +377,7 @@ fn apply_effects(
 ) -> Result<(), String> {
     for op in EffectPlan::between(previous, decision).ops {
         match op {
-            WindowOp::ResizeCompact => window
-                .set_size(Size::Logical(LogicalSize {
-                    width: ISLAND_WIDTH_LOGICAL,
-                    height: COMPACT_HEIGHT_LOGICAL,
-                }))
-                .map_err(|error| format!("收起灵动岛窗口失败：{error}"))?,
-            WindowOp::ResizeExpanded => window
-                .set_size(Size::Logical(LogicalSize {
-                    width: ISLAND_WIDTH_LOGICAL,
-                    height: EXPANDED_HEIGHT_LOGICAL,
-                }))
-                .map_err(|error| format!("展开灵动岛窗口失败：{error}"))?,
+            WindowOp::Resize(state) => resize_window(window, state)?,
             WindowOp::Show => window
                 .show()
                 .map_err(|error| format!("显示灵动岛窗口失败：{error}"))?,
@@ -412,7 +463,7 @@ fn update_and_apply(
 
 fn apply_explicit_state(inputs: &mut WindowPolicyInputs, state: IslandState) {
     inputs.desired_state = state;
-    inputs.hovered = false;
+    inputs.hover_stage = 0;
 }
 
 pub fn set_desired_state(
@@ -423,15 +474,31 @@ pub fn set_desired_state(
     update_and_apply(app, |inputs| apply_explicit_state(inputs, state), focus)
 }
 
-fn apply_hover_report(inputs: &mut WindowPolicyInputs, hovered: bool) {
-    inputs.hovered = hovered && inputs.hover_expand && !inputs.click_through;
+/// hover_stage 合法性归一：穿透或未开启任何悬停能力时归零；
+/// hover_expand 关闭时封顶在阶段 1（胶囊→条状不需要该开关）。
+fn coerce_hover_stage(inputs: &mut WindowPolicyInputs) {
+    if inputs.click_through || (!inputs.floating_ball && !inputs.hover_expand) {
+        inputs.hover_stage = 0;
+    } else if inputs.hover_stage > 2 {
+        inputs.hover_stage = 2;
+    } else if inputs.hover_stage == 2 && !inputs.hover_expand {
+        inputs.hover_stage = 1;
+    }
+}
+
+fn apply_hover_stage_report(inputs: &mut WindowPolicyInputs, stage: u8) {
+    inputs.hover_stage = stage;
+    coerce_hover_stage(inputs);
 }
 
 fn apply_hover_expand_setting(inputs: &mut WindowPolicyInputs, enabled: bool) {
     inputs.hover_expand = enabled;
-    if !enabled || inputs.click_through {
-        inputs.hovered = false;
-    }
+    coerce_hover_stage(inputs);
+}
+
+fn apply_floating_ball_setting(inputs: &mut WindowPolicyInputs, enabled: bool) {
+    inputs.floating_ball = enabled;
+    coerce_hover_stage(inputs);
 }
 
 fn apply_notification_intent(
@@ -622,6 +689,18 @@ pub fn restore_hover_expand(app: &AppHandle, db: &Db) -> Result<WindowPolicySnap
     )
 }
 
+pub fn restore_floating_ball(app: &AppHandle, db: &Db) -> Result<WindowPolicySnapshot, String> {
+    let enabled = db
+        .setting_get(FLOATING_BALL_KEY)
+        .map(|value| value == "true")
+        .unwrap_or(false);
+    update_and_apply(
+        app,
+        |inputs| apply_floating_ball_setting(inputs, enabled),
+        FocusIntent::Preserve,
+    )
+}
+
 pub fn restore_hide_in_fullscreen(
     app: &AppHandle,
     db: &Db,
@@ -643,6 +722,7 @@ pub fn restore_hide_in_fullscreen(
 pub fn reload_persisted_settings(app: &AppHandle, db: &Db) -> Result<WindowPolicySnapshot, String> {
     restore_click_through(app, db)?;
     restore_hover_expand(app, db)?;
+    restore_floating_ball(app, db)?;
     restore_hide_in_fullscreen(app, db)
 }
 
@@ -679,12 +759,35 @@ pub fn window_hide_in_fullscreen_set(
 }
 
 #[tauri::command]
-pub fn window_hover_set(app: AppHandle, hovered: bool) -> Result<WindowPolicySnapshot, String> {
+pub fn window_hover_stage_set(app: AppHandle, stage: u8) -> Result<WindowPolicySnapshot, String> {
     update_and_apply(
         &app,
-        |inputs| apply_hover_report(inputs, hovered),
+        |inputs| apply_hover_stage_report(inputs, stage),
         FocusIntent::Preserve,
     )
+}
+
+#[tauri::command]
+pub fn window_floating_ball_set(
+    app: AppHandle,
+    db: State<'_, Db>,
+    enabled: bool,
+) -> Result<WindowPolicySnapshot, String> {
+    let previous = window_policy_snapshot(&app)?.floating_ball;
+    let snapshot = update_and_apply(
+        &app,
+        |inputs| apply_floating_ball_setting(inputs, enabled),
+        FocusIntent::Preserve,
+    )?;
+    if let Err(error) = db.setting_set(FLOATING_BALL_KEY, if enabled { "true" } else { "false" }) {
+        let _ = update_and_apply(
+            &app,
+            |inputs| apply_floating_ball_setting(inputs, previous),
+            FocusIntent::Preserve,
+        );
+        return Err(error);
+    }
+    Ok(snapshot)
 }
 
 #[tauri::command]
@@ -715,6 +818,16 @@ pub fn window_policy_get(policy: State<'_, WindowPolicy>) -> Result<WindowPolicy
     let runtime = policy.0.lock().map_err(|error| error.to_string())?;
     let decision = reduce(runtime.inputs, FocusIntent::Preserve);
     Ok(snapshot(runtime.inputs, decision))
+}
+
+/// 当前有效状态的逻辑几何（宽 × 高），供 monitor 定位/clamp/恢复使用实际窗口尺寸。
+pub fn current_geometry(app: &AppHandle) -> (f64, f64) {
+    let policy = app.state::<WindowPolicy>();
+    let Ok(runtime) = policy.0.lock() else {
+        return geometry_for(IslandState::Compact);
+    };
+    let decision = reduce(runtime.inputs, FocusIntent::Preserve);
+    geometry_for(decision.effective_state)
 }
 
 #[tauri::command]
@@ -773,7 +886,23 @@ mod tests {
                 focused(IslandState::Expanded),
             )
             .ops,
-            vec![WindowOp::ResizeExpanded, WindowOp::Show, WindowOp::Focus]
+            vec![
+                WindowOp::Resize(IslandState::Expanded),
+                WindowOp::Show,
+                WindowOp::Focus
+            ]
+        );
+    }
+
+    #[test]
+    fn compact_to_capsule_resizes_to_capsule_geometry() {
+        assert_eq!(
+            EffectPlan::between(
+                Some(decision(IslandState::Compact)),
+                decision(IslandState::Capsule),
+            )
+            .ops,
+            vec![WindowOp::Resize(IslandState::Capsule), WindowOp::Show]
         );
     }
 
@@ -813,6 +942,145 @@ mod tests {
         assert_eq!(
             IslandState::parse("floating").unwrap_err(),
             "未知灵动岛状态：floating"
+        );
+    }
+
+    #[test]
+    fn capsule_state_parses_and_geometry_is_240_by_80() {
+        assert_eq!(IslandState::parse("capsule").unwrap(), IslandState::Capsule);
+        assert_eq!(geometry_for(IslandState::Capsule), (240.0, 80.0));
+        assert_eq!(geometry_for(IslandState::Compact), (720.0, 80.0));
+        assert_eq!(geometry_for(IslandState::Expanded), (720.0, 400.0));
+    }
+
+    #[test]
+    fn floating_ball_projects_compact_intent_to_capsule() {
+        let mut policy_inputs = inputs(IslandState::Compact, false, false);
+        policy_inputs.floating_ball = true;
+
+        let decision = reduce(policy_inputs, FocusIntent::Focus);
+        assert_eq!(decision.effective_state, IslandState::Capsule);
+        // 投影不是 hover：显式请求的 Focus 仍然保留（单实例唤起等路径）。
+        assert_eq!(decision.focus, FocusIntent::Focus);
+    }
+
+    #[test]
+    fn floating_ball_does_not_project_expanded_or_hidden() {
+        let mut expanded = inputs(IslandState::Expanded, false, false);
+        expanded.floating_ball = true;
+        assert_eq!(
+            reduce(expanded, FocusIntent::Preserve).effective_state,
+            IslandState::Expanded
+        );
+
+        let mut hidden = inputs(IslandState::Hidden, false, false);
+        hidden.floating_ball = true;
+        assert_eq!(
+            reduce(hidden, FocusIntent::Preserve).effective_state,
+            IslandState::Hidden
+        );
+    }
+
+    #[test]
+    fn hover_stage_one_lifts_capsule_to_strip_only_with_floating_ball() {
+        let mut policy_inputs = inputs(IslandState::Compact, false, false);
+        policy_inputs.floating_ball = true;
+        policy_inputs.hover_stage = 1;
+        assert_eq!(
+            reduce(policy_inputs, FocusIntent::Preserve).effective_state,
+            IslandState::Compact
+        );
+
+        // 浮球关闭时阶段 1 无视觉效果，保持条状。
+        policy_inputs.floating_ball = false;
+        policy_inputs.hover_expand = true;
+        assert_eq!(
+            reduce(policy_inputs, FocusIntent::Preserve).effective_state,
+            IslandState::Compact
+        );
+    }
+
+    #[test]
+    fn hover_stage_two_expands_only_with_hover_expand() {
+        let mut policy_inputs = inputs(IslandState::Compact, false, false);
+        policy_inputs.hover_expand = true;
+        policy_inputs.hover_stage = 2;
+        assert_eq!(
+            reduce(policy_inputs, FocusIntent::Preserve).effective_state,
+            IslandState::Expanded
+        );
+
+        // 未开启悬停自动展开时阶段 2 归约不到完整面板。
+        policy_inputs.hover_expand = false;
+        policy_inputs.floating_ball = true;
+        assert_eq!(
+            reduce(policy_inputs, FocusIntent::Preserve).effective_state,
+            IslandState::Capsule
+        );
+    }
+
+    #[test]
+    fn hover_stages_never_request_focus() {
+        let mut policy_inputs = inputs(IslandState::Compact, false, false);
+        policy_inputs.hover_expand = true;
+        policy_inputs.floating_ball = true;
+        policy_inputs.hover_stage = 2;
+        assert_eq!(
+            reduce(policy_inputs, FocusIntent::Focus),
+            WindowDecision {
+                effective_state: IslandState::Expanded,
+                focus: FocusIntent::Preserve,
+            }
+        );
+
+        policy_inputs.hover_stage = 1;
+        assert_eq!(
+            reduce(policy_inputs, FocusIntent::Focus),
+            WindowDecision {
+                effective_state: IslandState::Compact,
+                focus: FocusIntent::Preserve,
+            }
+        );
+    }
+
+    #[test]
+    fn click_through_suppresses_hover_stages() {
+        let mut policy_inputs = inputs(IslandState::Compact, false, false);
+        policy_inputs.hover_expand = true;
+        policy_inputs.hover_stage = 2;
+        policy_inputs.click_through = true;
+        assert_eq!(
+            reduce(policy_inputs, FocusIntent::Preserve).effective_state,
+            IslandState::Compact
+        );
+    }
+
+    #[test]
+    fn overrides_beat_capsule_projection_and_hover() {
+        let mut policy_inputs = inputs(IslandState::Compact, true, true);
+        policy_inputs.floating_ball = true;
+        policy_inputs.hover_expand = true;
+        policy_inputs.hover_stage = 1;
+        assert_eq!(
+            reduce(policy_inputs, FocusIntent::Preserve).effective_state,
+            IslandState::Expanded
+        );
+
+        policy_inputs.priority_override_active = false;
+        assert_eq!(
+            reduce(policy_inputs, FocusIntent::Preserve).effective_state,
+            IslandState::Hidden
+        );
+    }
+
+    #[test]
+    fn manual_expanded_is_not_changed_by_hover_stages() {
+        let mut policy_inputs = inputs(IslandState::Expanded, false, false);
+        policy_inputs.floating_ball = true;
+        policy_inputs.hover_stage = 1;
+        assert_eq!(
+            reduce(policy_inputs, FocusIntent::Preserve).effective_state,
+            IslandState::Expanded
         );
     }
 
@@ -873,49 +1141,47 @@ mod tests {
     }
 
     #[test]
-    fn hover_only_expands_compact_non_click_through() {
+    fn hover_stage_reports_are_coerced_by_click_through_and_switches() {
         let mut policy_inputs = inputs(IslandState::Compact, false, false);
+
+        // 两个开关都关：任何 stage 归零。
+        apply_hover_stage_report(&mut policy_inputs, 2);
+        assert_eq!(policy_inputs.hover_stage, 0);
+
+        // 仅浮球：允许阶段 1，阶段 2 封顶到 1。
+        policy_inputs.floating_ball = true;
+        apply_hover_stage_report(&mut policy_inputs, 1);
+        assert_eq!(policy_inputs.hover_stage, 1);
+        apply_hover_stage_report(&mut policy_inputs, 2);
+        assert_eq!(policy_inputs.hover_stage, 1);
+
+        // 双开：允许阶段 2；超界值钳到 2。
         policy_inputs.hover_expand = true;
-        policy_inputs.hovered = true;
+        apply_hover_stage_report(&mut policy_inputs, 2);
+        assert_eq!(policy_inputs.hover_stage, 2);
+        apply_hover_stage_report(&mut policy_inputs, 9);
+        assert_eq!(policy_inputs.hover_stage, 2);
 
-        assert_eq!(
-            reduce(policy_inputs, FocusIntent::Preserve).effective_state,
-            IslandState::Expanded
-        );
-
+        // 穿透开启：归零。
         policy_inputs.click_through = true;
-        assert_eq!(
-            reduce(policy_inputs, FocusIntent::Preserve).effective_state,
-            IslandState::Compact
-        );
+        apply_hover_stage_report(&mut policy_inputs, 2);
+        assert_eq!(policy_inputs.hover_stage, 0);
     }
 
     #[test]
-    fn hover_reports_are_coerced_when_disabled_or_click_through() {
+    fn disabling_switches_caps_or_clears_hover_stage() {
         let mut policy_inputs = inputs(IslandState::Compact, false, false);
-
-        apply_hover_report(&mut policy_inputs, true);
-        assert!(!policy_inputs.hovered);
-
+        policy_inputs.floating_ball = true;
         policy_inputs.hover_expand = true;
-        apply_hover_report(&mut policy_inputs, true);
-        assert!(policy_inputs.hovered);
+        policy_inputs.hover_stage = 2;
 
-        policy_inputs.click_through = true;
-        apply_hover_report(&mut policy_inputs, true);
-        assert!(!policy_inputs.hovered);
-    }
-
-    #[test]
-    fn disabling_hover_expand_clears_transient_hover() {
-        let mut policy_inputs = inputs(IslandState::Compact, false, false);
-        policy_inputs.hover_expand = true;
-        policy_inputs.hovered = true;
-
+        // 关闭悬停自动展开：阶段 2 → 1（条状仍由浮球悬停支持）。
         apply_hover_expand_setting(&mut policy_inputs, false);
+        assert_eq!(policy_inputs.hover_stage, 1);
 
-        assert!(!policy_inputs.hover_expand);
-        assert!(!policy_inputs.hovered);
+        // 再关闭浮球：无任何悬停能力，归零。
+        apply_floating_ball_setting(&mut policy_inputs, false);
+        assert_eq!(policy_inputs.hover_stage, 0);
     }
 
     #[test]
@@ -1021,14 +1287,14 @@ mod tests {
     }
 
     #[test]
-    fn enabling_click_through_clears_hover_before_reduce() {
+    fn enabling_click_through_clears_hover_stage_before_reduce() {
         let mut harness = ClickThroughHarness::compact();
         harness.inputs.hover_expand = true;
-        harness.inputs.hovered = true;
+        harness.inputs.hover_stage = 2;
 
         let snapshot = apply_click_through_transaction(&mut harness, true).unwrap();
 
-        assert!(!snapshot.hovered);
+        assert_eq!(snapshot.hover_stage, 0);
         assert!(snapshot.click_through);
         assert_eq!(snapshot.effective_state, IslandState::Compact);
     }
@@ -1057,14 +1323,14 @@ mod tests {
     }
 
     #[test]
-    fn explicit_user_state_clears_transient_hover_before_reduce() {
+    fn explicit_user_state_clears_transient_hover_stage_before_reduce() {
         let mut policy_inputs = inputs(IslandState::Compact, false, false);
         policy_inputs.hover_expand = true;
-        policy_inputs.hovered = true;
+        policy_inputs.hover_stage = 2;
 
         apply_explicit_state(&mut policy_inputs, IslandState::Compact);
 
-        assert!(!policy_inputs.hovered);
+        assert_eq!(policy_inputs.hover_stage, 0);
         assert_eq!(
             reduce(policy_inputs, FocusIntent::Focus).effective_state,
             IslandState::Compact
