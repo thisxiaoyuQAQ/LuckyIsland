@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useReducer, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ChevronsUpDown, Check, Mic, Send, Square, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -8,12 +8,18 @@ import {
   aiClearHistory,
   aiHistoryList,
   aiSwitchProvider,
-  type Message,
   type ProviderKind,
 } from "@/lib/ai";
 import { settingGet } from "@/lib/settings";
 import { useTauriEvent } from "@/lib/useTauriEvent";
 import { Conversation } from "./Conversation";
+import {
+  aiPaletteReducer,
+  buildErrorMessage,
+  initialAiPaletteState,
+  phaseOf,
+  type UiMessage,
+} from "./aiPaletteState";
 
 const PROVIDERS: ReadonlyArray<{ value: ProviderKind; label: string }> = [
   { value: "claude-cli", label: "Claude CLI" },
@@ -100,32 +106,18 @@ function ProviderSelect({
   );
 }
 
-type RequestPhase = "idle" | "running" | "cancelling";
-type AssistantStatus = "pending" | "completed" | "cancelled" | "error";
-
-interface UiMessage extends Message {
-  id: string;
-  requestId?: string;
-  status?: AssistantStatus;
-}
-
-interface ActiveRequest {
-  requestId: string;
-  assistantMessageId: string;
-}
-
 const newId = () => crypto.randomUUID();
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
 
 /** AI 命令面板：Alt+Space / 托盘唤起；仅 ESC 隐藏（不做失焦隐藏，避免拖动/点击顶部条时被误判失焦而关闭）；回车发送；可拖动并记忆位置（后端持久化 ai:position） */
 export default function AiPalette() {
-  const [messages, setMessages] = useState<UiMessage[]>([]);
+  const [state, dispatch] = useReducer(aiPaletteReducer, initialAiPaletteState);
+  const { messages, activeRequest } = state;
+  const phase = phaseOf(state);
   const [input, setInput] = useState("");
-  const [phase, setPhase] = useState<RequestPhase>("idle");
   const [providerSwitching, setProviderSwitching] = useState(true);
   const [recording, setRecording] = useState(false);
   const [provider, setProvider] = useState<ProviderKind>("claude-cli");
-  const activeRequestRef = useRef<ActiveRequest | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const busy = phase !== "idle" || providerSwitching;
 
@@ -135,21 +127,22 @@ export default function AiPalette() {
     void Promise.all([aiHistoryList(), settingGet("ai:provider")])
       .then(([history, persisted]) => {
         if (disposed) return;
-        setMessages(history.map((message) => ({
+        const loaded: UiMessage[] = history.map((message) => ({
           ...message,
           id: newId(),
           status: "completed",
-        })));
+        }));
+        dispatch({ type: "historyLoaded", messages: loaded });
         if (persisted === "claude-cli" || persisted === "codex-cli" || persisted === "chat-api") {
           setProvider(persisted);
         }
       })
       .catch((error) => {
         if (disposed) return;
-        setMessages((current) => [
-          ...current,
-          { id: newId(), role: "assistant", content: `初始化 AI 面板失败：${errorText(error)}`, status: "error" },
-        ]);
+        dispatch({
+          type: "initFailed",
+          message: buildErrorMessage(`初始化 AI 面板失败：${errorText(error)}`),
+        });
       })
       .finally(() => {
         if (!disposed) setProviderSwitching(false);
@@ -186,15 +179,9 @@ export default function AiPalette() {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
   }, [messages]);
 
-  const updateAssistant = (id: string, patch: Partial<UiMessage>) => {
-    setMessages((current) => current.map((message) => (
-      message.id === id ? { ...message, ...patch } : message
-    )));
-  };
-
   const send = async (textOverride?: string) => {
     const text = (textOverride ?? input).trim();
-    if (!text || phase !== "idle" || providerSwitching || activeRequestRef.current) return;
+    if (!text || phase !== "idle" || providerSwitching || activeRequest) return;
 
     const requestId = newId();
     const userMessageId = newId();
@@ -207,70 +194,55 @@ export default function AiPalette() {
       .filter((message) => !message.requestId || completedRequestIds.has(message.requestId))
       .map(({ role, content }) => ({ role, content }));
 
-    activeRequestRef.current = { requestId, assistantMessageId };
+    dispatch({
+      type: "sendRequested",
+      requestId,
+      userMessage: { id: userMessageId, requestId, role: "user", content: text },
+      assistantMessage: { id: assistantMessageId, requestId, role: "assistant", content: "…", status: "pending" },
+    });
     setInput("");
-    setMessages((current) => [
-      ...current,
-      { id: userMessageId, requestId, role: "user", content: text },
-      { id: assistantMessageId, requestId, role: "assistant", content: "…", status: "pending" },
-    ]);
-    setPhase("running");
 
     try {
       const response = await aiChat(requestId, requestProvider, text, history);
-      if (activeRequestRef.current?.requestId !== requestId) return;
       if (response.providerUsed !== requestProvider) {
         throw new Error(`Provider 响应不一致：请求=${requestProvider}，实际=${response.providerUsed}`);
       }
-      updateAssistant(assistantMessageId, {
+      dispatch({
+        type: "sendSucceeded",
+        requestId,
         content: response.reply,
         action: response.action ?? undefined,
-        status: "completed",
       });
     } catch (error) {
-      if (activeRequestRef.current?.requestId !== requestId) return;
-      updateAssistant(assistantMessageId, {
-        content: `错误：${errorText(error)}`,
-        status: "error",
-      });
-    } finally {
-      if (activeRequestRef.current?.requestId === requestId) {
-        activeRequestRef.current = null;
-        setPhase("idle");
-      }
+      dispatch({ type: "sendFailed", requestId, errorText: errorText(error) });
     }
   };
 
   const cancelCurrent = async () => {
-    const active = activeRequestRef.current;
+    const active = activeRequest;
     if (!active || phase !== "running") return;
-    setPhase("cancelling");
+    dispatch({ type: "cancelRequested" });
     try {
       const status = await aiCancel(active.requestId);
-      if (activeRequestRef.current?.requestId !== active.requestId) return;
       if (status === "cancelled") {
-        updateAssistant(active.assistantMessageId, { content: "已终止", status: "cancelled" });
-        activeRequestRef.current = null;
-        setPhase("idle");
+        dispatch({ type: "cancelSucceeded", requestId: active.requestId });
         return;
       }
       if (status === "already_finished") {
-        setPhase("running");
+        dispatch({ type: "cancelAlreadyFinished", requestId: active.requestId });
         return;
       }
-      updateAssistant(active.assistantMessageId, {
-        content: "终止失败：后端当前请求与界面不一致",
-        status: "error",
+      dispatch({
+        type: "cancelFailed",
+        requestId: active.requestId,
+        errorText: "后端当前请求与界面不一致",
       });
-      setPhase("running");
     } catch (error) {
-      if (activeRequestRef.current?.requestId === active.requestId) {
-        updateAssistant(active.assistantMessageId, {
-          content: `终止失败：${errorText(error)}`,
-          status: "error",
-        });
-        setPhase("running");
-      }
+      dispatch({
+        type: "cancelFailed",
+        requestId: active.requestId,
+        errorText: errorText(error),
+      });
     }
   };
 
@@ -283,15 +255,11 @@ export default function AiPalette() {
       await aiSwitchProvider(next);
     } catch (error) {
       setProvider(previous);
-      setMessages((current) => [
-        ...current,
-        {
-          id: newId(),
-          role: "assistant",
-          content: `Provider 切换失败：${errorText(error)}`,
-          status: "error",
-        },
-      ]);
+      dispatch({
+        type: "providerSwitchFailed",
+        errorText: errorText(error),
+        message: buildErrorMessage(`Provider 切换失败：${errorText(error)}`),
+      });
     } finally {
       setProviderSwitching(false);
     }
@@ -340,12 +308,13 @@ export default function AiPalette() {
     if (busy) return;
     try {
       await aiClearHistory();
-      setMessages([]);
+      dispatch({ type: "historyCleared" });
     } catch (error) {
-      setMessages((current) => [
-        ...current,
-        { id: newId(), role: "assistant", content: `清空历史失败：${errorText(error)}`, status: "error" },
-      ]);
+      dispatch({
+        type: "clearFailed",
+        errorText: errorText(error),
+        message: buildErrorMessage(`清空历史失败：${errorText(error)}`),
+      });
     }
   };
 
@@ -359,10 +328,11 @@ export default function AiPalette() {
       const t = text.trim();
       if (t) setInput((prev) => (prev ? prev + " " + t : t));
     } catch (e) {
-      setMessages((current) => [
-        ...current,
-        { id: newId(), role: "assistant", content: `语音输入失败：${errorText(e)}`, status: "error" },
-      ]);
+      dispatch({
+        type: "voiceRecordFailed",
+        errorText: errorText(e),
+        message: buildErrorMessage(`语音输入失败：${errorText(e)}`),
+      });
     } finally {
       setRecording(false);
     }
