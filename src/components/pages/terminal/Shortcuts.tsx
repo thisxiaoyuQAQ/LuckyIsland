@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { ChevronDown } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { KEYS, onSettingsChanged, parseShortcuts, settingGet, type Shortcut } from "@/lib/settings";
+import { useAsyncSubscription } from "@/lib/useAsyncSubscription";
 
 export type { Shortcut };
 
@@ -17,14 +18,15 @@ export function Shortcuts({ onRun, disabled }: { onRun: (s: Shortcut) => void; d
 
   useEffect(() => {
     void settingGet(KEYS.terminalShortcuts).then((v) => setShortcuts(parseShortcuts(v)));
-    let un: (() => void) | undefined;
-    onSettingsChanged((key, value) => {
-      if (key === KEYS.terminalShortcuts) setShortcuts(parseShortcuts(value));
-    }).then((fn) => {
-      un = fn;
-    });
-    return () => un?.();
   }, []);
+
+  useAsyncSubscription(
+    () => onSettingsChanged((key, value) => {
+      if (key === KEYS.terminalShortcuts) setShortcuts(parseShortcuts(value));
+    }),
+    [],
+    { label: "settings://changed:terminal-shortcuts" },
+  );
 
   // 下拉打开时点外部关闭
   useEffect(() => {

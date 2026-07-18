@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { ChevronsUpDown, Check, Mic, Send, Square, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -13,6 +12,7 @@ import {
   type ProviderKind,
 } from "@/lib/ai";
 import { settingGet } from "@/lib/settings";
+import { useTauriEvent } from "@/lib/useTauriEvent";
 import { Conversation } from "./Conversation";
 
 const PROVIDERS: ReadonlyArray<{ value: ProviderKind; label: string }> = [
@@ -160,17 +160,15 @@ export default function AiPalette() {
   }, []);
 
   // provider 切换即时更新标签
-  useEffect(() => {
-    let un: (() => void) | undefined;
-    listen<string>("ai://provider-changed", (e) => {
-      if (e.payload === "claude-cli" || e.payload === "codex-cli" || e.payload === "chat-api") {
-        setProvider(e.payload);
-      }
-    }).then((fn) => {
-      un = fn;
-    });
-    return () => un?.();
-  }, []);
+  useTauriEvent<string>("ai://provider-changed", (event) => {
+    if (
+      event.payload === "claude-cli"
+      || event.payload === "codex-cli"
+      || event.payload === "chat-api"
+    ) {
+      setProvider(event.payload);
+    }
+  });
 
   // ESC 隐藏（后端 hide_ai_palette，隐藏前保存位置）；不做失焦隐藏——
   // 顶部条是拖动区域，mousedown 触发 start_dragging 时会先产生一次 blur，
@@ -299,59 +297,43 @@ export default function AiPalette() {
     }
   };
 
-  // 语音转写（M9 ASR）：唤醒后说话，后端 emit voice://transcript，自动填进输入框并发送。
-  // 用 ref 持最新 send 引用，监听器只注册一次，不随输入、消息或请求阶段变化反复重建
-  // （反复重建会漏掉中途到达的事件 + 重复绑定）。
-  const sendRef = useRef(send);
-  useEffect(() => {
-    sendRef.current = send;
+  // 语音转写（M9 ASR）：唤醒后说话，后端 emit voice://transcript，自动发送。
+  // useTauriEvent 保持底层订阅稳定，并把事件转发给最新已提交的 send 闭包。
+  useTauriEvent<string | null | undefined>("voice://transcript", (event) => {
+    const text = event.payload?.trim();
+    if (!text) return;
+    setListening(false);
+    void send(text);
   });
-  useEffect(() => {
-    let un: (() => void) | undefined;
-    listen<string>("voice://transcript", (e) => {
-      const text = e.payload?.trim();
-      if (!text) return;
-      setListening(false);
-      void sendRef.current(text);
-    }).then((fn) => {
-      un = fn;
-    });
-    return () => un?.();
-  }, []);
 
   // 后端 true/false 是实际录音生命周期的权威状态；8 秒 timer 只防止异常漏发 false。
   const [listening, setListening] = useState(false);
-  useEffect(() => {
-    let disposed = false;
-    let unlisten: (() => void) | undefined;
-    let timer: ReturnType<typeof setTimeout> | undefined;
+  const listeningTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
-    void listen<boolean>("voice://listening", (event) => {
-      if (disposed) return;
-      console.log("[ai-palette] 收到 voice://listening", event.payload);
-      if (timer) {
-        clearTimeout(timer);
-        timer = undefined;
-      }
-      setListening(event.payload);
-      if (event.payload) {
-        timer = setTimeout(() => {
-          timer = undefined;
-          setListening(false);
-        }, 8000);
-      }
-    }).then((fn) => {
-      if (disposed) fn();
-      else unlisten = fn;
-    }).catch((error) => {
+  useTauriEvent<boolean>("voice://listening", (event) => {
+    console.log("[ai-palette] 收到 voice://listening", event.payload);
+    if (listeningTimerRef.current) {
+      clearTimeout(listeningTimerRef.current);
+      listeningTimerRef.current = undefined;
+    }
+    setListening(event.payload);
+    if (event.payload) {
+      listeningTimerRef.current = setTimeout(() => {
+        listeningTimerRef.current = undefined;
+        setListening(false);
+      }, 8000);
+    }
+  }, {
+    onError: (error) => {
       console.error("[ai-palette] 监听 voice://listening 失败", error);
-    });
+    },
+  });
 
-    return () => {
-      disposed = true;
-      unlisten?.();
-      if (timer) clearTimeout(timer);
-    };
+  useEffect(() => () => {
+    if (listeningTimerRef.current) {
+      clearTimeout(listeningTimerRef.current);
+      listeningTimerRef.current = undefined;
+    }
   }, []);
 
   const clear = async () => {

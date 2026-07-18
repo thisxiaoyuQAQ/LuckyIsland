@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { UnlistenFn } from "@tauri-apps/api/event";
 import { onSettingsChanged, settingGet, settingSetEmit } from "@/lib/settings";
+import { useAsyncSubscription } from "@/lib/useAsyncSubscription";
 
 /** 通用时间页设置 hook：读 + 监听 settings://changed + 写并广播。 */
 export function useTimeSetting<T>(key: string, parse: (v: string | null) => T, fallback: T) {
@@ -9,21 +9,21 @@ export function useTimeSetting<T>(key: string, parse: (v: string | null) => T, f
   const [value, setValue] = useState<T>(fallback);
   useEffect(() => {
     let disposed = false;
-    let un: UnlistenFn | undefined;
     void settingGet(key).then((v) => {
       if (!disposed) setValue(parseRef.current(v));
     });
-    void onSettingsChanged((k, v) => {
-      if (!disposed && k === key) setValue(parseRef.current(v));
-    }).then((fn) => {
-      if (disposed) fn();
-      else un = fn;
-    });
     return () => {
       disposed = true;
-      un?.();
     };
   }, [key]);
+
+  useAsyncSubscription(
+    (isActive) => onSettingsChanged((k, v) => {
+      if (isActive() && k === key) setValue(parseRef.current(v));
+    }),
+    [key],
+    { label: `settings://changed:${key}` },
+  );
   const set = useCallback(
     async (v: T) => {
       setValue(v);

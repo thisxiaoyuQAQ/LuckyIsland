@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import {
   AlertTriangle,
   ChevronLeft,
@@ -17,6 +16,8 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useReorder } from "@/lib/useReorder";
 import { KEYS, onSettingsChanged, parseRefreshMin, settingGet } from "@/lib/settings";
+import { useAsyncSubscription } from "@/lib/useAsyncSubscription";
+import { useTauriEvent } from "@/lib/useTauriEvent";
 import { CITIES } from "./cities";
 import {
   RequestGate,
@@ -164,21 +165,17 @@ export function WeatherPage({ compact }: { compact: boolean }) {
     })();
   }, [fetchWeather, loadCities, locateAndAdd]);
 
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    void listen("config://imported", () => {
-      void loadCities().then((list) => {
-        setCities(list);
-        const next = list.includes(active) ? active : (list[0] ?? "");
-        const compactNext = list.includes(compactCity) ? compactCity : (list[0] ?? "");
-        setActive(next);
-        setCompactCity(compactNext);
-        if (next) void fetchWeather(next);
-        if (compactNext && compactNext !== next) void fetchWeather(compactNext, undefined, "compact");
-      });
-    }).then((fn) => { unlisten = fn; });
-    return () => unlisten?.();
-  }, [active, compactCity, fetchWeather, loadCities]);
+  useTauriEvent("config://imported", () => {
+    void loadCities().then((list) => {
+      setCities(list);
+      const next = list.includes(active) ? active : (list[0] ?? "");
+      const compactNext = list.includes(compactCity) ? compactCity : (list[0] ?? "");
+      setActive(next);
+      setCompactCity(compactNext);
+      if (next) void fetchWeather(next);
+      if (compactNext && compactNext !== next) void fetchWeather(compactNext, undefined, "compact");
+    });
+  });
 
   const persistResolvedCity = useCallback(async (city: string, location: WeatherLocation) => {
     await invoke("weather_cities_add", { city });
@@ -246,12 +243,15 @@ export function WeatherPage({ compact }: { compact: boolean }) {
 
   useEffect(() => {
     void settingGet(KEYS.weatherRefreshMin).then((value) => setRefreshMin(parseRefreshMin(value)));
-    let unlisten: (() => void) | undefined;
-    void onSettingsChanged((key, value) => {
-      if (key === KEYS.weatherRefreshMin) setRefreshMin(parseRefreshMin(value));
-    }).then((fn) => { unlisten = fn; });
-    return () => unlisten?.();
   }, []);
+
+  useAsyncSubscription(
+    () => onSettingsChanged((key, value) => {
+      if (key === KEYS.weatherRefreshMin) setRefreshMin(parseRefreshMin(value));
+    }),
+    [],
+    { label: "settings://changed:weather" },
+  );
 
   useEffect(() => {
     const id = window.setInterval(refreshAll, refreshMin * 60 * 1000);

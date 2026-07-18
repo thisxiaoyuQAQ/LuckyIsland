@@ -12,6 +12,34 @@ export interface BridgeHandle {
   fit: () => void;
 }
 
+type Cleanup = () => void;
+
+function createCleanupStack() {
+  const cleanups: Cleanup[] = [];
+
+  return {
+    add(cleanup: Cleanup) {
+      cleanups.push(cleanup);
+    },
+    drain() {
+      const errors: unknown[] = [];
+      while (cleanups.length > 0) {
+        const cleanup = cleanups.pop();
+        try {
+          cleanup?.();
+        } catch (error) {
+          errors.push(error);
+        }
+      }
+      if (errors.length > 0) {
+        const error = errors[0] instanceof Error ? errors[0] : new Error(String(errors[0]));
+        if (errors.length > 1) Object.assign(error, { cleanupErrors: errors.slice(1) });
+        throw error;
+      }
+    },
+  };
+}
+
 /**
  * 把一个 xterm Terminal 实例桥接到后端 PTY：
  * - onData → term_write
@@ -37,38 +65,55 @@ export async function attachTerminal(
   fitIfReady(fit);
   term.focus();
 
-  const onData = term.onData((d) => {
-    void invoke("term_write", { termId, data: d });
-  });
-  const onResize = term.onResize(({ cols, rows }) => {
-    void invoke("term_resize", { termId, cols, rows });
-  });
+  const cleanups = createCleanupStack();
+  try {
+    const onData = term.onData((d) => {
+      void invoke("term_write", { termId, data: d });
+    });
+    cleanups.add(() => onData.dispose());
+    const onResize = term.onResize(({ cols, rows }) => {
+      void invoke("term_resize", { termId, cols, rows });
+    });
+    cleanups.add(() => onResize.dispose());
 
-  const unOutput: UnlistenFn = await listen<{ term_id: string; data: string }>(
-    "term://output",
-    (e) => {
-      if (e.payload.term_id === termId) term.write(e.payload.data);
-    },
-  );
-  const unExited: UnlistenFn = await listen<string>("term://exited", (e) => {
-    if (e.payload === termId) term.write("\r\n\x1b[90m[进程已退出]\x1b[0m\r\n");
-  });
+    const unOutput: UnlistenFn = await listen<{ term_id: string; data: string }>(
+      "term://output",
+      (e) => {
+        if (e.payload.term_id === termId) term.write(e.payload.data);
+      },
+    );
+    cleanups.add(unOutput);
+    const unExited: UnlistenFn = await listen<string>("term://exited", (e) => {
+      if (e.payload === termId) term.write("\r\n\x1b[90m[进程已退出]\x1b[0m\r\n");
+    });
+    cleanups.add(unExited);
+  } catch (error) {
+    try {
+      cleanups.drain();
+    } catch (cleanupError) {
+      const setupError = error instanceof Error ? error : new Error(String(error));
+      Object.assign(setupError, { cleanupError });
+      throw setupError;
+    }
+    throw error;
+  }
+
+  let disposed = false;
+  const dispose = () => {
+    disposed = true;
+    cleanups.drain();
+  };
 
   // 回放后端缓存：解决 PTY 在 TerminalTab attach 前已经输出（提示符）导致事件丢失。
   void invoke<string>("term_snapshot", { termId }).then((snapshot) => {
-    if (snapshot) term.write(snapshot);
+    if (!disposed && snapshot) term.write(snapshot);
   });
 
   // 初始尺寸同步给后端
   void invoke("term_resize", { termId, cols: term.cols, rows: term.rows });
 
   return {
-    dispose: () => {
-      onData.dispose();
-      onResize.dispose();
-      unOutput();
-      unExited();
-    },
+    dispose,
     fit: () => fitIfReady(fit),
   };
 }

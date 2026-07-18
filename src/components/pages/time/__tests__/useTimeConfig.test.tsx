@@ -7,14 +7,17 @@ import { flushReactWork, mountReactTree } from "@/test/mountReactTree";
 interface Deferred<T> {
   promise: Promise<T>;
   resolve: (value: T) => void;
+  reject: (reason: unknown) => void;
 }
 
 function deferred<T>(): Deferred<T> {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((done) => {
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((done, fail) => {
     resolve = done;
+    reject = fail;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 const subscriptions: Array<Deferred<() => void>> = [];
@@ -66,6 +69,20 @@ describe("useTimeSetting subscription lifecycle", () => {
     await flushReactWork();
 
     expect(unlisten).toHaveBeenCalledTimes(1);
+  });
+
+  it("diagnoses a registration rejection without an unhandled rejection", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const tree = await mountReactTree(<Probe />);
+
+    subscriptions[0].reject(new Error("registration rejected"));
+    await flushReactWork();
+
+    expect(error).toHaveBeenCalledWith(
+      "[async-subscription] settings://changed:time:test",
+      expect.objectContaining({ message: "registration rejected" }),
+    );
+    await tree.unmount();
   });
 
   it("cleans every StrictMode subscription exactly once", async () => {
