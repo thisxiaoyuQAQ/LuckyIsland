@@ -50,6 +50,7 @@ import {
 } from "@/lib/islandWheel";
 import { useAsyncSubscription } from "@/lib/useAsyncSubscription";
 import { useTauriEvent } from "@/lib/useTauriEvent";
+import { parseThemeMode, useTheme } from "@/lib/theme";
 import {
   acknowledgeAvailableUpdate,
   getUpdateSnapshot,
@@ -57,9 +58,6 @@ import {
   setUpdateFullscreenBlocked,
   subscribeUpdate,
 } from "@/lib/update-store";
-
-type Theme = "light" | "dark";
-type ThemeMode = Theme | "auto";
 
 interface PageMeta {
   id: PageId;
@@ -86,18 +84,8 @@ const pageVariants = {
   exit: (dir: number) => ({ x: dir > 0 ? "-100%" : "100%", opacity: 0 }),
 };
 
-function getSystemTheme(): Theme {
-  if (typeof window === "undefined") return "light";
-  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-}
-
-function normalizeThemeMode(v: string | null): ThemeMode | null {
-  return v === "light" || v === "dark" || v === "auto" ? v : null;
-}
-
 function App() {
-  const [themeMode, setThemeMode] = useState<ThemeMode>("auto");
-  const [systemTheme, setSystemTheme] = useState<Theme>(getSystemTheme);
+  const { resolvedTheme, setThemeMode } = useTheme();
   const [policy, setPolicy] = useState<WindowPolicySnapshot | null>(null);
   const [visualPhase, setVisualPhase] = useState<IslandVisualPhase>("compact");
   const reducedMotion = useReducedMotion();
@@ -163,7 +151,7 @@ function App() {
 
   const islandState = policy?.effectiveState ?? "compact";
   const expanded = containerExpandedForPhase(visualPhase);
-  const effectiveTheme: Theme = themeMode === "auto" ? systemTheme : themeMode;
+  const effectiveTheme = resolvedTheme;
   const CurrentPage = pages[pageIndex]?.Component ?? TimePage;
 
   const setState = useCallback((state: IslandState) => {
@@ -217,10 +205,10 @@ function App() {
     return () => island.removeEventListener("wheel", onWheel);
   }, [pages.length, setPage]);
 
-  const setThemeAndPersist = useCallback((mode: ThemeMode) => {
+  const setThemeAndPersist = useCallback((mode: "light" | "dark" | "auto") => {
     setThemeMode(mode);
     void settingSetEmit(KEYS.theme, mode);
-  }, []);
+  }, [setThemeMode]);
 
   useEffect(() => {
     return () => {
@@ -269,7 +257,7 @@ function App() {
         setPagesOrder(parsePagesOrder(value));
       });
       applySetting(KEYS.theme, theme, (value) => {
-        setThemeMode(normalizeThemeMode(value) ?? "auto");
+        setThemeMode(parseThemeMode(value) ?? "auto");
       });
       applySetting(KEYS.blur, blurResult, (value) => {
         setBlur(parseBool(value, true));
@@ -288,7 +276,7 @@ function App() {
     () => onSettingsChanged((key, value) => {
       if (key === KEYS.pagesEnabled) setPagesEnabled(parsePagesEnabled(value));
       if (key === KEYS.pagesOrder) setPagesOrder(parsePagesOrder(value));
-      if (key === KEYS.theme) setThemeMode(normalizeThemeMode(value) ?? "auto");
+      if (key === KEYS.theme) setThemeMode(parseThemeMode(value) ?? "auto");
       if (key === KEYS.blur) setBlur(parseBool(value, true));
       if (key === KEYS.windowOpacity) setOpacity(parseOpacity(value));
       if (key === KEYS.updateAutoCheck) setAutoCheckUpdates(parseBool(value, true));
@@ -318,13 +306,7 @@ function App() {
     document.documentElement.setAttribute("data-theme", effectiveTheme);
   }, [effectiveTheme]);
 
-  // 主题：跟随系统变化（仅在 themeMode=auto 时体现在 effectiveTheme）。
-  useEffect(() => {
-    const mq = window.matchMedia("(prefers-color-scheme: dark)");
-    const h = (e: MediaQueryListEvent) => setSystemTheme(e.matches ? "dark" : "light");
-    mq.addEventListener("change", h);
-    return () => mq.removeEventListener("change", h);
-  }, []);
+  // 系统深浅色跟踪由 useTheme 内部处理，resolvedTheme 已含系统解析。
 
   // 监听 Rust 推送的结构化策略快照；启动读取不得覆盖更新后的运行态。
   useEffect(() => {
