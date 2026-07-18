@@ -217,11 +217,142 @@ describe("WeatherPage subscriptions", () => {
     await tree.unmount();
   });
 
+  it("settles the active city's inflight state when its response arrives", async () => {
+    const core = await import("@tauri-apps/api/core");
+    const invokeMock = core.invoke as ReturnType<typeof vi.fn>;
+    const original = invokeMock.getMockImplementation();
+    const response = deferred<WeatherBundle>();
+    compactSetting.value = "北京";
+    invokeMock.mockImplementation(async (command: string, args?: unknown) => {
+      invokes.push({ command, args });
+      if (command === "weather_cities_list") return ["北京"];
+      if (command === "setting_get") return compactSetting.value;
+      if (command === "weather_get") return response.promise;
+      return undefined;
+    });
+
+    try {
+      const tree = await mountReactTree(<WeatherPage compact={false} />);
+      await flushReactWork();
+      expect(document.querySelector(".animate-spin")).not.toBeNull();
+
+      response.resolve(weatherBundle("北京"));
+      await flushReactWork();
+
+      expect(document.querySelector(".animate-spin")).toBeNull();
+      expect(document.querySelector(".text-3xl")?.textContent).toBe("26");
+      await tree.unmount();
+    } finally {
+      invokeMock.mockImplementation(original ?? (() => undefined));
+    }
+  });
+
+  it("does not cache a deleted city's late response", async () => {
+    const core = await import("@tauri-apps/api/core");
+    const invokeMock = core.invoke as ReturnType<typeof vi.fn>;
+    const original = invokeMock.getMockImplementation();
+    const firstBeijing = deferred<WeatherBundle>();
+    const secondBeijing = deferred<WeatherBundle>();
+    let currentCities = ["北京", "上海"];
+    let beijingRequests = 0;
+    invokeMock.mockImplementation(async (command: string, args?: unknown) => {
+      invokes.push({ command, args });
+      if (command === "weather_cities_list") return currentCities;
+      if (command === "setting_get") return compactSetting.value;
+      if (command === "weather_cities_remove") {
+        currentCities = ["上海"];
+        return undefined;
+      }
+      if (command === "weather_get") {
+        const city = (args as { city: string }).city;
+        if (city === "北京") {
+          beijingRequests += 1;
+          return beijingRequests === 1 ? firstBeijing.promise : secondBeijing.promise;
+        }
+        return weatherBundle(city);
+      }
+      return undefined;
+    });
+
+    try {
+      const tree = await mountReactTree(<WeatherPage compact={false} />);
+      await flushReactWork();
+
+      const removeBeijing = document.querySelector('button[aria-label="删除北京"]');
+      if (!(removeBeijing instanceof HTMLButtonElement)) throw new Error("Beijing remove button not found");
+      await dispatch(() => removeBeijing.click());
+      await flushReactWork();
+
+      firstBeijing.resolve(weatherBundle("北京"));
+      await flushReactWork();
+
+      currentCities = ["北京", "上海"];
+      await dispatch(() => importSubscription().callback({
+        event: "config://imported",
+        id: 4,
+        payload: undefined,
+      }));
+      await flushReactWork();
+
+      const beijing = Array.from(document.querySelectorAll("button")).find(
+        (button) => button.textContent === "北京",
+      );
+      if (!(beijing instanceof HTMLButtonElement)) throw new Error("Beijing button not found");
+      await dispatch(() => beijing.click());
+      await flushReactWork();
+
+      expect(beijingRequests).toBe(2);
+      expect(document.querySelector(".text-3xl")).toBeNull();
+      await tree.unmount();
+    } finally {
+      invokeMock.mockImplementation(original ?? (() => undefined));
+    }
+  });
+
+  it("dedupes a refetch for a city whose request is still inflight", async () => {
+    // 让初次挂载的 weather_get 全部挂起（永不 resolve），保持「在途」。
+    // mockImplementation 会污染后续用例（restoreAllMocks 不恢复 vi.fn 实现），故结尾显式还原。
+    const core = await import("@tauri-apps/api/core");
+    const invokeMock = core.invoke as ReturnType<typeof vi.fn>;
+    const original = invokeMock.getMockImplementation();
+    invokeMock.mockImplementation(async (command: string, args?: unknown) => {
+      invokes.push({ command, args });
+      if (command === "weather_cities_list") return ["北京", "上海"];
+      if (command === "setting_get") return compactSetting.value;
+      if (command === "weather_get") return new Promise<WeatherBundle>(() => undefined);
+      return undefined;
+    });
+
+    try {
+      const tree = await mountReactTree(<WeatherPage compact={false} />);
+      await flushReactWork();
+      // 初次在途请求已发出（北京 + 紧凑上海）。
+      expect(weatherRequests()).toEqual(["北京", "上海"]);
+      const before = weatherRequests().length;
+
+      // 两次 import 期间 北京/上海 均在途 → 全部去重，无新增 weather_get。
+      cityResponses.push(["北京", "上海"], ["北京", "上海"]);
+      await dispatch(() => importSubscription().callback({ event: "config://imported", id: 2, payload: undefined }));
+      await dispatch(() => importSubscription().callback({ event: "config://imported", id: 3, payload: undefined }));
+      await flushReactWork();
+
+      expect(weatherRequests().slice(before)).toEqual([]);
+      await tree.unmount();
+    } finally {
+      invokeMock.mockImplementation(original ?? (() => undefined));
+    }
+  });
+
   it("reconfigures the refresh timer without rebuilding the settings subscription", async () => {
     vi.useFakeTimers();
     const clearIntervalSpy = vi.spyOn(window, "clearInterval");
     const tree = await mountReactTree(<WeatherPage compact={false} />);
+    // 充分等初次挂载的 weather_get settle（真实 Promise 微任务），
+    // 否则 interval 触发的刷新会因初次仍在途而被按城市去重。
     await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -231,15 +362,15 @@ describe("WeatherPage subscriptions", () => {
     expect(settingsSubscriptions).toHaveLength(1);
     expect(clearIntervalSpy).toHaveBeenCalled();
 
+    // 未到一个周期：无刷新。
     await act(async () => {
-      vi.advanceTimersByTime(5 * 60 * 1000 - 1);
-      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(60 * 1000);
     });
     expect(weatherRequests()).toHaveLength(initialRequests);
 
+    // 跨过 5 分钟周期：触发一轮按城市刷新（active 北京 + compact 上海）。
     await act(async () => {
-      vi.advanceTimersByTime(1);
-      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(4 * 60 * 1000 + 1000);
     });
     expect(weatherRequests().slice(initialRequests)).toEqual(["北京", "上海"]);
 

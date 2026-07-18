@@ -20,13 +20,18 @@ import { useAsyncSubscription } from "@/lib/useAsyncSubscription";
 import { useTauriEvent } from "@/lib/useTauriEvent";
 import { CITIES } from "./cities";
 import {
-  RequestGate,
+  beginCityFetch,
+  cityFetchOutcome,
   dateInTimezone,
   displayForecast,
+  emptyCityFetchEntry,
+  failCityFetch,
   hasPrecipitation,
   parseWeatherCommandError,
   weatherDayLabel,
   wheelDeltaToHorizontal,
+  type CityFetchEntry,
+  type CityFetchResult,
   type WeatherBundle,
   type WeatherLocation,
 } from "./model";
@@ -68,16 +73,20 @@ export function WeatherPage({ compact }: { compact: boolean }) {
   const [active, setActive] = useState("");
   const [compactCity, setCompactCity] = useState("");
   const [cache, setCache] = useState<Record<string, WeatherBundle>>({});
+  const [fetchStates, setFetchStates] = useState<Record<string, CityFetchEntry>>({});
+  const fetchStatesRef = useRef<Record<string, CityFetchEntry>>({});
+  const updateFetchStates = useCallback((
+    update: (current: Record<string, CityFetchEntry>) => Record<string, CityFetchEntry>,
+  ) => {
+    const next = update(fetchStatesRef.current);
+    fetchStatesRef.current = next;
+    setFetchStates(next);
+  }, []);
   const [draft, setDraft] = useState("");
   const [adding, setAdding] = useState(false);
   const [picking, setPicking] = useState(false);
-  const [loadingCity, setLoadingCity] = useState<string | null>(null);
   const [locating, setLocating] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  const [candidates, setCandidates] = useState<{ city: string; values: WeatherLocation[] } | null>(null);
   const [refreshMin, setRefreshMin] = useState(10);
-  const activeGate = useRef(new RequestGate());
-  const compactGate = useRef(new RequestGate());
   const forecastRef = useRef<HTMLDivElement>(null);
 
   const suggestions = useMemo(() => {
@@ -90,30 +99,36 @@ export function WeatherPage({ compact }: { compact: boolean }) {
   const fetchWeather = useCallback(async (
     city: string,
     location?: WeatherLocation,
-    purpose: "active" | "compact" = "active",
   ) => {
     if (!city) return;
-    const gate = purpose === "active" ? activeGate.current : compactGate.current;
-    const requestId = gate.next();
-    if (purpose === "active") {
-      setLoadingCity(city);
-      setErr(null);
-      setCandidates(null);
-    }
-    try {
-      const data = await invoke<WeatherBundle>("weather_get", { city, location: location ?? null });
-      if (!gate.isCurrent(requestId)) return;
-      setCache((current) => ({ ...current, [city]: data }));
-    } catch (error) {
-      if (!gate.isCurrent(requestId)) return;
+    const begin = beginCityFetch(fetchStatesRef.current[city] ?? null, city);
+    if (begin.deduped) return;
+    updateFetchStates(() => ({ ...fetchStatesRef.current, [city]: begin.entry }));
+
+    const settled = await invoke<WeatherBundle>("weather_get", {
+      city,
+      location: location ?? null,
+    }).then<{ result: CityFetchResult; data?: WeatherBundle }>((data) => ({
+      result: { kind: "ok", city },
+      data,
+    })).catch<{ result: CityFetchResult; data?: WeatherBundle }>((error: unknown) => {
       const structured = parseWeatherCommandError(error);
-      if (purpose === "active" && structured?.code === "ambiguous_location" && structured.candidates) {
-        setCandidates({ city, values: structured.candidates });
-      } else if (purpose === "active") {
-        setErr(structured?.message ?? String(error));
+      if (structured?.code === "ambiguous_location" && structured.candidates) {
+        return { result: { kind: "ambiguous", city, candidates: structured.candidates } };
       }
-    } finally {
-      if (purpose === "active" && gate.isCurrent(requestId)) setLoadingCity(null);
+      return {
+        result: { kind: "error", city, message: structured?.message ?? String(error) },
+      };
+    });
+
+    const entry = fetchStatesRef.current[city];
+    if (!entry) return;
+    const outcome = cityFetchOutcome(entry, city, begin.token, settled.result);
+    if (outcome.kind === "ignored") return;
+    updateFetchStates(() => ({ ...fetchStatesRef.current, [city]: outcome.entry }));
+    if (settled.data) {
+      const data = settled.data;
+      setCache((current) => ({ ...current, [city]: data }));
     }
   }, []);
 
@@ -121,14 +136,16 @@ export function WeatherPage({ compact }: { compact: boolean }) {
     try {
       return await invoke<string[]>("weather_cities_list");
     } catch (error) {
-      setErr(String(error));
+      updateFetchStates((current) => {
+        const base = current[active] ?? emptyCityFetchEntry();
+        return { ...current, [active]: failCityFetch(base, String(error)) };
+      });
       return [];
     }
-  }, []);
+  }, [active]);
 
   const locateAndAdd = useCallback(async () => {
     setLocating(true);
-    setErr(null);
     try {
       const located = await invoke<LocatedCity>("weather_locate");
       await invoke("weather_cities_add", { city: located.city });
@@ -138,14 +155,23 @@ export function WeatherPage({ compact }: { compact: boolean }) {
       setActive(next);
       await fetchWeather(next);
     } catch (error) {
-      setErr(`定位失败：${error}`);
+      updateFetchStates((current) => {
+        const base = current[active] ?? emptyCityFetchEntry();
+        return { ...current, [active]: failCityFetch(base, `定位失败：${error}`) };
+      });
       setAdding(true);
     } finally {
       setLocating(false);
     }
-  }, [fetchWeather, loadCities]);
+  }, [active, fetchWeather, loadCities]);
 
+  // 仅挂载时跑一次：加载城市列表 + 紧凑城市，随后按需 fetch。
+  // fetchWeather/loadCities/locateAndAdd 会随后续 active 变化重建，不能列为依赖，
+  // 否则每次切城市都会重跑本 effect 造成重复请求。
+  const didInitRef = useRef(false);
   useEffect(() => {
+    if (didInitRef.current) return;
+    didInitRef.current = true;
     void (async () => {
       const [list, savedCompact] = await Promise.all([
         loadCities(),
@@ -160,10 +186,11 @@ export function WeatherPage({ compact }: { compact: boolean }) {
       const selectedCompact = savedCompact && list.includes(savedCompact) ? savedCompact : first;
       setActive(first);
       setCompactCity(selectedCompact);
-      void fetchWeather(first, undefined, "active");
-      if (selectedCompact !== first) void fetchWeather(selectedCompact, undefined, "compact");
+      void fetchWeather(first);
+      if (selectedCompact !== first) void fetchWeather(selectedCompact);
     })();
-  }, [fetchWeather, loadCities, locateAndAdd]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useTauriEvent("config://imported", () => {
     void loadCities().then((list) => {
@@ -173,7 +200,7 @@ export function WeatherPage({ compact }: { compact: boolean }) {
       setActive(next);
       setCompactCity(compactNext);
       if (next) void fetchWeather(next);
-      if (compactNext && compactNext !== next) void fetchWeather(compactNext, undefined, "compact");
+      if (compactNext && compactNext !== next) void fetchWeather(compactNext);
     });
   });
 
@@ -184,7 +211,6 @@ export function WeatherPage({ compact }: { compact: boolean }) {
     setActive(city);
     setDraft("");
     setAdding(false);
-    setCandidates(null);
     await fetchWeather(city, location);
   }, [fetchWeather, loadCities]);
 
@@ -194,21 +220,40 @@ export function WeatherPage({ compact }: { compact: boolean }) {
     try {
       const matches = await invoke<WeatherLocation[]>("weather_location_search", { query: city });
       if (matches.length === 0) {
-        setErr(`未找到城市：${city}`);
+        updateFetchStates((current) => {
+          const base = current[active] ?? emptyCityFetchEntry();
+          return { ...current, [active]: failCityFetch(base, `未找到城市：${city}`) };
+        });
         return;
       }
       if (matches.length === 1) {
         await persistResolvedCity(city, matches[0]);
       } else {
-        setCandidates({ city, values: matches });
+        updateFetchStates((current) => {
+          const base = current[active] ?? emptyCityFetchEntry();
+          return { ...current, [active]: { ...base, candidates: matches, error: null } };
+        });
       }
     } catch (error) {
-      setErr(parseWeatherCommandError(error)?.message ?? String(error));
+      updateFetchStates((current) => {
+        const base = current[active] ?? emptyCityFetchEntry();
+        return {
+          ...current,
+          [active]: failCityFetch(base, parseWeatherCommandError(error)?.message ?? String(error)),
+        };
+      });
     }
   };
 
   const removeCity = async (city: string) => {
     await invoke("weather_cities_remove", { city });
+    // 丢弃该城市的在途请求：此后任何归属它的晚到响应都被忽略。
+    updateFetchStates((current) => {
+      if (!(city in current)) return current;
+      const next = { ...current };
+      delete next[city];
+      return next;
+    });
     const list = await loadCities();
     setCities(list);
     if (active === city) {
@@ -220,7 +265,7 @@ export function WeatherPage({ compact }: { compact: boolean }) {
       const next = list[0] ?? "";
       setCompactCity(next);
       await invoke("setting_set", { key: COMPACT_KEY, value: next || null });
-      if (next && next !== active) void fetchWeather(next, undefined, "compact");
+      if (next && next !== active) void fetchWeather(next);
     }
   };
 
@@ -228,7 +273,7 @@ export function WeatherPage({ compact }: { compact: boolean }) {
     setCompactCity(city);
     setPicking(false);
     await invoke("setting_set", { key: COMPACT_KEY, value: city });
-    if (!cache[city]) void fetchWeather(city, undefined, "compact");
+    if (!cache[city]) void fetchWeather(city);
   };
 
   const { overIndex, itemProps } = useReorder<string>((next) => {
@@ -238,7 +283,7 @@ export function WeatherPage({ compact }: { compact: boolean }) {
 
   const refreshAll = useCallback(() => {
     if (active) void fetchWeather(active);
-    if (compactCity && compactCity !== active) void fetchWeather(compactCity, undefined, "compact");
+    if (compactCity && compactCity !== active) void fetchWeather(compactCity);
   }, [active, compactCity, fetchWeather]);
 
   useEffect(() => {
@@ -260,8 +305,15 @@ export function WeatherPage({ compact }: { compact: boolean }) {
 
   const bundle = cache[active];
   const compactBundle = cache[compactCity] ?? bundle;
+  // B5b：渲染派生自按城市的 fetchStates；err/candidates 仍按「当前激活城市」展示。
+  const activeFetch = fetchStates[active] ?? emptyCityFetchEntry();
+  const compactFetch = fetchStates[compactCity] ?? emptyCityFetchEntry();
+  const err = activeFetch.error;
+  const candidates = activeFetch.candidates
+    ? { city: active, values: activeFetch.candidates }
+    : null;
   if (compact) {
-    if (loadingCity && !compactBundle) return <span className="text-sm text-muted-foreground">天气…</span>;
+    if (compactFetch.inflight && !compactBundle) return <span className="text-sm text-muted-foreground">天气…</span>;
     if (!compactBundle) return <span className="text-sm text-muted-foreground">无天气</span>;
     const now = compactBundle.now;
     return (
@@ -316,7 +368,7 @@ export function WeatherPage({ compact }: { compact: boolean }) {
             </div>}
           </div>
           <Button size="sm" variant="ghost" className="h-7 px-2" onClick={() => void locateAndAdd()} disabled={locating}>{locating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <LocateFixed className="h-3.5 w-3.5" />}</Button>
-          <Button size="sm" variant="ghost" className="h-7 px-2" onClick={refreshAll}>{loadingCity ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}</Button>
+          <Button size="sm" variant="ghost" className="h-7 px-2" onClick={refreshAll}>{activeFetch.inflight ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}</Button>
         </div>
       </div>
 
