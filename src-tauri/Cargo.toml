@@ -66,6 +66,10 @@ tar = "0.4"
 # bzip2 默认 feature 就是纯 Rust 后端 libbz2-rs-sys（无需系统 C 库/编译器），不用额外指定 feature
 bzip2 = "0.6"
 pinyin = "0.11"
+# B4 日志：tracing 结构化日志 + tracing-appender 按天轮转文件；脱敏由 logging 模块统一处理。
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter", "time"] }
+tracing-appender = "0.2"
 
 # M9 TTS 唤醒应答：Windows 系统自带 SAPI5（ISpVoice COM），用 windows crate 的 Win32_Media_Speech
 # + Win32_System_Com 特性，不下模型不加原生库。Lock 里 windows 已是 0.61.3（cpal/tauri 的传递依赖），

@@ -3,6 +3,7 @@ mod ai;
 mod data;
 mod fullscreen;
 mod hotkeys;
+mod logging;
 mod monitor;
 mod notify;
 mod settings;
@@ -66,6 +67,14 @@ fn cleanup_runtime_resources(app: &tauri::AppHandle) {
         let _ = voice_stop_listening(state);
     }
 }
+
+/// 持有非阻塞日志 writer 的 guard，直到 App resource 清理时才 drop（flush 落盘）。
+/// 与 UpdaterCleanupGuard 同机制：进程退出路径 drop resource 时冲刷最后的日志。
+/// 字段从不读取是有意的——只为把 guard 的生命周期绑到 resource 上。
+#[allow(dead_code)]
+struct LoggingGuard(tracing_appender::non_blocking::WorkerGuard);
+
+impl tauri::Resource for LoggingGuard {}
 
 /// Updater 2.10 runs `AppHandle::cleanup_before_exit` immediately before its
 /// Windows installer exits the process. An app resource is dropped by that
@@ -253,6 +262,16 @@ pub fn run() {
             hotkeys_reload
         ])
         .setup(|app| {
+            // B4 日志：最早初始化，保证后续启动日志都能落盘（轮转 + 脱敏）。
+            // guard 存为 resource，进程退出 resource 清理时 drop 冲刷最后日志。
+            match logging::init_logging(app.handle()) {
+                Ok(guard) => {
+                    app.resources_table().add(LoggingGuard(guard));
+                    tracing::info!(version = env!("CARGO_PKG_VERSION"), "LuckyIsland 启动");
+                }
+                Err(error) => eprintln!("[logging] 初始化失败，回退到 stderr：{error}"),
+            }
+
             // Updater Config 不接受缺失配置对应的 null；真实公钥与 endpoint 接入前保持禁用。
             // 配置存在后再注册 cleanup guard，确保安装器退出路径也释放终端和语音资源。
             if app.config().plugins.0.contains_key("updater") {
@@ -425,6 +444,7 @@ pub fn run() {
             // 变化并退出，Drop 里会关掉 cpal 音频流。进程马上就要退出，不等线程真正
             // 结束也无妨（OS 会在进程退出时回收所有句柄）。
             if let tauri::RunEvent::Exit = event {
+                tracing::info!("LuckyIsland 退出，开始清理运行时资源");
                 if let Some(controller) = app_handle.try_state::<fullscreen::FullscreenController>()
                 {
                     controller.shutdown();
