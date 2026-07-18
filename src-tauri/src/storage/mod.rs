@@ -44,6 +44,119 @@ fn migrate_notifications(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
+/// 数据库 schema 的当前版本。每次结构变更 +1 并在此追加对应 migrate_vN 步骤。
+/// v1：基线六表。v2：notifications.priority 列。
+pub(crate) const SCHEMA_VERSION: u32 = 2;
+
+/// v1：基线六表。全新库直接建成含 priority 的最终形态；
+/// 已存在的旧库因 CREATE TABLE IF NOT EXISTS 不会动其结构（priority 由 v2 兜底补）。
+fn migrate_v1_baseline(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS todos (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            done INTEGER NOT NULL DEFAULT 0,
+            priority INTEGER NOT NULL DEFAULT 0,
+            due_at INTEGER,
+            created_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS weather_cities (
+            city TEXT PRIMARY KEY,
+            sort INTEGER NOT NULL DEFAULT 0,
+            added_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS stock_watchlist (
+            symbol TEXT PRIMARY KEY,
+            sort INTEGER NOT NULL DEFAULT 0,
+            added_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS notifications (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            body TEXT,
+            source TEXT NOT NULL,
+            level TEXT NOT NULL,
+            priority TEXT NOT NULL DEFAULT 'normal',
+            created_at INTEGER NOT NULL,
+            read INTEGER NOT NULL DEFAULT 0,
+            action_type TEXT,
+            action_cwd TEXT
+        );
+        CREATE TABLE IF NOT EXISTS ai_conversations (
+            id TEXT PRIMARY KEY,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            created_at INTEGER NOT NULL
+        );",
+    )
+    .map_err(|error| error.to_string())
+}
+
+/// v2：为迁移前的旧 notifications 表补 priority 列（新库 v1 已含则跳过，幂等）。
+fn migrate_v2_notification_priority(conn: &Connection) -> Result<(), String> {
+    migrate_notifications(conn)
+}
+
+fn user_version(conn: &Connection) -> Result<u32, String> {
+    conn.query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
+        .map_err(|error| error.to_string())
+}
+
+fn set_user_version(conn: &Connection, version: u32) -> Result<(), String> {
+    // PRAGMA 不支持参数绑定；version 来自本模块的整数常量，安全。
+    conn.execute_batch(&format!("PRAGMA user_version = {version}"))
+        .map_err(|error| error.to_string())
+}
+
+/// 一个迁移步骤：目标版本号 + 在该版事务内执行的结构变更。
+type MigrationStep = (u32, fn(&Connection) -> Result<(), String>);
+
+/// 全部迁移步骤，按版本升序。最后一版的版本号必须等于 SCHEMA_VERSION。
+const MIGRATION_STEPS: &[MigrationStep] = &[
+    (1, migrate_v1_baseline),
+    (2, migrate_v2_notification_priority),
+];
+
+/// 逐版本把数据库迁移到 SCHEMA_VERSION。
+///
+/// 每一版先在其自身事务内执行结构变更（失败即回滚该版、user_version 不前进，
+/// 下次从断点继续），提交后再在事务外推进 user_version（SQLite 不允许事务内写
+/// user_version）。重复执行幂等：已是最新则什么都不做。
+/// 库的 user_version 高于本代码的 SCHEMA_VERSION 时拒绝打开，避免旧版应用
+/// 在不知晓新版结构的情况下静默读写、造成降级损坏。
+pub(crate) fn run_migrations(conn: &Connection) -> Result<(), String> {
+    debug_assert_eq!(
+        MIGRATION_STEPS.last().map(|step| step.0),
+        Some(SCHEMA_VERSION),
+        "MIGRATION_STEPS 最后一版必须等于 SCHEMA_VERSION"
+    );
+
+    let current = user_version(conn)?;
+    if current > SCHEMA_VERSION {
+        return Err(format!(
+            "数据库版本 {current} 高于应用支持的 {SCHEMA_VERSION}，请升级应用"
+        ));
+    }
+
+    for &(version, step) in MIGRATION_STEPS {
+        if version <= current {
+            continue;
+        }
+        // 单连接、无嵌套事务：用 unchecked_transaction 以 &Connection 表达。
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(|error| error.to_string())?;
+        step(&tx)?;
+        tx.commit().map_err(|error| error.to_string())?;
+        set_user_version(conn, version)?;
+    }
+    Ok(())
+}
+
 pub struct Db(pub Mutex<Connection>);
 
 impl Db {
@@ -52,49 +165,7 @@ impl Db {
         std::fs::create_dir_all(&dir)?;
         let path = dir.join("data.db");
         let conn = Connection::open(path)?;
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS todos (
-                id TEXT PRIMARY KEY,
-                title TEXT NOT NULL,
-                done INTEGER NOT NULL DEFAULT 0,
-                priority INTEGER NOT NULL DEFAULT 0,
-                due_at INTEGER,
-                created_at INTEGER NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS settings (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS weather_cities (
-                city TEXT PRIMARY KEY,
-                sort INTEGER NOT NULL DEFAULT 0,
-                added_at INTEGER NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS stock_watchlist (
-                symbol TEXT PRIMARY KEY,
-                sort INTEGER NOT NULL DEFAULT 0,
-                added_at INTEGER NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS notifications (
-                id TEXT PRIMARY KEY,
-                title TEXT NOT NULL,
-                body TEXT,
-                source TEXT NOT NULL,
-                level TEXT NOT NULL,
-                priority TEXT NOT NULL DEFAULT 'normal',
-                created_at INTEGER NOT NULL,
-                read INTEGER NOT NULL DEFAULT 0,
-                action_type TEXT,
-                action_cwd TEXT
-            );
-            CREATE TABLE IF NOT EXISTS ai_conversations (
-                id TEXT PRIMARY KEY,
-                role TEXT NOT NULL,
-                content TEXT NOT NULL,
-                created_at INTEGER NOT NULL
-            );",
-        )?;
-        migrate_notifications(&conn).map_err(std::io::Error::other)?;
+        run_migrations(&conn).map_err(std::io::Error::other)?;
         // 首次启动：播种默认自选股（贵州茅台 + 平安银行），方便即时实测
         let count: i64 =
             conn.query_row("SELECT COUNT(*) FROM stock_watchlist", [], |r| r.get(0))?;
@@ -462,5 +533,199 @@ mod portable_tests {
         assert!(Db::is_portable_setting("update:auto_check"));
         assert!(!Db::is_portable_setting("notify:http_token"));
         assert!(!Db::is_portable_setting("ai:chat_api_key"));
+    }
+}
+
+#[cfg(test)]
+mod migration_tests {
+    use super::{run_migrations, SCHEMA_VERSION};
+    use rusqlite::Connection;
+
+    fn user_version(conn: &Connection) -> i64 {
+        conn.query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap()
+    }
+
+    fn table_exists(conn: &Connection, name: &str) -> bool {
+        conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+            [name],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap()
+            > 0
+    }
+
+    fn column_exists(conn: &Connection, table: &str, column: &str) -> bool {
+        let mut stmt = conn
+            .prepare(&format!("PRAGMA table_info({table})"))
+            .unwrap();
+        let names: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        names.iter().any(|n| n == column)
+    }
+
+    #[test]
+    fn empty_database_gets_full_schema_and_current_version() {
+        let conn = Connection::open_in_memory().unwrap();
+        assert_eq!(user_version(&conn), 0);
+
+        run_migrations(&conn).unwrap();
+
+        for table in [
+            "todos",
+            "settings",
+            "weather_cities",
+            "stock_watchlist",
+            "notifications",
+            "ai_conversations",
+        ] {
+            assert!(table_exists(&conn, table), "missing table {table}");
+        }
+        assert!(column_exists(&conn, "notifications", "priority"));
+        assert_eq!(user_version(&conn), SCHEMA_VERSION as i64);
+    }
+
+    #[test]
+    fn legacy_database_without_priority_is_upgraded_and_data_preserved() {
+        // 迁移前旧库：基线表都在，notifications 无 priority 列，含历史数据。
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE todos (id TEXT PRIMARY KEY, title TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0, priority INTEGER NOT NULL DEFAULT 0, due_at INTEGER, created_at INTEGER NOT NULL);
+             CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             CREATE TABLE weather_cities (city TEXT PRIMARY KEY, sort INTEGER NOT NULL DEFAULT 0, added_at INTEGER NOT NULL);
+             CREATE TABLE stock_watchlist (symbol TEXT PRIMARY KEY, sort INTEGER NOT NULL DEFAULT 0, added_at INTEGER NOT NULL);
+             CREATE TABLE notifications (id TEXT PRIMARY KEY, title TEXT NOT NULL, body TEXT, source TEXT NOT NULL, level TEXT NOT NULL, created_at INTEGER NOT NULL, read INTEGER NOT NULL DEFAULT 0, action_type TEXT, action_cwd TEXT);
+             CREATE TABLE ai_conversations (id TEXT PRIMARY KEY, role TEXT NOT NULL, content TEXT NOT NULL, created_at INTEGER NOT NULL);
+             INSERT INTO notifications (id,title,source,level,created_at) VALUES ('old','legacy','custom','error',1);
+             INSERT INTO settings (key,value) VALUES ('general:theme','dark');",
+        )
+        .unwrap();
+        assert_eq!(user_version(&conn), 0);
+        assert!(!column_exists(&conn, "notifications", "priority"));
+
+        run_migrations(&conn).unwrap();
+
+        assert!(column_exists(&conn, "notifications", "priority"));
+        assert_eq!(user_version(&conn), SCHEMA_VERSION as i64);
+        // 旧数据保留，priority 用默认值。
+        let priority: String = conn
+            .query_row(
+                "SELECT priority FROM notifications WHERE id='old'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(priority, "normal");
+        let theme: String = conn
+            .query_row(
+                "SELECT value FROM settings WHERE key='general:theme'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(theme, "dark");
+    }
+
+    #[test]
+    fn running_migrations_twice_is_idempotent() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+        run_migrations(&conn).unwrap();
+
+        assert_eq!(user_version(&conn), SCHEMA_VERSION as i64);
+        // priority 列只加一次（重复 ALTER 会报错，幂等要求第二次直接跳过）。
+        assert!(column_exists(&conn, "notifications", "priority"));
+    }
+
+    #[test]
+    fn partially_migrated_v1_database_only_applies_later_versions() {
+        // 已是 v1：基线六表存在但 notifications 无 priority。
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE todos (id TEXT PRIMARY KEY, title TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0, priority INTEGER NOT NULL DEFAULT 0, due_at INTEGER, created_at INTEGER NOT NULL);
+             CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             CREATE TABLE weather_cities (city TEXT PRIMARY KEY, sort INTEGER NOT NULL DEFAULT 0, added_at INTEGER NOT NULL);
+             CREATE TABLE stock_watchlist (symbol TEXT PRIMARY KEY, sort INTEGER NOT NULL DEFAULT 0, added_at INTEGER NOT NULL);
+             CREATE TABLE notifications (id TEXT PRIMARY KEY, title TEXT NOT NULL, body TEXT, source TEXT NOT NULL, level TEXT NOT NULL, created_at INTEGER NOT NULL, read INTEGER NOT NULL DEFAULT 0, action_type TEXT, action_cwd TEXT);
+             CREATE TABLE ai_conversations (id TEXT PRIMARY KEY, role TEXT NOT NULL, content TEXT NOT NULL, created_at INTEGER NOT NULL);
+             PRAGMA user_version = 1;
+             INSERT INTO notifications (id,title,source,level,created_at) VALUES ('n1','t','custom','info',1);",
+        )
+        .unwrap();
+        assert_eq!(user_version(&conn), 1);
+
+        run_migrations(&conn).unwrap();
+
+        assert!(column_exists(&conn, "notifications", "priority"));
+        assert_eq!(user_version(&conn), SCHEMA_VERSION as i64);
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM notifications", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn already_current_database_is_untouched() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+        // 标记一行，确认二次运行不动数据。
+        conn.execute("INSERT INTO settings (key, value) VALUES ('k', 'v')", [])
+            .unwrap();
+        run_migrations(&conn).unwrap();
+        let value: String = conn
+            .query_row("SELECT value FROM settings WHERE key='k'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(value, "v");
+    }
+
+    #[test]
+    fn newer_database_than_app_is_rejected() {
+        // 库来自更新版本的应用：拒绝打开，避免旧代码静默降级损坏数据。
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA user_version = 99;").unwrap();
+
+        let result = run_migrations(&conn);
+        assert!(result.is_err());
+        let message = result.unwrap_err();
+        assert!(
+            message.contains("99"),
+            "error should name the db version: {message}"
+        );
+        // 不前进、不改动：user_version 保持 99。
+        assert_eq!(user_version(&conn), 99);
+    }
+
+    #[test]
+    fn failed_version_rolls_back_and_does_not_advance_user_version() {
+        // 模拟损坏的部分迁移：声称已是 v1，但 notifications 表缺失，
+        // v2 的 ALTER 必然失败。要求：该版回滚、user_version 不前进、可诊断重试。
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             PRAGMA user_version = 1;",
+        )
+        .unwrap();
+        assert_eq!(user_version(&conn), 1);
+
+        let result = run_migrations(&conn);
+        assert!(
+            result.is_err(),
+            "v2 should fail without notifications table"
+        );
+        // user_version 未前进：仍停在 1，下次可从断点重试。
+        assert_eq!(user_version(&conn), 1);
+
+        // 修复缺口（补上 notifications 表）后可续传到最新版本。
+        conn.execute_batch(
+            "CREATE TABLE notifications (id TEXT PRIMARY KEY, title TEXT NOT NULL, body TEXT, source TEXT NOT NULL, level TEXT NOT NULL, created_at INTEGER NOT NULL, read INTEGER NOT NULL DEFAULT 0, action_type TEXT, action_cwd TEXT);",
+        )
+        .unwrap();
+        run_migrations(&conn).unwrap();
+        assert_eq!(user_version(&conn), SCHEMA_VERSION as i64);
+        assert!(column_exists(&conn, "notifications", "priority"));
     }
 }
