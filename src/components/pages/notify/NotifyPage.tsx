@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { useAsyncSubscription } from "@/lib/useAsyncSubscription";
 import { useTauriEvent } from "@/lib/useTauriEvent";
 import { NotifyCard, type NotificationItem } from "./NotifyCard";
+import { assertIpc, isNotificationList } from "@/lib/ipc-schemas";
 import {
   createNotificationHistoryLoader,
   nextNotificationVisibleCount,
@@ -15,9 +16,10 @@ import {
 import { KEYS, onSettingsChanged, parseFilterSources, settingGet, type NotifySource } from "@/lib/settings";
 import { ISLAND_DURATION_MS, ISLAND_EASE } from "@/lib/anim";
 
-const historyLoader = createNotificationHistoryLoader(() =>
-  invoke<NotificationItem[]>("notify_list", { limit: 100 }),
-);
+const historyLoader = createNotificationHistoryLoader(async () => {
+  const raw = await invoke<unknown>("notify_list", { limit: 100 });
+  return assertIpc("notify_list", raw, isNotificationList) as NotificationItem[];
+});
 
 export function NotifyPage({ compact }: { compact: boolean }) {
   const [items, setItems] = useState<NotificationItem[]>([]);

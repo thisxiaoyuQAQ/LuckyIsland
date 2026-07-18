@@ -18,6 +18,13 @@ import { useReorder } from "@/lib/useReorder";
 import { KEYS, onSettingsChanged, parseRefreshMin, settingGet } from "@/lib/settings";
 import { useAsyncSubscription } from "@/lib/useAsyncSubscription";
 import { useTauriEvent } from "@/lib/useTauriEvent";
+import {
+  assertIpc,
+  isLocatedCity,
+  isStringList,
+  isWeatherBundle,
+  isWeatherLocationList,
+} from "@/lib/ipc-schemas";
 import { CITIES } from "./cities";
 import {
   beginCityFetch,
@@ -35,12 +42,6 @@ import {
   type WeatherBundle,
   type WeatherLocation,
 } from "./model";
-
-interface LocatedCity {
-  city: string;
-  region: string;
-  ip: string;
-}
 
 const COMPACT_KEY = "weather:compact_city";
 
@@ -105,12 +106,12 @@ export function WeatherPage({ compact }: { compact: boolean }) {
     if (begin.deduped) return;
     updateFetchStates(() => ({ ...fetchStatesRef.current, [city]: begin.entry }));
 
-    const settled = await invoke<WeatherBundle>("weather_get", {
+    const settled = await invoke<unknown>("weather_get", {
       city,
       location: location ?? null,
-    }).then<{ result: CityFetchResult; data?: WeatherBundle }>((data) => ({
+    }).then<{ result: CityFetchResult; data?: WeatherBundle }>((raw) => ({
       result: { kind: "ok", city },
-      data,
+      data: assertIpc("weather_get", raw, isWeatherBundle),
     })).catch<{ result: CityFetchResult; data?: WeatherBundle }>((error: unknown) => {
       const structured = parseWeatherCommandError(error);
       if (structured?.code === "ambiguous_location" && structured.candidates) {
@@ -134,7 +135,8 @@ export function WeatherPage({ compact }: { compact: boolean }) {
 
   const loadCities = useCallback(async () => {
     try {
-      return await invoke<string[]>("weather_cities_list");
+      const raw = await invoke<unknown>("weather_cities_list");
+      return assertIpc("weather_cities_list", raw, isStringList);
     } catch (error) {
       updateFetchStates((current) => {
         const base = current[active] ?? emptyCityFetchEntry();
@@ -147,7 +149,11 @@ export function WeatherPage({ compact }: { compact: boolean }) {
   const locateAndAdd = useCallback(async () => {
     setLocating(true);
     try {
-      const located = await invoke<LocatedCity>("weather_locate");
+      const located = assertIpc(
+        "weather_locate",
+        await invoke<unknown>("weather_locate"),
+        isLocatedCity,
+      );
       await invoke("weather_cities_add", { city: located.city });
       const list = await loadCities();
       setCities(list);
@@ -218,7 +224,11 @@ export function WeatherPage({ compact }: { compact: boolean }) {
     const city = value.trim();
     if (!city) return;
     try {
-      const matches = await invoke<WeatherLocation[]>("weather_location_search", { query: city });
+      const matches = assertIpc(
+        "weather_location_search",
+        await invoke<unknown>("weather_location_search", { query: city }),
+        isWeatherLocationList,
+      );
       if (matches.length === 0) {
         updateFetchStates((current) => {
           const base = current[active] ?? emptyCityFetchEntry();

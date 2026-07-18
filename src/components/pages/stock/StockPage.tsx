@@ -5,6 +5,7 @@ import { useAsyncSubscription } from "@/lib/useAsyncSubscription";
 import { useReorder } from "@/lib/useReorder";
 import { useTauriEvent } from "@/lib/useTauriEvent";
 import { KEYS, onSettingsChanged, parseBool, settingGet } from "@/lib/settings";
+import { assertIpc, isQuoteList } from "@/lib/ipc-schemas";
 import { StockAdd } from "./StockAdd";
 import { StockRow, colorFor, type Quote } from "./StockRow";
 import { StockDetail } from "./StockDetail";
@@ -20,7 +21,8 @@ export function StockPage({ compact }: { compact: boolean }) {
 
   const refresh = useCallback(async () => {
     try {
-      setQuotes(await invoke<Quote[]>("stock_get"));
+      const raw = await invoke<unknown>("stock_get");
+      setQuotes(assertIpc("stock_get", raw, isQuoteList) as Quote[]);
     } catch (e) {
       setErr(String(e));
     }
@@ -34,7 +36,11 @@ export function StockPage({ compact }: { compact: boolean }) {
   }, [refresh]);
 
   useTauriEvent<Quote[]>("stock://tick", (e) => {
-    setQuotes(e.payload);
+    try {
+      setQuotes(assertIpc("stock://tick", e.payload, isQuoteList) as Quote[]);
+    } catch (error) {
+      console.error(error);
+    }
   });
 
   // 07a 配置导入会全量覆盖自选股表；导入完成后立即重读，避免当前页面保留旧列表。

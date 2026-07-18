@@ -1,15 +1,7 @@
 import { useEffect, useRef } from "react";
 import { init, dispose, TooltipShowRule, type Chart, type KLineData } from "klinecharts";
 import { invoke } from "@tauri-apps/api/core";
-
-interface KBar {
-  date: string;
-  open: number;
-  close: number;
-  high: number;
-  low: number;
-  volume: number;
-}
+import { assertIpc, isKBarList } from "@/lib/ipc-schemas";
 
 type Period = "day" | "week" | "month";
 interface MaValues {
@@ -80,8 +72,9 @@ export function StockChart({
     let cancelled = false;
     const chart = chartRef.current;
     if (!chart) return;
-    invoke<KBar[]>("stock_kline", { symbol, period })
-      .then((bars) => {
+    invoke<unknown>("stock_kline", { symbol, period })
+      .then((raw) => {
+        const bars = assertIpc("stock_kline", raw, isKBarList);
         if (cancelled || !chartRef.current) return;
         const closes = bars.map((b) => b.close);
         const data: KLineData[] = bars.map((b) => ({

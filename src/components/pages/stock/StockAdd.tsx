@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { assertIpc, isStockSearchResultList } from "@/lib/ipc-schemas";
 
 interface SearchResult {
   name: string;
@@ -25,9 +26,9 @@ export function StockAdd({ onAdded }: { onAdded: () => void }) {
       return;
     }
     const t = setTimeout(() => {
-      void invoke<SearchResult[]>("stock_search", { query: q })
-        .then((r) => {
-          setSuggestions(r);
+      void invoke<unknown>("stock_search", { query: q })
+        .then((raw) => {
+          setSuggestions(assertIpc("stock_search", raw, isStockSearchResultList));
           setShowSug(true);
           setHl(0);
         })

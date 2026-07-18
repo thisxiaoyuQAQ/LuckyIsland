@@ -1,5 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import {
+  assertIpc,
+  isActionExec,
+  isAiCancelStatus,
+  isAiHistoryList,
+  isAiResponse,
+} from "@/lib/ipc-schemas";
 
 export interface ActionExec {
   action: string;
@@ -33,15 +40,18 @@ export async function aiChat(
 ): Promise<AiResponse> {
   // 后端 Message 只要 role/content，多余字段被 serde 忽略
   const slim = history.map((m) => ({ role: m.role, content: m.content }));
-  return invoke<AiResponse>("ai_chat", { requestId, provider, message, history: slim });
+  const raw = await invoke<unknown>("ai_chat", { requestId, provider, message, history: slim });
+  return assertIpc("ai_chat", raw, isAiResponse);
 }
 
 export async function aiCancel(requestId: string): Promise<AiCancelStatus> {
-  return invoke<AiCancelStatus>("ai_cancel", { requestId });
+  const raw = await invoke<unknown>("ai_cancel", { requestId });
+  return assertIpc("ai_cancel", raw, isAiCancelStatus);
 }
 
 export async function aiHistoryList(limit = 100): Promise<Message[]> {
-  const list = await invoke<[string, string, string][]>("ai_history_list", { limit });
+  const raw = await invoke<unknown>("ai_history_list", { limit });
+  const list = assertIpc("ai_history_list", raw, isAiHistoryList);
   return list.map(([role, content]) => ({ role: role as Message["role"], content }));
 }
 
@@ -66,5 +76,16 @@ export async function aiResetPosition(): Promise<void> {
 }
 
 export function onActionResult(cb: (a: ActionExec | null) => void): Promise<UnlistenFn> {
-  return listen<ActionExec | null>("ai://action-result", (e) => cb(e.payload));
+  return listen<unknown>("ai://action-result", (e) => {
+    const payload = e.payload;
+    if (payload === null) {
+      cb(null);
+      return;
+    }
+    try {
+      cb(assertIpc("ai://action-result", payload, isActionExec));
+    } catch (error) {
+      console.error(error);
+    }
+  });
 }
