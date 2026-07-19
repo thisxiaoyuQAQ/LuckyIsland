@@ -260,7 +260,7 @@ describe("App event subscriptions", () => {
     await tree.unmount();
   });
 
-  it("capsule renders only compact content and the expand button", async () => {
+  it("capsule renders only compact content and hides all action buttons", async () => {
     const tree = await mountReactTree(<App />);
     allSubscriptions().forEach((entry) => entry.pending.resolve(vi.fn()));
     await flushReactWork();
@@ -269,15 +269,18 @@ describe("App event subscriptions", () => {
     const expandButton = () => document.querySelector('button[aria-label="展开/收起"]');
 
     expect(settingsButton()).not.toBeNull();
+    expect(expandButton()).not.toBeNull();
 
     await dispatch(() => emit("window://state-changed", capsuleSnapshot));
+    // 胶囊态：右侧 hover/action 命中区整体不渲染（无展开钮、无设置钮）。
     expect(settingsButton()).toBeNull();
-    expect(expandButton()).not.toBeNull();
+    expect(expandButton()).toBeNull();
     // 胶囊态仍渲染当前页紧凑内容。
     expect(document.querySelector('[data-testid="page-time"][data-compact="true"]')).not.toBeNull();
 
     await dispatch(() => emit("window://state-changed", compactSnapshot));
     expect(settingsButton()).not.toBeNull();
+    expect(expandButton()).not.toBeNull();
     await tree.unmount();
   });
 

@@ -293,11 +293,15 @@ export function createIslandTransitionController({
     const currentGeneration = ++generation;
     clearPendingDelay();
     if (state === "compact") {
-      setVisualPhase("compact");
+      // 收起：先进入 "collapsing" 相位（保留 expanded 内容 + 让容器 height 开始折叠），
+      // 待动画时长结束后再切到 "compact" 并提交原生 resize。否则内容会在 width/height
+      // 还在动时就被卸载，出现「元素突然消失 + 容器还在缩」的跳变（11a.4 修复）。
+      setVisualPhase("collapsing");
       if (!reducedMotion()) {
         await wait(collapseDelay);
         if (currentGeneration !== generation) return;
       }
+      setVisualPhase("compact");
     } else if (state === "expanded") {
       setVisualPhase("expanding");
     }

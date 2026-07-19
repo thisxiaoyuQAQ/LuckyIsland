@@ -89,6 +89,15 @@ export function WeatherPage({ compact }: { compact: boolean }) {
   const [locating, setLocating] = useState(false);
   const [refreshMin, setRefreshMin] = useState(10);
   const forecastRef = useRef<HTMLDivElement>(null);
+  /** 与 refreshMin 同步的 ref，供 fetchWeather 闭包判定缓存新鲜度（避免每次 refreshMin 变化重建 fetchWeather）。 */
+  const refreshMinRef = useRef(refreshMin);
+  refreshMinRef.current = refreshMin;
+  /** cache 同步 ref，避免 fetchWeather 依赖 cache 导致每次写缓存都重建。 */
+  const cacheRef = useRef<Record<string, WeatherBundle>>({});
+  const updateCache = useCallback((city: string, data: WeatherBundle) => {
+    cacheRef.current = { ...cacheRef.current, [city]: data };
+    setCache(cacheRef.current);
+  }, []);
 
   const suggestions = useMemo(() => {
     const query = draft.trim();
@@ -100,8 +109,18 @@ export function WeatherPage({ compact }: { compact: boolean }) {
   const fetchWeather = useCallback(async (
     city: string,
     location?: WeatherLocation,
+    options?: { force?: boolean },
   ) => {
     if (!city) return;
+    // 缓存新鲜度短路：已有 cache 且距今未超过 refreshMin 分钟时直接复用，不再发起网络请求。
+    // 周期刷新（refreshAll）与手动刷新按钮传 force:true 绕过；城市切换/挂载初始化都走这里。
+    if (!options?.force) {
+      const cached = cacheRef.current[city];
+      if (cached) {
+        const ageSec = Math.floor(Date.now() / 1000) - cached.fetchedAt;
+        if (ageSec >= 0 && ageSec < refreshMinRef.current * 60) return;
+      }
+    }
     const begin = beginCityFetch(fetchStatesRef.current[city] ?? null, city);
     if (begin.deduped) return;
     updateFetchStates(() => ({ ...fetchStatesRef.current, [city]: begin.entry }));
@@ -128,10 +147,9 @@ export function WeatherPage({ compact }: { compact: boolean }) {
     if (outcome.kind === "ignored") return;
     updateFetchStates(() => ({ ...fetchStatesRef.current, [city]: outcome.entry }));
     if (settled.data) {
-      const data = settled.data;
-      setCache((current) => ({ ...current, [city]: data }));
+      updateCache(city, settled.data);
     }
-  }, []);
+  }, [updateCache]);
 
   const loadCities = useCallback(async () => {
     try {
@@ -292,8 +310,9 @@ export function WeatherPage({ compact }: { compact: boolean }) {
   });
 
   const refreshAll = useCallback(() => {
-    if (active) void fetchWeather(active);
-    if (compactCity && compactCity !== active) void fetchWeather(compactCity);
+    // 周期与手动刷新：绕过缓存新鲜度短路，强制走网络。
+    if (active) void fetchWeather(active, undefined, { force: true });
+    if (compactCity && compactCity !== active) void fetchWeather(compactCity, undefined, { force: true });
   }, [active, compactCity, fetchWeather]);
 
   useEffect(() => {

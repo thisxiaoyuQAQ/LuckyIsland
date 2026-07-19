@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { GripVertical, Plus, Trash2 } from "lucide-react";
+import { Check, GripVertical, Pencil, Plus, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Row, selectCls } from "./shared";
 import { cn } from "@/lib/utils";
@@ -25,6 +25,9 @@ export function TerminalPanel() {
   const [initial, setInitial] = useState<{ shell: string; fontSize: number } | null>(null);
   const [shortcuts, setShortcuts] = useState<Shortcut[]>(parseShortcuts(null));
   const [draft, setDraft] = useState({ name: "", command: "", cwd: "" });
+  /** 行内编辑目标的下标；同时只编辑一条避免歧义。 */
+  const [editingIndex, setEditingIndex] = useState<number | null>(null);
+  const [editingDraft, setEditingDraft] = useState({ name: "", command: "", cwd: "" });
 
   useEffect(() => {
     (async () => {
@@ -59,7 +62,35 @@ export function TerminalPanel() {
   };
 
   const removeShortcut = async (i: number) => {
+    if (editingIndex === i) {
+      setEditingIndex(null);
+    }
     await persistShortcuts(shortcuts.filter((_, j) => j !== i));
+  };
+
+  const startEdit = (i: number) => {
+    const target = shortcuts[i];
+    if (!target) return;
+    setEditingIndex(i);
+    setEditingDraft({ name: target.name, command: target.command, cwd: target.cwd ?? "" });
+  };
+
+  const cancelEdit = () => {
+    setEditingIndex(null);
+  };
+
+  const saveEdit = async () => {
+    if (editingIndex === null) return;
+    const name = editingDraft.name.trim();
+    const command = editingDraft.command.trim();
+    if (!name || !command) return;
+    const next = shortcuts.map((item, j) =>
+      j === editingIndex
+        ? { name, command, cwd: editingDraft.cwd.trim() || undefined }
+        : item,
+    );
+    setEditingIndex(null);
+    await persistShortcuts(next);
   };
 
   if (!initial) {
@@ -73,9 +104,15 @@ export function TerminalPanel() {
       draft={draft}
       overIndex={overIndex}
       itemProps={itemProps}
+      editingIndex={editingIndex}
+      editingDraft={editingDraft}
       onDraftChange={setDraft}
       onAddShortcut={() => void addShortcut()}
       onRemoveShortcut={(i) => void removeShortcut(i)}
+      onStartEdit={startEdit}
+      onCancelEdit={cancelEdit}
+      onSaveEdit={() => void saveEdit()}
+      onEditingDraftChange={setEditingDraft}
     />
   );
 }
@@ -86,9 +123,15 @@ interface TerminalPanelContentProps {
   draft: { name: string; command: string; cwd: string };
   overIndex: number | null;
   itemProps: (index: number, list: Shortcut[]) => Record<string, unknown>;
+  editingIndex: number | null;
+  editingDraft: { name: string; command: string; cwd: string };
   onDraftChange: (next: { name: string; command: string; cwd: string }) => void;
   onAddShortcut: () => void;
   onRemoveShortcut: (index: number) => void;
+  onStartEdit: (index: number) => void;
+  onCancelEdit: () => void;
+  onSaveEdit: () => void;
+  onEditingDraftChange: (next: { name: string; command: string; cwd: string }) => void;
 }
 
 function TerminalPanelContent(props: TerminalPanelContentProps) {
@@ -98,9 +141,15 @@ function TerminalPanelContent(props: TerminalPanelContentProps) {
     draft,
     overIndex,
     itemProps,
+    editingIndex,
+    editingDraft,
     onDraftChange,
     onAddShortcut,
     onRemoveShortcut,
+    onStartEdit,
+    onCancelEdit,
+    onSaveEdit,
+    onEditingDraftChange,
   } = props;
 
   const shellField = useDraftField<string>({
@@ -173,33 +222,100 @@ function TerminalPanelContent(props: TerminalPanelContentProps) {
         <div className="text-xs text-muted-foreground">在终端工具栏一键执行；即时同步，重启保留。</div>
       </div>
       <div className="flex flex-col gap-2">
-        {shortcuts.map((s, i) => (
-          <div
-            key={i}
-            {...itemProps(i, shortcuts)}
-            className={cn(
-              "flex items-center gap-2 rounded-lg border border-border/70 bg-card/50 px-3 py-2 transition-colors",
-              overIndex === i && "border-primary/70 bg-primary/5",
-            )}
-          >
-            <GripVertical className="h-4 w-4 cursor-grab text-muted-foreground" aria-hidden />
-            <div className="min-w-0 flex-1">
-              <div className="text-sm font-medium">{s.name}</div>
-              <div className="truncate text-xs text-muted-foreground">
-                {s.command}
-                {s.cwd ? ` @ ${s.cwd}` : ""}
-              </div>
-            </div>
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              onClick={() => onRemoveShortcut(i)}
-              aria-label={`删除${s.name}`}
+        {shortcuts.map((s, i) => {
+          const editing = editingIndex === i;
+          return (
+            <div
+              key={i}
+              {...(editing ? {} : itemProps(i, shortcuts))}
+              className={cn(
+                "flex items-center gap-2 rounded-lg border border-border/70 bg-card/50 px-3 py-2 transition-colors",
+                overIndex === i && "border-primary/70 bg-primary/5",
+                editing && "border-primary/70 bg-primary/5",
+              )}
             >
-              <Trash2 />
-            </Button>
-          </div>
-        ))}
+              <GripVertical className="h-4 w-4 cursor-grab text-muted-foreground" aria-hidden />
+              {editing ? (
+                <div className="flex min-w-0 flex-1 flex-col gap-2">
+                  <input
+                    autoFocus
+                    value={editingDraft.name}
+                    onChange={(e) => onEditingDraftChange({ ...editingDraft, name: e.target.value })}
+                    placeholder="名称"
+                    className={selectCls}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") onSaveEdit();
+                      if (e.key === "Escape") onCancelEdit();
+                    }}
+                  />
+                  <input
+                    value={editingDraft.command}
+                    onChange={(e) => onEditingDraftChange({ ...editingDraft, command: e.target.value })}
+                    placeholder="命令"
+                    className={selectCls}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") onSaveEdit();
+                      if (e.key === "Escape") onCancelEdit();
+                    }}
+                  />
+                  <input
+                    value={editingDraft.cwd}
+                    onChange={(e) => onEditingDraftChange({ ...editingDraft, cwd: e.target.value })}
+                    placeholder="工作目录（可选）"
+                    className={selectCls}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") onSaveEdit();
+                      if (e.key === "Escape") onCancelEdit();
+                    }}
+                  />
+                </div>
+              ) : (
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm font-medium">{s.name}</div>
+                  <div className="truncate text-xs text-muted-foreground">
+                    {s.command}
+                    {s.cwd ? ` @ ${s.cwd}` : ""}
+                  </div>
+                </div>
+              )}
+              {editing ? (
+                <>
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    onClick={onSaveEdit}
+                    disabled={!editingDraft.name.trim() || !editingDraft.command.trim()}
+                    aria-label="保存"
+                  >
+                    <Check />
+                  </Button>
+                  <Button variant="ghost" size="icon-xs" onClick={onCancelEdit} aria-label="取消">
+                    <X />
+                  </Button>
+                </>
+              ) : (
+                <>
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    onClick={() => onStartEdit(i)}
+                    aria-label={`编辑${s.name}`}
+                  >
+                    <Pencil />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    onClick={() => onRemoveShortcut(i)}
+                    aria-label={`删除${s.name}`}
+                  >
+                    <Trash2 />
+                  </Button>
+                </>
+              )}
+            </div>
+          );
+        })}
       </div>
 
       <div className="flex flex-col gap-2 rounded-lg border border-dashed border-border/60 p-3">

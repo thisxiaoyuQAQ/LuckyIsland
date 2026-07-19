@@ -406,14 +406,17 @@ describe("island transition controller", () => {
     });
 
     const request = controller.request("compact");
-    expect(calls).toEqual(["phase:compact"]);
+    // 收起路径：先进入 collapsing 相位（保留 expanded 内容 + 开始 height 折叠动画），
+    // 动画时长结束后才切到 compact 并提交原生 resize（11a.4 修复闪动的关键）。
+    expect(calls).toEqual(["phase:collapsing"]);
 
     await vi.advanceTimersByTimeAsync(239);
-    expect(calls).toEqual(["phase:compact"]);
+    expect(calls).toEqual(["phase:collapsing"]);
 
     await vi.advanceTimersByTimeAsync(1);
     await request;
     expect(calls).toEqual([
+      "phase:collapsing",
       "phase:compact",
       "submit:compact",
       "snapshot",
