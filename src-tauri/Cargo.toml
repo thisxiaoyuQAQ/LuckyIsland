@@ -1,6 +1,6 @@
 [package]
 name = "lucky-island"
-version = "0.3.0"
+version = "0.4.0"
 description = "LuckyIsland - Windows 灵动岛式桌面助手"
 authors = ["Zhi Yu"]
 edition = "2021"
