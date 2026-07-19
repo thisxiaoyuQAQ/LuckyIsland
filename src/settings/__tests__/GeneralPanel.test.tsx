@@ -113,6 +113,7 @@ vi.mock("@/lib/window-policy", async (importOriginal) => {
     windowPolicyGet: vi.fn(async () => initialPolicy),
     windowClickThroughSet: vi.fn(async () => initialPolicy),
     windowHoverExpandSet: vi.fn(async () => initialPolicy),
+    windowFloatingBallSet: vi.fn(async () => initialPolicy),
     windowHideInFullscreenSet: vi.fn(async () => initialPolicy),
   };
 });
@@ -150,6 +151,16 @@ function monitorSelect(): HTMLSelectElement {
 
 function switches(): HTMLButtonElement[] {
   return Array.from(document.querySelectorAll<HTMLButtonElement>('[data-testid="switch"]'));
+}
+
+function floatingBallSwitch(): HTMLButtonElement {
+  const label = Array.from(document.querySelectorAll("div")).find(
+    (el) => el.className === "text-sm font-medium" && el.textContent === "悬浮胶囊",
+  );
+  const row = label?.closest("div.flex.items-center.justify-between");
+  const found = row?.querySelector('[data-testid="switch"]');
+  if (!(found instanceof HTMLButtonElement)) throw new Error("floating ball switch not found");
+  return found;
 }
 
 describe("GeneralPanel event subscriptions", () => {
@@ -249,6 +260,17 @@ describe("GeneralPanel event subscriptions", () => {
     },
   );
 
+  it("reflects floating ball state from policy snapshots", async () => {
+    const tree = await mountPanel();
+    expect(floatingBallSwitch().dataset.checked).toBe("false");
+
+    await act(async () => {
+      emit(subscription("window://policy-changed"), { ...initialPolicy, floatingBall: true });
+    });
+    expect(floatingBallSwitch().dataset.checked).toBe("true");
+    await tree.unmount();
+  });
+
   it("updates all four policy fields from one snapshot", async () => {
     const tree = await mountPanel();
 
@@ -265,8 +287,10 @@ describe("GeneralPanel event subscriptions", () => {
     const controls = switches();
     expect(controls[1].dataset.checked).toBe("true");
     expect(controls[2].dataset.checked).toBe("true");
-    expect(controls[3].dataset.checked).toBe("true");
-    expect(controls[3].disabled).toBe(true);
+    // 悬浮胶囊开关位于悬停展开与全屏隐藏之间，本快照未开启。
+    expect(controls[3].dataset.checked).toBe("false");
+    expect(controls[4].dataset.checked).toBe("true");
+    expect(controls[4].disabled).toBe(true);
     await tree.unmount();
   });
 

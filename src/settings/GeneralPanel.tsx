@@ -3,6 +3,7 @@ import { useTauriEvent } from "@/lib/useTauriEvent";
 import { Switch } from "@/components/ui/switch";
 import {
   windowClickThroughSet,
+  windowFloatingBallSet,
   windowHideInFullscreenSet,
   windowHoverExpandSet,
   windowPolicyGet,
@@ -48,11 +49,13 @@ export function GeneralPanel() {
   const [blur, setBlur] = useState(true);
   const [clickThrough, setClickThrough] = useState(false);
   const [hoverExpand, setHoverExpand] = useState(false);
+  const [floatingBall, setFloatingBall] = useState(false);
   const [hideInFullscreen, setHideInFullscreen] = useState(false);
   const [autoCheckUpdates, setAutoCheckUpdates] = useState(true);
   const [fullscreenSupported, setFullscreenSupported] = useState(false);
   const [clickThroughError, setClickThroughError] = useState<string | null>(null);
   const [hoverExpandError, setHoverExpandError] = useState<string | null>(null);
+  const [floatingBallError, setFloatingBallError] = useState<string | null>(null);
   const [fullscreenError, setFullscreenError] = useState<string | null>(null);
   const [theme, setTheme] = useState<Theme>("auto");
   const [monitors, setMonitors] = useState<MonitorInfo[]>([]);
@@ -105,6 +108,7 @@ export function GeneralPanel() {
       setAutoCheckUpdates(parseBool(updateAutoCheck, true));
       setClickThrough(policy?.clickThrough ?? false);
       setHoverExpand(policy?.hoverExpand ?? false);
+      setFloatingBall(policy?.floatingBall ?? false);
       setHideInFullscreen(policy?.hideInFullscreen ?? false);
       setFullscreenSupported(policy?.fullscreenSupported ?? false);
       await monitorLoad;
@@ -167,6 +171,18 @@ export function GeneralPanel() {
       const actual = await windowPolicyGet().catch(() => null);
       if (actual) setHoverExpand(actual.hoverExpand);
       setHoverExpandError(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const toggleFloatingBall = async (enabled: boolean) => {
+    setFloatingBallError(null);
+    try {
+      const snapshot = await windowFloatingBallSet(enabled);
+      setFloatingBall(snapshot.floatingBall);
+    } catch (error) {
+      const actual = await windowPolicyGet().catch(() => null);
+      if (actual) setFloatingBall(actual.floatingBall);
+      setFloatingBallError(error instanceof Error ? error.message : String(error));
     }
   };
 
@@ -235,6 +251,7 @@ export function GeneralPanel() {
   useTauriEvent<WindowPolicySnapshot>("window://policy-changed", (event) => {
     setClickThrough(event.payload.clickThrough);
     setHoverExpand(event.payload.hoverExpand);
+    setFloatingBall(event.payload.floatingBall);
     setHideInFullscreen(event.payload.hideInFullscreen);
     setFullscreenSupported(event.payload.fullscreenSupported);
   });
@@ -329,6 +346,20 @@ export function GeneralPanel() {
           {hoverExpandError && (
             <p className="text-right text-xs text-destructive">
               悬停展开设置失败：{hoverExpandError}
+            </p>
+          )}
+        </div>
+      </Row>
+
+      <Row
+        label="悬浮胶囊"
+        desc="开启后收起态变为 240×80 胶囊；右侧悬停变为条状，同时开启悬停展开时右悬停直接进入完整面板"
+      >
+        <div className="flex flex-col items-end gap-1">
+          <Switch checked={floatingBall} onCheckedChange={toggleFloatingBall} />
+          {floatingBallError && (
+            <p className="text-right text-xs text-destructive">
+              悬浮胶囊设置失败：{floatingBallError}
             </p>
           )}
         </div>

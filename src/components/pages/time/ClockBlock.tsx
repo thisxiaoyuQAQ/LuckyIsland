@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { useTimeSetting } from "./useTimeConfig";
 import { KEYS } from "@/lib/settings";
+import { useVisualStyle } from "@/lib/visual-style";
+import { islandStyleRecipe } from "@/lib/window-policy";
 import { parseAppearance, textStyleCss, DEFAULT_APPEARANCE } from "./appearance";
 
 const WEEKDAYS = ["星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"];
@@ -10,6 +12,8 @@ const WEIGHT_CLASS = { normal: "font-normal", bold: "font-bold" } as const;
 
 export function ClockBlock({ compact }: { compact?: boolean }) {
   const { value: a } = useTimeSetting(KEYS.timeAppearance, parseAppearance, DEFAULT_APPEARANCE);
+  // 仅紧凑时钟随视觉样式缩放（legacy text-sm / new text-lg）；展开时钟字号布局不变。
+  const compactClockClass = islandStyleRecipe(useVisualStyle()).compactClockClass;
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
     const id = setInterval(() => setNow(new Date()), 1000);
@@ -31,7 +35,7 @@ export function ClockBlock({ compact }: { compact?: boolean }) {
 
   if (compact) {
     return (
-      <span className="text-sm font-medium tabular-nums" style={textStyleCss(a.clock)}>
+      <span className={compactClockClass} style={textStyleCss(a.clock)}>
         {hh}:{mm}
         {a.showSeconds && <span className="text-muted-foreground">:{ss}</span>}
       </span>

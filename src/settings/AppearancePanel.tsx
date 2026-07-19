@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { Button } from "@/components/ui/button";
+import { useTauriEvent } from "@/lib/useTauriEvent";
 import {
   KEYS,
   configExport,
@@ -8,9 +9,11 @@ import {
   parseBool,
   parseOffset,
   parseOpacity,
+  parseVisualStyle,
   settingGet,
   settingSetEmit,
   windowOffsetApply,
+  type VisualStyle,
 } from "@/lib/settings";
 
 const btnGhost =
@@ -37,6 +40,8 @@ export function AppearancePanel() {
   const [offsetY, setOffsetY] = useState(0);
   // 毛玻璃开关读一下（决定透明度是否生效的提示文案）
   const [blur, setBlur] = useState(true);
+  // 灵动岛视觉样式：legacy | new（默认 new，非法值回退 new）。
+  const [visualStyle, setVisualStyle] = useState<VisualStyle>("new");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
@@ -56,19 +61,39 @@ export function AppearancePanel() {
 
   useEffect(() => {
     void (async () => {
-      const [o, ox, oy, b] = await Promise.all([
+      const [o, ox, oy, b, vs] = await Promise.all([
         settingGet(KEYS.windowOpacity),
         settingGet(KEYS.windowOffsetX),
         settingGet(KEYS.windowOffsetY),
         settingGet(KEYS.blur),
+        settingGet(KEYS.windowVisualStyle),
       ]);
       setOpacity(parseOpacity(o));
       setOffsetX(parseOffset(ox));
       setOffsetY(parseOffset(oy));
       setBlur(parseBool(b, true));
+      setVisualStyle(parseVisualStyle(vs));
       setLoading(false);
     })();
   }, []);
+
+  // 跨窗口同步：岛窗口或配置导入改写 window:visual_style 后即时回显。
+  useTauriEvent<{ key: string; value: string | null }>("settings://changed", (event) => {
+    if (event.payload.key === KEYS.windowVisualStyle) {
+      setVisualStyle(parseVisualStyle(event.payload.value));
+    }
+  });
+
+  const changeVisualStyle = async (value: VisualStyle) => {
+    setVisualStyle(value);
+    try {
+      await settingSetEmit(KEYS.windowVisualStyle, value);
+    } catch (error) {
+      const actual = await settingGet(KEYS.windowVisualStyle).catch(() => null);
+      setVisualStyle(parseVisualStyle(actual));
+      setMsg({ kind: "err", text: `保存视觉样式失败：${String(error)}` });
+    }
+  };
 
   // 透明度：先本地实时预览，80ms 防抖后写 KV + 广播，避免拖动时异步写入乱序。
   const changeOpacity = (v: number) => {
@@ -194,17 +219,19 @@ export function AppearancePanel() {
         return;
       }
       const summary = await configImport(path);
-      const [opRaw, oxRaw, oyRaw, blurRaw] = await Promise.all([
+      const [opRaw, oxRaw, oyRaw, blurRaw, vsRaw] = await Promise.all([
         settingGet(KEYS.windowOpacity),
         settingGet(KEYS.windowOffsetX),
         settingGet(KEYS.windowOffsetY),
         settingGet(KEYS.blur),
+        settingGet(KEYS.windowVisualStyle),
       ]);
       const op = parseOpacity(opRaw);
       const ox = parseOffset(oxRaw);
       const oy = parseOffset(oyRaw);
       setOpacity(op);
       setBlur(parseBool(blurRaw, true));
+      setVisualStyle(parseVisualStyle(vsRaw));
       // 含偏移项（或原配置有偏移但导入文件删掉）：导入只改数据不上屏，
       // 需额外触发一次让窗口移动。后端会返回 clamp 后实际值。
       if (summary.needsOffsetApply) {
@@ -238,6 +265,20 @@ export function AppearancePanel() {
           调节灵动岛窗口透明度与位置偏移。偏移相对「屏幕顶部居中」位置，超出可视区会自动拉回边界。
         </p>
       </div>
+
+      <Row
+        label="视觉样式"
+        desc="新样式放大紧凑时钟并在信息左侧显示滚动指示；经典样式保留旧页点外观"
+      >
+        <select
+          className="rounded-md border border-input bg-background px-2 py-1 text-sm outline-none focus:border-ring focus:ring-[3px] focus:ring-ring/50"
+          value={visualStyle}
+          onChange={(e) => void changeVisualStyle(e.target.value as VisualStyle)}
+        >
+          <option value="new">新样式（默认）</option>
+          <option value="legacy">经典</option>
+        </select>
+      </Row>
 
       <Row label="背景透明度" desc={blur ? "毛玻璃开启，透明度作用于背景色" : "毛玻璃关闭，背景半透明仍可透出桌面"}>
         <div className="flex items-center gap-3">

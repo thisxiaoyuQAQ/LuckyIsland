@@ -1,12 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { ChevronDown, ChevronUp, Download, Moon, Settings, Sun } from "lucide-react";
-import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { TimePage } from "@/components/pages/time/TimePage";
 import {
   KEYS,
-  openSettings,
   parsePagesEnabled,
   parsePagesOrder,
   settingSetEmit,
@@ -22,8 +19,12 @@ import {
   ISLAND_LAYERED_EASE,
 } from "@/lib/anim";
 import {
+  CAPSULE_WIDTH_PX,
+  HOVER_ENTER_DELAY_MS,
+  HOVER_LEAVE_DELAY_MS,
+  ISLAND_STRIP_WIDTH_PX,
   containerExpandedForPhase,
-  createHoverController,
+  createHoverStageController,
   createIslandTransitionController,
   setIslandState as submitIslandState,
   windowHoverStageSet,
@@ -34,23 +35,14 @@ import {
 } from "@/lib/window-policy";
 import { useTheme } from "@/lib/theme";
 import {
-  acknowledgeAvailableUpdate,
-  getUpdateSnapshot,
   scheduleAutoCheck,
   setUpdateFullscreenBlocked,
-  subscribeUpdate,
 } from "@/lib/update-store";
+import { IslandTopBar, pageVariants } from "@/pages/IslandTopBar";
 import { PAGE_BY_ID } from "@/pages/registry";
 import { useIslandSettings } from "@/pages/useIslandSettings";
 import { useIslandEvents } from "@/pages/useIslandEvents";
 import { useIslandNavigation } from "@/pages/useIslandNavigation";
-
-/** 页面切换横向滑入/滑出变体；方向由 custom={direction} 决定（+1 新页从右滑入、-1 从左滑入） */
-const pageVariants = {
-  enter: (dir: number) => ({ x: dir > 0 ? "100%" : "-100%", opacity: 0 }),
-  center: { x: 0, opacity: 1 },
-  exit: (dir: number) => ({ x: dir > 0 ? "-100%" : "100%", opacity: 0 }),
-};
 
 function App() {
   const { resolvedTheme, setThemeMode } = useTheme();
@@ -61,16 +53,21 @@ function App() {
   const [blur, setBlur] = useState(true);
   const [opacity, setOpacity] = useState(0.7);
   const [autoCheckUpdates, setAutoCheckUpdates] = useState(true);
-  const [updateSnapshot, setUpdateSnapshot] = useState(getUpdateSnapshot);
   const [pagesEnabled, setPagesEnabled] = useState(parsePagesEnabled(null));
   const [pagesOrder, setPagesOrder] = useState(parsePagesOrder(null));
-  const islandRef = useRef<HTMLDivElement>(null);
+  const wheelZoneRef = useRef<HTMLDivElement>(null);
   const islandStateChangedRef = useRef(false);
   const transitionControllerRef = useRef<ReturnType<typeof createIslandTransitionController> | null>(null);
-  const hoverControllerRef = useRef<ReturnType<typeof createHoverController> | null>(null);
+  const hoverControllerRef = useRef<ReturnType<typeof createHoverStageController> | null>(null);
+  /** 待决悬停收起要恢复的视觉相位（stage 2→expanded、stage 1→compact）；null 表示无待决收起。 */
+  const hoverCollapseRef = useRef<IslandVisualPhase | null>(null);
+  /** 收起动画进行中且终点是胶囊：让宽度与高度同帧动画，遮住终点处的原生收窄跳变。 */
+  const [collapsingToCapsule, setCollapsingToCapsule] = useState(false);
   const visualPhaseRef = useRef(visualPhase);
+  const floatingBallRef = useRef(false);
   reducedMotionRef.current = reducedMotion;
   visualPhaseRef.current = visualPhase;
+  floatingBallRef.current = policy?.floatingBall ?? false;
 
   if (transitionControllerRef.current === null) {
     transitionControllerRef.current = createIslandTransitionController({
@@ -82,10 +79,12 @@ function App() {
       },
       submit: submitIslandState,
       acceptSnapshot: (snapshot) => {
+        setCollapsingToCapsule(false);
         setPolicy(snapshot);
       },
       recover: async () => {
         const snapshot = await windowPolicyGet();
+        setCollapsingToCapsule(false);
         setPolicy(snapshot);
         setVisualPhase(snapshot.effectiveState === "expanded" ? "expanded" : "compact");
       },
@@ -93,16 +92,43 @@ function App() {
   }
 
   if (hoverControllerRef.current === null) {
-    hoverControllerRef.current = createHoverController({
-      enterDelay: 180,
-      leaveDelay: 300,
-      submit: (hovered) => {
-        const target = hovered ? "expanded" : "compact";
-        // 11a.2 前的过渡映射：布尔悬停 → stage 2/0（保持基线单段语义）；
-        // 两段 controller（胶囊→条状→完整面板）在 11a.2 替换此处。
-        void transitionControllerRef.current
-          ?.request(target, async () => windowHoverStageSet(hovered ? 2 : 0))
-          .catch((error) => console.error("[window-policy] 提交悬停状态失败:", error));
+    hoverControllerRef.current = createHoverStageController({
+      enterDelay: HOVER_ENTER_DELAY_MS,
+      leaveDelay: HOVER_LEAVE_DELAY_MS,
+      submit: (stage, previous) => {
+        const transitions = transitionControllerRef.current;
+        const fail = (error: unknown) =>
+          console.error("[window-policy] 提交悬停阶段失败:", error);
+        if (stage === 2) {
+          // 条状→完整面板：走展开动画，再由策略层 resize（hover 不抢焦点）。
+          void transitions
+            ?.request("expanded", async () => windowHoverStageSet(2))
+            .catch(fail);
+        } else if (stage === 0 && previous === 2) {
+          // 悬停展开后的移出：先播前端折叠动画再提交 stage 0；指针在延迟内回到
+          // 右侧时由 handleRightZoneEnter 撤销。
+          hoverCollapseRef.current = "expanded";
+          if (floatingBallRef.current) setCollapsingToCapsule(true);
+          void transitions
+            ?.request("compact", async () => windowHoverStageSet(0))
+            .catch(fail)
+            .finally(() => {
+              hoverCollapseRef.current = null;
+            });
+        } else if (stage === 0 && previous === 1) {
+          // 条状→胶囊：先播前端收窄动画（终点才原生 resize），指针回到右侧可撤销。
+          hoverCollapseRef.current = "compact";
+          setCollapsingToCapsule(true);
+          void transitions
+            ?.request("compact", async () => windowHoverStageSet(0))
+            .catch(fail)
+            .finally(() => {
+              hoverCollapseRef.current = null;
+            });
+        } else {
+          // 胶囊→条状原生 resize 在动画起点提交，前端宽度动画跟随快照展开。
+          void windowHoverStageSet(stage).then(setPolicy).catch(fail);
+        }
       },
     });
   }
@@ -115,11 +141,20 @@ function App() {
 
   const islandState = policy?.effectiveState ?? "compact";
   const expanded = containerExpandedForPhase(visualPhase);
+  const capsule = islandState === "capsule";
+  // 胶囊进出过渡：宽度与高度同帧动画（展开/展开中立即放宽；收起到胶囊时随折叠收窄），
+  // 原生 resize 的瞬时宽度跳变因此被前端动画遮住。
+  const containerWidthPx =
+    expanded || !(capsule || collapsingToCapsule)
+      ? ISLAND_STRIP_WIDTH_PX
+      : CAPSULE_WIDTH_PX;
   const effectiveTheme = resolvedTheme;
 
   const setState = useCallback((state: IslandState) => {
     islandStateChangedRef.current = true;
     hoverControllerRef.current?.suppressCurrentCycle();
+    // 收起终点是胶囊（浮球开启）时，让宽度随高度一起动画到胶囊尺寸。
+    setCollapsingToCapsule(state === "compact" && floatingBallRef.current);
     void transitionControllerRef.current
       ?.request(state)
       .catch((error) => console.error(`[window-policy] 切换 ${state} 失败:`, error));
@@ -127,10 +162,23 @@ function App() {
 
   const handleEscape = useCallback(() => setState("compact"), [setState]);
 
+  // 右侧命中区进入：撤销待决的悬停收起（原生仍是展开/条状，视觉相位同步恢复），再进入 hover 周期。
+  const handleRightZoneEnter = useCallback(() => {
+    const restorePhase = hoverCollapseRef.current;
+    if (restorePhase !== null) {
+      hoverCollapseRef.current = null;
+      transitionControllerRef.current?.cancel();
+      setCollapsingToCapsule(false);
+      visualPhaseRef.current = restorePhase;
+      setVisualPhase(restorePhase);
+    }
+    hoverControllerRef.current?.enter();
+  }, []);
+
   const { pageIndex, direction, setPage } = useIslandNavigation(
     pages,
     expanded,
-    islandRef,
+    wheelZoneRef,
     handleEscape,
   );
 
@@ -167,16 +215,26 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (policy?.hoverExpand && !policy.clickThrough) {
+    const hoverCapable =
+      policy !== null &&
+      !policy.clickThrough &&
+      (policy.floatingBall || policy.hoverExpand);
+    if (hoverCapable) {
       hoverControllerRef.current?.enable();
       return;
     }
     hoverControllerRef.current?.disable();
-  }, [policy?.clickThrough, policy?.hoverExpand]);
+  }, [policy]);
+
+  useEffect(() => {
+    hoverControllerRef.current?.setPromotionEnabled(policy?.hoverExpand ?? false);
+  }, [policy?.hoverExpand]);
+
+  useEffect(() => {
+    hoverControllerRef.current?.setStageOneEnabled(policy?.floatingBall ?? false);
+  }, [policy?.floatingBall]);
 
   useEffect(() => scheduleAutoCheck(autoCheckUpdates), [autoCheckUpdates]);
-
-  useEffect(() => subscribeUpdate(() => setUpdateSnapshot(getUpdateSnapshot())), []);
 
   useEffect(() => {
     setUpdateFullscreenBlocked(policy?.fullscreenBlock ?? false);
@@ -190,8 +248,6 @@ function App() {
   return (
     <div className="flex h-screen w-screen items-start justify-center pt-3">
       <motion.div
-        ref={islandRef}
-        onMouseEnter={() => hoverControllerRef.current?.enter()}
         onMouseLeave={() => hoverControllerRef.current?.leave()}
         className={cn(
           "flex w-full max-w-[700px] flex-col rounded-2xl border border-border/60 px-4 shadow-2xl",
@@ -204,10 +260,17 @@ function App() {
           backgroundColor: `color-mix(in oklch, var(--card) ${(opacity * 100).toFixed(0)}%, transparent)`,
         }}
         animate={{
+          width: containerWidthPx,
           height: expanded ? 380 : 56,
           opacity: islandState === "hidden" ? 0 : 1,
         }}
         transition={{
+          width: reducedMotion
+            ? { duration: 0 }
+            : {
+                duration: ISLAND_EXPAND_DURATION_MS / 1000,
+                ease: ISLAND_LAYERED_EASE,
+              },
           height: reducedMotion
             ? { duration: 0 }
             : {
@@ -220,110 +283,21 @@ function App() {
           },
         }}
       >
-        {/* 顶部条 */}
-        <div data-tauri-drag-region className="flex h-14 shrink-0 items-center gap-3">
-          {expanded ? (
-            <div className="flex items-center gap-1">
-              {pages.map((p, i) => (
-                <button
-                  key={p.id}
-                  data-island-wheel-page-switch
-                  onClick={() => setPage(i)}
-                  className={cn(
-                    "rounded-md px-2.5 py-1 text-xs transition-colors",
-                    i === pageIndex
-                      ? "bg-primary text-primary-foreground"
-                      : "text-muted-foreground hover:text-foreground",
-                  )}
-                >
-                  {p.label}
-                </button>
-              ))}
-            </div>
-          ) : (
-            <div className="flex items-center gap-1.5">
-              {pages.map((p, i) => (
-                <span
-                  key={p.id}
-                  className={cn(
-                    "h-1.5 rounded-full transition-all",
-                    i === pageIndex ? "w-4 bg-foreground" : "w-1.5 bg-muted-foreground/40",
-                  )}
-                />
-              ))}
-            </div>
-          )}
-
-          {!expanded && (
-            <div className="relative ml-1 overflow-hidden">
-              <AnimatePresence mode="popLayout" custom={direction} initial={false}>
-                <motion.div
-                  key={pageIndex}
-                  custom={direction}
-                  variants={pageVariants}
-                  initial="enter"
-                  animate="center"
-                  exit="exit"
-                  transition={{ duration: ISLAND_DURATION_MS / 1000, ease: ISLAND_EASE }}
-                >
-                  <CurrentPage compact />
-                </motion.div>
-              </AnimatePresence>
-            </div>
-          )}
-
-          <div className="ml-auto flex items-center gap-1">
-            {updateSnapshot.phase === "available" &&
-              updateSnapshot.pendingAvailable &&
-              !updateSnapshot.fullscreenBlocked && (
-                <Button
-                  variant="ghost"
-                  size="icon-xs"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    acknowledgeAvailableUpdate();
-                    void openSettings("about");
-                  }}
-                  aria-label={`发现 LuckyIsland ${updateSnapshot.latestVersion ?? "新版本"}，打开关于页更新`}
-                >
-                  <Download />
-                </Button>
-              )}
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              onClick={(e) => {
-                e.stopPropagation();
-                setState(expanded ? "compact" : "expanded");
-              }}
-              aria-label="展开/收起"
-            >
-              {expanded ? <ChevronUp /> : <ChevronDown />}
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              onClick={(e) => {
-                e.stopPropagation();
-                void openSettings();
-              }}
-              aria-label="打开设置"
-            >
-              <Settings />
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              onClick={(e) => {
-                e.stopPropagation();
-                setThemeAndPersist(effectiveTheme === "dark" ? "light" : "dark");
-              }}
-              aria-label="切换主题"
-            >
-              {effectiveTheme === "dark" ? <Sun /> : <Moon />}
-            </Button>
-          </div>
-        </div>
+        {/* 顶部条：11a.2 拆为左侧内容/wheel 区 + 右侧 hover/action 命中区 */}
+        <IslandTopBar
+          expanded={expanded}
+          capsule={capsule}
+          pages={pages}
+          pageIndex={pageIndex}
+          direction={direction}
+          currentPage={CurrentPage}
+          wheelZoneRef={wheelZoneRef}
+          onRightZoneEnter={handleRightZoneEnter}
+          onSetPage={setPage}
+          onToggleExpanded={() => setState(expanded ? "compact" : "expanded")}
+          onToggleTheme={() => setThemeAndPersist(effectiveTheme === "dark" ? "light" : "dark")}
+          effectiveTheme={effectiveTheme}
+        />
 
         {/* 展开内容：容器先获得空间，内容随后进入；收起时内容先退出。 */}
         <AnimatePresence initial={false}>

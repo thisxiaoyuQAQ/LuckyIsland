@@ -141,6 +141,11 @@ const expandedSnapshot = {
   desiredState: "expanded",
   effectiveState: "expanded",
 } satisfies WindowPolicySnapshot;
+const capsuleSnapshot = {
+  ...compactSnapshot,
+  effectiveState: "capsule",
+  floatingBall: true,
+} satisfies WindowPolicySnapshot;
 
 vi.mock("@/lib/window-policy", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/window-policy")>();
@@ -149,16 +154,19 @@ vi.mock("@/lib/window-policy", async (importOriginal) => {
     windowPolicyGet: vi.fn(async () => compactSnapshot),
     setIslandState: vi.fn(async () => compactSnapshot),
     windowHoverStageSet: vi.fn(async () => compactSnapshot),
-    createHoverController: vi.fn(() => ({
+    createHoverStageController: vi.fn(() => ({
       enter: vi.fn(),
       leave: vi.fn(),
       suppressCurrentCycle: vi.fn(),
+      setPromotionEnabled: vi.fn(),
+      setStageOneEnabled: vi.fn(),
       enable: vi.fn(),
       disable: vi.fn(),
       dispose: vi.fn(),
     })),
     createIslandTransitionController: vi.fn(() => ({
       request: vi.fn(async () => undefined),
+      cancel: vi.fn(),
       dispose: vi.fn(),
     })),
   };
@@ -249,6 +257,27 @@ describe("App event subscriptions", () => {
 
     await dispatch(() => emit("window://state-changed", expandedSnapshot));
     expect(document.querySelector('[data-testid="page-time"][data-compact="false"]')).not.toBeNull();
+    await tree.unmount();
+  });
+
+  it("capsule renders only compact content and the expand button", async () => {
+    const tree = await mountReactTree(<App />);
+    allSubscriptions().forEach((entry) => entry.pending.resolve(vi.fn()));
+    await flushReactWork();
+
+    const settingsButton = () => document.querySelector('button[aria-label="打开设置"]');
+    const expandButton = () => document.querySelector('button[aria-label="展开/收起"]');
+
+    expect(settingsButton()).not.toBeNull();
+
+    await dispatch(() => emit("window://state-changed", capsuleSnapshot));
+    expect(settingsButton()).toBeNull();
+    expect(expandButton()).not.toBeNull();
+    // 胶囊态仍渲染当前页紧凑内容。
+    expect(document.querySelector('[data-testid="page-time"][data-compact="true"]')).not.toBeNull();
+
+    await dispatch(() => emit("window://state-changed", compactSnapshot));
+    expect(settingsButton()).not.toBeNull();
     await tree.unmount();
   });
 

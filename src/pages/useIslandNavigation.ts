@@ -10,14 +10,15 @@ export interface IslandNavigation {
 }
 
 /**
- * 页面导航：维护 pageIndex/direction，绑定滚轮（岛面非交互区域）与 Alt+数字/方向键快捷键。
+ * 页面导航：维护 pageIndex/direction，绑定滚轮（左侧内容/wheel 区）与 Alt+数字/方向键快捷键。
  * - pages 变化导致当前 index 越界时回 0。
  * - 滚轮仅在 expanded 视角下禁用；控件内部 wheel 由 islandWheel 分类器保留。
+ * - 11a.2 起滚轮只绑定左侧内容区：右侧是独立 hover/action 命中区，不响应滚轮切页。
  */
 export function useIslandNavigation(
   pages: PageMeta[],
   expanded: boolean,
-  islandRef: React.RefObject<HTMLDivElement | null>,
+  wheelZoneRef: React.RefObject<HTMLDivElement | null>,
   onEscape: () => void,
 ): IslandNavigation {
   const [pageIndex, setPageIndex] = useState(0);
@@ -45,13 +46,13 @@ export function useIslandNavigation(
     [pages.length],
   );
 
-  // 岛面非交互区域滚轮切页；局部控件/滚动区由分类器保留自身 wheel 语义。
+  // 左侧内容区滚轮切页；局部控件/滚动区由分类器保留自身 wheel 语义。
   useEffect(() => {
-    const island = islandRef.current;
-    if (!island) return;
+    const wheelZone = wheelZoneRef.current;
+    if (!wheelZone) return;
 
     const onWheel = (event: WheelEvent) => {
-      const wheelDirection = getIslandWheelDirection(event, island);
+      const wheelDirection = getIslandWheelDirection(event, wheelZone);
       if (wheelDirection === 0 || pages.length < 2) return;
 
       const lock = updateWheelGestureLock(
@@ -66,9 +67,9 @@ export function useIslandNavigation(
       setPage(pageIndexRef.current + wheelDirection);
     };
 
-    island.addEventListener("wheel", onWheel, { passive: false });
-    return () => island.removeEventListener("wheel", onWheel);
-  }, [islandRef, pages.length, setPage]);
+    wheelZone.addEventListener("wheel", onWheel, { passive: false });
+    return () => wheelZone.removeEventListener("wheel", onWheel);
+  }, [wheelZoneRef, pages.length, setPage]);
 
   // 局部快捷键（仅展开态，需窗口焦点）。
   useEffect(() => {

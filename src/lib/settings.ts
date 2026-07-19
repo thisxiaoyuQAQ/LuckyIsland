@@ -28,6 +28,10 @@ export const KEYS = {
   windowClickThrough: "window:click_through",
   /** 紧凑态悬停自动展开，默认关闭。 */
   windowHoverExpand: "window:hover_expand",
+  /** 悬浮胶囊（浮球）：开启后收起态为 240×80 胶囊，默认关闭。 */
+  windowFloatingBall: "window:floating_ball",
+  /** 灵动岛视觉样式：legacy | new，缺键/非法值回退 new。 */
+  windowVisualStyle: "window:visual_style",
   /** 岛所在显示器出现真正全屏窗口时自动隐藏，默认关闭。 */
   windowHideInFullscreen: "window:hide_in_fullscreen",
   /** 启动后静默检查 stable 更新，默认开启。 */
@@ -63,6 +67,8 @@ export const DEFAULTS = {
   windowOffsetY: "0",
   windowClickThrough: "false",
   windowHoverExpand: "false",
+  windowFloatingBall: "false",
+  windowVisualStyle: "new",
   windowHideInFullscreen: "false",
   updateAutoCheck: "true",
 } as const;
@@ -178,6 +184,14 @@ export function parsePagesOrder(v: string | null | undefined): PageId[] {
 export function parseBool(v: string | null | undefined, fallback: boolean): boolean {
   if (v == null) return fallback;
   return v === "true" || v === "1";
+}
+
+/** 灵动岛视觉样式：legacy（经典） | new（新样式，默认）。 */
+export type VisualStyle = "legacy" | "new";
+
+/** 严格解析 window:visual_style：仅 "legacy" 为经典，缺键与一切非法值回退 "new"。 */
+export function parseVisualStyle(v: string | null | undefined): VisualStyle {
+  return v === "legacy" ? "legacy" : "new";
 }
 
 /** 通知来源过滤：返回每个来源是否允许弹卡片 */
