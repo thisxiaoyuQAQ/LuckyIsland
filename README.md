@@ -4,8 +4,6 @@
 
 LuckyIsland 把 macOS 灵动岛的形态搬到了 Windows：一个常驻屏幕顶部中央的透明小条，平时只占一行高度显示时钟；鼠标悬停或热键展开成一块「单页画布」，在时间 / 日历 / 天气 / 股票 / 待办 / 终端 / 通知之间秒切。还能通过本地 HTTP 端点接收 Claude / Codex 的完成通知，用 Windows toast 弹给你。
 
-当前稳定版：**v0.3.0**（[Release](https://github.com/thisxiaoyuQAQ/LuckyIsland/releases/tag/v0.3.0)）
-
 ## 它能做什么
 
 **灵动岛外壳**
