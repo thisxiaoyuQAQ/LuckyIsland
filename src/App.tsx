@@ -33,6 +33,7 @@ import {
   type WindowPolicySnapshot,
 } from "@/lib/window-policy";
 import { useTheme } from "@/lib/theme";
+import { useUiMode } from "@/lib/ui-mode";
 import {
   scheduleAutoCheck,
   setUpdateFullscreenBlocked,
@@ -45,6 +46,9 @@ import { useIslandNavigation } from "@/pages/useIslandNavigation";
 
 function App() {
   const { resolvedTheme, setThemeMode } = useTheme();
+  // 界面模式（模块 13）：classisland 贴顶（去顶部间隙、只下圆角），island 保持悬浮。
+  const uiMode = useUiMode();
+  const docked = uiMode === "classisland";
   const [policy, setPolicy] = useState<WindowPolicySnapshot | null>(null);
   const [visualPhase, setVisualPhase] = useState<IslandVisualPhase>("compact");
   const reducedMotion = useReducedMotion();
@@ -271,11 +275,19 @@ function App() {
   }, [effectiveTheme]);
 
   return (
-    <div className="flex h-screen w-screen items-start justify-center pt-3">
+    <div
+      className={cn(
+        "flex h-screen w-screen items-start justify-center",
+        // classisland：容器贴屏顶（无顶部间隙）；island：保留 12px 悬浮间隙。
+        docked ? "pt-0" : "pt-3",
+      )}
+    >
       <motion.div
         onMouseLeave={() => hoverControllerRef.current?.leave()}
         className={cn(
-          "flex w-full max-w-[700px] flex-col rounded-2xl border border-border/60 px-4 shadow-2xl",
+          "flex w-full max-w-[700px] flex-col border border-border/60 px-4 shadow-2xl",
+          // classisland：只保留下方圆角、去掉顶边（贴屏顶的直边）；island：四角圆角。
+          docked ? "rounded-b-2xl rounded-t-none border-t-0" : "rounded-2xl",
           blur && "backdrop-blur-xl",
         )}
         style={{

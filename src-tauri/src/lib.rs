@@ -42,7 +42,7 @@ use hotkeys::{
 };
 use monitor::{
     monitor_get_selection, monitor_list, monitor_select, restore_island_monitor,
-    start_runtime_watch, window_offset_apply,
+    start_runtime_watch, window_offset_apply, window_ui_mode_set,
 };
 use notify::{notify_clear, notify_create, notify_get_token, notify_list, notify_mark_read};
 use settings::{setting_get, setting_set};
@@ -195,6 +195,7 @@ pub fn run() {
             monitor_get_selection,
             monitor_select,
             window_offset_apply,
+            window_ui_mode_set,
             config_export,
             config_import,
             todo_list,

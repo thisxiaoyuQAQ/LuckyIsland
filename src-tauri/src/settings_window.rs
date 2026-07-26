@@ -11,7 +11,7 @@ use serde::Serialize;
 use tauri::{Emitter, Manager, State};
 use tauri_plugin_autostart::ManagerExt;
 
-use crate::monitor::{OFFSET_X_KEY, OFFSET_Y_KEY};
+use crate::monitor::{OFFSET_X_KEY, OFFSET_Y_KEY, UI_MODE_KEY};
 use crate::storage::Db;
 
 const SETTINGS_TABS: &[&str] = &[
@@ -226,10 +226,14 @@ pub fn config_import(
         .iter()
         .map(|(key, _)| key.clone())
         .collect::<std::collections::BTreeSet<_>>();
+    // needs_offset_apply 也覆盖 window:ui_mode 变化：贴顶/悬浮的顶部间隙不同，导入后需让
+    // 前端触发一次 window_offset_apply（会按新 ui_mode 的 gap 重新定位窗口），否则窗口 y 不动。
     let needs_offset_apply = old_keys.contains(OFFSET_X_KEY)
         || old_keys.contains(OFFSET_Y_KEY)
         || new_keys.contains(OFFSET_X_KEY)
-        || new_keys.contains(OFFSET_Y_KEY);
+        || new_keys.contains(OFFSET_Y_KEY)
+        || old_keys.contains(UI_MODE_KEY)
+        || new_keys.contains(UI_MODE_KEY);
     let needs_hotkeys_apply = old_keys.iter().any(|k| k.starts_with("hotkeys:"))
         || new_keys.iter().any(|k| k.starts_with("hotkeys:"));
     let needs_window_policy_reload = old_keys.contains(crate::window_policy::CLICK_THROUGH_KEY)

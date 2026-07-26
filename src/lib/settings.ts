@@ -32,6 +32,8 @@ export const KEYS = {
   windowFloatingBall: "window:floating_ball",
   /** 灵动岛视觉样式：legacy | new，缺键/非法值回退 new。 */
   windowVisualStyle: "window:visual_style",
+  /** 界面模式（模块 13）：island（悬浮，默认）| classisland（贴顶新 UI）。 */
+  windowUiMode: "window:ui_mode",
   /** 岛所在显示器出现真正全屏窗口时自动隐藏，默认关闭。 */
   windowHideInFullscreen: "window:hide_in_fullscreen",
   /** 启动后静默检查 stable 更新，默认开启。 */
@@ -69,6 +71,7 @@ export const DEFAULTS = {
   windowHoverExpand: "false",
   windowFloatingBall: "false",
   windowVisualStyle: "new",
+  windowUiMode: "island",
   windowHideInFullscreen: "false",
   updateAutoCheck: "true",
 } as const;
@@ -192,6 +195,14 @@ export type VisualStyle = "legacy" | "new";
 /** 严格解析 window:visual_style：仅 "legacy" 为经典，缺键与一切非法值回退 "new"。 */
 export function parseVisualStyle(v: string | null | undefined): VisualStyle {
   return v === "legacy" ? "legacy" : "new";
+}
+
+/** 界面模式（模块 13）：island（悬浮灵动岛，默认）| classisland（贴顶新 UI）。 */
+export type UiMode = "island" | "classisland";
+
+/** 严格解析 window:ui_mode：仅 "classisland" 为新 UI，缺键与一切非法值回退 "island"。 */
+export function parseUiMode(v: string | null | undefined): UiMode {
+  return v === "classisland" ? "classisland" : "island";
 }
 
 /** 通知来源过滤：返回每个来源是否允许弹卡片 */
@@ -322,6 +333,12 @@ export async function windowOffsetApply(
     offsetX,
     offsetY,
   });
+}
+
+/** 模块 13 切换界面模式：后端写 window:ui_mode + 重新定位灵动岛（贴顶/悬浮）+ 广播
+ * settings://changed。返回后端落盘后的规范模式串。 */
+export async function windowUiModeSet(mode: UiMode): Promise<UiMode> {
+  return parseUiMode(await invoke<string>("window_ui_mode_set", { mode }));
 }
 
 /** 07a 配置导入结果摘要（与后端 ImportSummary 对齐，camelCase）。 */

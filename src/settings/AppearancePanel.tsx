@@ -9,10 +9,13 @@ import {
   parseBool,
   parseOffset,
   parseOpacity,
+  parseUiMode,
   parseVisualStyle,
   settingGet,
   settingSetEmit,
   windowOffsetApply,
+  windowUiModeSet,
+  type UiMode,
   type VisualStyle,
 } from "@/lib/settings";
 
@@ -42,6 +45,8 @@ export function AppearancePanel() {
   const [blur, setBlur] = useState(true);
   // 灵动岛视觉样式：legacy | new（默认 new，非法值回退 new）。
   const [visualStyle, setVisualStyle] = useState<VisualStyle>("new");
+  // 界面模式（模块 13）：island 悬浮 | classisland 贴顶（默认 island，非法值回退 island）。
+  const [uiMode, setUiMode] = useState<UiMode>("island");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
@@ -61,26 +66,31 @@ export function AppearancePanel() {
 
   useEffect(() => {
     void (async () => {
-      const [o, ox, oy, b, vs] = await Promise.all([
+      const [o, ox, oy, b, vs, um] = await Promise.all([
         settingGet(KEYS.windowOpacity),
         settingGet(KEYS.windowOffsetX),
         settingGet(KEYS.windowOffsetY),
         settingGet(KEYS.blur),
         settingGet(KEYS.windowVisualStyle),
+        settingGet(KEYS.windowUiMode),
       ]);
       setOpacity(parseOpacity(o));
       setOffsetX(parseOffset(ox));
       setOffsetY(parseOffset(oy));
       setBlur(parseBool(b, true));
       setVisualStyle(parseVisualStyle(vs));
+      setUiMode(parseUiMode(um));
       setLoading(false);
     })();
   }, []);
 
-  // 跨窗口同步：岛窗口或配置导入改写 window:visual_style 后即时回显。
+  // 跨窗口同步：岛窗口或配置导入改写 window:visual_style / window:ui_mode 后即时回显。
   useTauriEvent<{ key: string; value: string | null }>("settings://changed", (event) => {
     if (event.payload.key === KEYS.windowVisualStyle) {
       setVisualStyle(parseVisualStyle(event.payload.value));
+    }
+    if (event.payload.key === KEYS.windowUiMode) {
+      setUiMode(parseUiMode(event.payload.value));
     }
   });
 
@@ -92,6 +102,18 @@ export function AppearancePanel() {
       const actual = await settingGet(KEYS.windowVisualStyle).catch(() => null);
       setVisualStyle(parseVisualStyle(actual));
       setMsg({ kind: "err", text: `保存视觉样式失败：${String(error)}` });
+    }
+  };
+
+  // 界面模式：走后端 window_ui_mode_set（写 KV + 重新定位窗口 + 广播），失败回读真实值。
+  const changeUiMode = async (value: UiMode) => {
+    setUiMode(value);
+    try {
+      await windowUiModeSet(value);
+    } catch (error) {
+      const actual = await settingGet(KEYS.windowUiMode).catch(() => null);
+      setUiMode(parseUiMode(actual));
+      setMsg({ kind: "err", text: `切换界面模式失败：${String(error)}` });
     }
   };
 
@@ -219,12 +241,13 @@ export function AppearancePanel() {
         return;
       }
       const summary = await configImport(path);
-      const [opRaw, oxRaw, oyRaw, blurRaw, vsRaw] = await Promise.all([
+      const [opRaw, oxRaw, oyRaw, blurRaw, vsRaw, umRaw] = await Promise.all([
         settingGet(KEYS.windowOpacity),
         settingGet(KEYS.windowOffsetX),
         settingGet(KEYS.windowOffsetY),
         settingGet(KEYS.blur),
         settingGet(KEYS.windowVisualStyle),
+        settingGet(KEYS.windowUiMode),
       ]);
       const op = parseOpacity(opRaw);
       const ox = parseOffset(oxRaw);
@@ -232,6 +255,7 @@ export function AppearancePanel() {
       setOpacity(op);
       setBlur(parseBool(blurRaw, true));
       setVisualStyle(parseVisualStyle(vsRaw));
+      setUiMode(parseUiMode(umRaw));
       // 含偏移项（或原配置有偏移但导入文件删掉）：导入只改数据不上屏，
       // 需额外触发一次让窗口移动。后端会返回 clamp 后实际值。
       if (summary.needsOffsetApply) {
@@ -265,6 +289,20 @@ export function AppearancePanel() {
           调节灵动岛窗口透明度与位置偏移。偏移相对「屏幕顶部居中」位置，超出可视区会自动拉回边界。
         </p>
       </div>
+
+      <Row
+        label="界面模式"
+        desc="老 UI 为悬浮灵动岛；新 UI 贴屏幕顶部、只保留下方圆角（ClassIsland 风），紧凑态并排显示时间/日期/天气/待办"
+      >
+        <select
+          className="rounded-md border border-input bg-background px-2 py-1 text-sm outline-none focus:border-ring focus:ring-[3px] focus:ring-ring/50"
+          value={uiMode}
+          onChange={(e) => void changeUiMode(e.target.value as UiMode)}
+        >
+          <option value="island">老 UI（悬浮灵动岛）</option>
+          <option value="classisland">新 UI（贴顶）</option>
+        </select>
+      </Row>
 
       <Row
         label="视觉样式"

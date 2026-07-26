@@ -9,6 +9,8 @@ use crate::window_policy::{self, geometry_for, IslandState};
 pub const MONITOR_SETTING_KEY: &str = "window:monitor";
 pub const PRIMARY_SELECTION: &str = "primary";
 pub const TOP_GAP_PHYSICAL: i32 = 16;
+/// 界面模式 KV（模块 13）：classisland 贴顶（gap=0），其余悬浮（gap=TOP_GAP_PHYSICAL）。
+pub const UI_MODE_KEY: &str = "window:ui_mode";
 /// 偏移 KV key（07a 窗口外观）；存储为整数字符串，可为负。
 pub const OFFSET_X_KEY: &str = "window:offset_x";
 pub const OFFSET_Y_KEY: &str = "window:offset_y";
@@ -154,12 +156,13 @@ fn physical_window_height(logical_height: f64, scale_factor: f64) -> u32 {
 fn top_center_position(
     monitor: &MonitorInfo,
     window_width: u32,
+    top_gap: i32,
     offset_x: i32,
     offset_y: i32,
 ) -> MonitorPoint {
     MonitorPoint {
         x: monitor.position.x + (monitor.size.width as i32 - window_width as i32) / 2 + offset_x,
-        y: monitor.position.y + TOP_GAP_PHYSICAL + offset_y,
+        y: monitor.position.y + top_gap + offset_y,
     }
 }
 
@@ -262,6 +265,19 @@ fn read_offsets(db: &Db) -> (i32, i32) {
     )
 }
 
+/// 界面模式 → 顶部间隙（纯函数，便于单测）：classisland 贴顶 0，其余（含缺键/非法）悬浮 16。
+fn top_gap_for_mode(mode: Option<&str>) -> i32 {
+    match mode {
+        Some("classisland") => 0,
+        _ => TOP_GAP_PHYSICAL,
+    }
+}
+
+/// 读 `window:ui_mode` 决定顶部间隙。供所有「定位灵动岛」路径统一取用。
+fn read_top_gap(db: &Db) -> i32 {
+    top_gap_for_mode(db.setting_get(UI_MODE_KEY).as_deref())
+}
+
 /// 把偏移 clamp 到窗口仍留在 monitor 可视区内的范围：
 /// 顶部不超出屏顶之上（可贴顶 offset_y 最负到 `-(屏顶-base_y)`）、
 /// 左右不超出屏左右（窗口至少留 1px 在屏内，避免完全消失到屏外）。
@@ -270,11 +286,12 @@ fn clamp_offsets(
     monitor: &MonitorInfo,
     window_width: u32,
     window_height: u32,
+    top_gap: i32,
     offset_x: i32,
     offset_y: i32,
 ) -> (i32, i32) {
     let base_x = monitor.position.x + (monitor.size.width as i32 - window_width as i32) / 2;
-    let base_y = monitor.position.y + TOP_GAP_PHYSICAL;
+    let base_y = monitor.position.y + top_gap;
 
     // 横向：保证窗口左右各至少 1px 在屏内。
     let min_x = monitor.position.x + 1 - base_x;
@@ -312,6 +329,7 @@ fn resolved_monitor<'a>(
 fn move_island_to_monitor(
     app: &AppHandle,
     monitor: &RuntimeMonitor,
+    top_gap: i32,
     offset_x: i32,
     offset_y: i32,
 ) -> Result<(), String> {
@@ -322,8 +340,8 @@ fn move_island_to_monitor(
     let (logical_width, _) = current_logical_geometry(app);
     let width = physical_window_width(logical_width, scale_factor);
     let height = expanded_physical_height(scale_factor);
-    let (cx, cy) = clamp_offsets(&monitor.info, width, height, offset_x, offset_y);
-    let position = top_center_position(&monitor.info, width, cx, cy);
+    let (cx, cy) = clamp_offsets(&monitor.info, width, height, top_gap, offset_x, offset_y);
+    let position = top_center_position(&monitor.info, width, top_gap, cx, cy);
     window
         .set_position(PhysicalPosition::new(position.x, position.y))
         .map_err(|error| format!("移动灵动岛窗口失败：{error}"))
@@ -337,6 +355,7 @@ fn move_island_to_monitor(
 fn recover_island_to_monitor(
     app: &AppHandle,
     monitor: &RuntimeMonitor,
+    top_gap: i32,
     offset_x: i32,
     offset_y: i32,
 ) -> Result<(), String> {
@@ -347,8 +366,8 @@ fn recover_island_to_monitor(
     let (logical_width, logical_height) = current_logical_geometry(app);
     let width = physical_window_width(logical_width, scale_factor);
     let height = expanded_physical_height(scale_factor);
-    let (cx, cy) = clamp_offsets(&monitor.info, width, height, offset_x, offset_y);
-    let position = top_center_position(&monitor.info, width, cx, cy);
+    let (cx, cy) = clamp_offsets(&monitor.info, width, height, top_gap, offset_x, offset_y);
+    let position = top_center_position(&monitor.info, width, top_gap, cx, cy);
     window
         .set_size(Size::Logical(LogicalSize {
             width: logical_width,
@@ -405,7 +424,8 @@ pub fn monitor_select(
         .map_err(|error| format!("读取灵动岛窗口位置失败：{error}"))?;
 
     let (offset_x, offset_y) = read_offsets(db.inner());
-    move_island_to_monitor(&app, target, offset_x, offset_y)?;
+    let top_gap = read_top_gap(db.inner());
+    move_island_to_monitor(&app, target, top_gap, offset_x, offset_y)?;
     if let Err(error) = db.setting_set(MONITOR_SETTING_KEY, &selection) {
         let _ = window.set_position(previous_position);
         return Err(format!("保存显示器选择失败：{error}"));
@@ -418,7 +438,8 @@ pub fn restore_island_monitor(app: &AppHandle, db: &Db) -> Result<MonitorSelecti
     let state = selection_state(&set, &current_selection(db))?;
     let target = resolved_monitor(&set, &state)?;
     let (offset_x, offset_y) = read_offsets(db);
-    move_island_to_monitor(app, target, offset_x, offset_y)?;
+    let top_gap = read_top_gap(db);
+    move_island_to_monitor(app, target, top_gap, offset_x, offset_y)?;
     Ok(state)
 }
 
@@ -436,10 +457,11 @@ pub fn window_offset_apply(
     let state = selection_state(&set, &current_selection(db.inner()))?;
     let target = resolved_monitor(&set, &state)?;
     let scale_factor = target.raw.scale_factor();
+    let top_gap = read_top_gap(db.inner());
     let (logical_width, _) = current_logical_geometry(&app);
     let width = physical_window_width(logical_width, scale_factor);
     let height = expanded_physical_height(scale_factor);
-    let (cx, cy) = clamp_offsets(&target.info, width, height, offset_x, offset_y);
+    let (cx, cy) = clamp_offsets(&target.info, width, height, top_gap, offset_x, offset_y);
     // 先落盘 clamp 后的值，再上屏——即使上屏失败也不会留下跑出屏的持久化值。
     if cx != 0 {
         db.setting_set(OFFSET_X_KEY, &cx.to_string())?;
@@ -452,7 +474,7 @@ pub fn window_offset_apply(
     } else {
         db.setting_delete(OFFSET_Y_KEY)?;
     }
-    let position = top_center_position(&target.info, width, cx, cy);
+    let position = top_center_position(&target.info, width, top_gap, cx, cy);
     let window = app
         .get_webview_window("island")
         .ok_or_else(|| "找不到灵动岛窗口".to_string())?;
@@ -460,6 +482,36 @@ pub fn window_offset_apply(
         .set_position(PhysicalPosition::new(position.x, position.y))
         .map_err(|error| format!("应用偏移失败：{error}"))?;
     Ok((cx, cy))
+}
+
+/// 模块 13：切换界面模式（island 悬浮 | classisland 贴顶）。
+///
+/// 写 `window:ui_mode` → 按新模式的顶部间隙重新定位灵动岛（贴顶 gap=0 / 悬浮 gap=16，
+/// `read_top_gap` 读到刚落盘的新值）→ 广播 `settings://changed` 让岛窗口与设置窗口即时
+/// 换壳（去/加顶部间隙、圆角）。返回落盘后的规范模式串（非法值回退 island）。
+#[tauri::command]
+pub fn window_ui_mode_set(
+    app: AppHandle,
+    db: State<'_, Db>,
+    mode: String,
+) -> Result<String, String> {
+    let normalized = if mode == "classisland" {
+        "classisland"
+    } else {
+        "island"
+    };
+    db.setting_set(UI_MODE_KEY, normalized)?;
+    // KV 已落盘后重新定位；失败也不回滚 KV——位置可由后续 restore/offset 纠正，但换壳需 KV 生效。
+    restore_island_monitor(&app, db.inner())?;
+    app.emit(
+        "settings://changed",
+        crate::settings_window::SettingsChanged {
+            key: UI_MODE_KEY.to_string(),
+            value: Some(normalized.to_string()),
+        },
+    )
+    .map_err(|error| format!("广播界面模式变更失败：{error}"))?;
+    Ok(normalized.to_string())
 }
 
 /// 运行时显示器变化监听：周期性检查已保存的具体显示器是否还在线。
@@ -498,7 +550,8 @@ pub fn start_runtime_watch(app: AppHandle) {
                     };
                     let db = app.state::<Db>();
                     let (offset_x, offset_y) = read_offsets(db.inner());
-                    if recover_island_to_monitor(&app, target, offset_x, offset_y).is_ok() {
+                    let top_gap = read_top_gap(db.inner());
+                    if recover_island_to_monitor(&app, target, top_gap, offset_x, offset_y).is_ok() {
                         fell_back = false;
                         let _ = app.emit(
                             "monitor://changed",
@@ -517,7 +570,8 @@ pub fn start_runtime_watch(app: AppHandle) {
                     };
                     let db = app.state::<Db>();
                     let (offset_x, offset_y) = read_offsets(db.inner());
-                    if recover_island_to_monitor(&app, primary, offset_x, offset_y).is_ok() {
+                    let top_gap = read_top_gap(db.inner());
+                    if recover_island_to_monitor(&app, primary, top_gap, offset_x, offset_y).is_ok() {
                         fell_back = true;
                         let _ = app.emit(
                             "monitor://changed",
@@ -632,11 +686,17 @@ mod tests {
     #[test]
     fn centers_on_positive_and_negative_monitor_coordinates() {
         assert_eq!(
-            top_center_position(&info("MAIN", 0, 0, 1920, 1080, true), 720, 0, 0),
+            top_center_position(&info("MAIN", 0, 0, 1920, 1080, true), 720, TOP_GAP_PHYSICAL, 0, 0),
             MonitorPoint { x: 600, y: 16 }
         );
         assert_eq!(
-            top_center_position(&info("LEFT", -2560, -200, 2560, 1440, false), 1080, 0, 0,),
+            top_center_position(
+                &info("LEFT", -2560, -200, 2560, 1440, false),
+                1080,
+                TOP_GAP_PHYSICAL,
+                0,
+                0,
+            ),
             MonitorPoint { x: -1820, y: -184 }
         );
     }
@@ -645,9 +705,32 @@ mod tests {
     fn applies_offsets_on_top_of_top_center_baseline() {
         // 基准 (600, 16)，offset (50, -8) → (650, 8)
         assert_eq!(
-            top_center_position(&info("MAIN", 0, 0, 1920, 1080, true), 720, 50, -8),
+            top_center_position(&info("MAIN", 0, 0, 1920, 1080, true), 720, TOP_GAP_PHYSICAL, 50, -8),
             MonitorPoint { x: 650, y: 8 }
         );
+    }
+
+    #[test]
+    fn classisland_gap_zero_docks_window_flush_to_screen_top() {
+        // 贴顶模式 gap=0：窗口顶边对齐 monitor 顶部（y=0），横向仍居中。
+        assert_eq!(
+            top_center_position(&info("MAIN", 0, 0, 1920, 1080, true), 720, 0, 0, 0),
+            MonitorPoint { x: 600, y: 0 }
+        );
+        // 负坐标副屏也贴该屏顶。
+        assert_eq!(
+            top_center_position(&info("LEFT", -2560, -200, 2560, 1440, false), 1080, 0, 0, 0),
+            MonitorPoint { x: -1820, y: -200 }
+        );
+    }
+
+    #[test]
+    fn top_gap_for_mode_maps_only_classisland_to_zero() {
+        assert_eq!(top_gap_for_mode(Some("classisland")), 0);
+        assert_eq!(top_gap_for_mode(Some("island")), TOP_GAP_PHYSICAL);
+        assert_eq!(top_gap_for_mode(None), TOP_GAP_PHYSICAL);
+        assert_eq!(top_gap_for_mode(Some("garbage")), TOP_GAP_PHYSICAL);
+        assert_eq!(top_gap_for_mode(Some("")), TOP_GAP_PHYSICAL);
     }
 
     #[test]
@@ -658,14 +741,26 @@ mod tests {
         //       右极限 窗口右端 ≤ 屏右-1 → 600+offset_x+720 ≤ 1919 → offset_x ≤ 599。
         // 纵向：顶部 ≥ 0 → offset_y ≥ -16；底部 ≤ 1080-400=680 → 16+offset_y ≤ 680 → offset_y ≤ 664。
         // 超界偏移被拉回边界。
-        assert_eq!(clamp_offsets(&monitor, 720, 400, 9999, 9999), (599, 664));
-        assert_eq!(clamp_offsets(&monitor, 720, 400, -9999, -9999), (-599, -16));
+        assert_eq!(clamp_offsets(&monitor, 720, 400, TOP_GAP_PHYSICAL, 9999, 9999), (599, 664));
+        assert_eq!(clamp_offsets(&monitor, 720, 400, TOP_GAP_PHYSICAL, -9999, -9999), (-599, -16));
         // 区间内原值保留。
-        assert_eq!(clamp_offsets(&monitor, 720, 400, 50, -8), (50, -8));
+        assert_eq!(clamp_offsets(&monitor, 720, 400, TOP_GAP_PHYSICAL, 50, -8), (50, -8));
         // 0,0 仍是 0,0。
-        assert_eq!(clamp_offsets(&monitor, 720, 400, 0, 0), (0, 0));
+        assert_eq!(clamp_offsets(&monitor, 720, 400, TOP_GAP_PHYSICAL, 0, 0), (0, 0));
         // 150% DPI：展开态物理高度 600px，纵向下移上限随之收紧到 464。
-        assert_eq!(clamp_offsets(&monitor, 1080, 600, 0, 9999), (0, 464));
+        assert_eq!(clamp_offsets(&monitor, 1080, 600, TOP_GAP_PHYSICAL, 0, 9999), (0, 464));
+    }
+
+    #[test]
+    fn clamp_offsets_with_zero_gap_keeps_flush_top_reachable() {
+        let monitor = info("MAIN", 0, 0, 1920, 1080, true);
+        // 贴顶模式 base_y=0：向上偏移下限为 0（不能越过屏顶），负 offset_y 被拉回 0；
+        // 横向极负 offset_x 仍拉回左极限 -599。
+        assert_eq!(clamp_offsets(&monitor, 720, 400, 0, -9999, -9999), (-599, 0));
+        // 默认 0/0 仍贴顶。
+        assert_eq!(clamp_offsets(&monitor, 720, 400, 0, 0, 0), (0, 0));
+        // 向下偏移上限随 base_y=0 放宽到 屏高-窗口高 = 680。
+        assert_eq!(clamp_offsets(&monitor, 720, 400, 0, 0, 9999), (0, 680));
     }
 
     #[test]

@@ -11,6 +11,7 @@ import {
 } from "@/lib/settings";
 import { parseThemeMode } from "@/lib/theme";
 import { applyVisualStyleSetting } from "@/lib/visual-style";
+import { applyUiModeSetting } from "@/lib/ui-mode";
 import { useAsyncSubscription } from "@/lib/useAsyncSubscription";
 
 export interface IslandSettingsHandlers {
@@ -35,16 +36,25 @@ export function useIslandSettings(handlers: IslandSettingsHandlers): void {
   // settings KV 初始化：各项独立应用，单个读取失败不影响其余设置。
   useEffect(() => {
     (async () => {
-      const [enabled, order, theme, blurResult, opacityResult, updateAutoCheckResult, visualStyle] =
-        await Promise.allSettled([
-          settingGet(KEYS.pagesEnabled),
-          settingGet(KEYS.pagesOrder),
-          settingGet(KEYS.theme),
-          settingGet(KEYS.blur),
-          settingGet(KEYS.windowOpacity),
-          settingGet(KEYS.updateAutoCheck),
-          settingGet(KEYS.windowVisualStyle),
-        ]);
+      const [
+        enabled,
+        order,
+        theme,
+        blurResult,
+        opacityResult,
+        updateAutoCheckResult,
+        visualStyle,
+        uiMode,
+      ] = await Promise.allSettled([
+        settingGet(KEYS.pagesEnabled),
+        settingGet(KEYS.pagesOrder),
+        settingGet(KEYS.theme),
+        settingGet(KEYS.blur),
+        settingGet(KEYS.windowOpacity),
+        settingGet(KEYS.updateAutoCheck),
+        settingGet(KEYS.windowVisualStyle),
+        settingGet(KEYS.windowUiMode),
+      ]);
 
       const applySetting = (
         key: string,
@@ -79,6 +89,9 @@ export function useIslandSettings(handlers: IslandSettingsHandlers): void {
       applySetting(KEYS.windowVisualStyle, visualStyle, (value) => {
         applyVisualStyleSetting(value);
       });
+      applySetting(KEYS.windowUiMode, uiMode, (value) => {
+        applyUiModeSetting(value);
+      });
     })();
     // handlers 均来自 useState setter（稳定引用），只需挂载时跑一次。
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -94,6 +107,7 @@ export function useIslandSettings(handlers: IslandSettingsHandlers): void {
       if (key === KEYS.windowOpacity) setOpacity(parseOpacity(value));
       if (key === KEYS.updateAutoCheck) setAutoCheckUpdates(parseBool(value, true));
       if (key === KEYS.windowVisualStyle) applyVisualStyleSetting(value);
+      if (key === KEYS.windowUiMode) applyUiModeSetting(value);
     }),
     // 同上：全部为稳定 setter，无需重建订阅。
     // eslint-disable-next-line react-hooks/exhaustive-deps
