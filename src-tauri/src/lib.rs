@@ -432,6 +432,12 @@ pub fn run() {
             ) {
                 eprintln!("[window-policy] restore floating-ball failed: {error}");
             }
+            if let Err(error) = window_policy::restore_ui_mode(
+                app.handle(),
+                app.state::<storage::Db>().inner(),
+            ) {
+                eprintln!("[window-policy] restore ui-mode failed: {error}");
+            }
             if let Err(error) = window_policy::restore_hide_in_fullscreen(
                 app.handle(),
                 app.state::<storage::Db>().inner(),

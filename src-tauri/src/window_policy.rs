@@ -63,6 +63,8 @@ pub struct WindowPolicyInputs {
     /// 右侧悬停阶段：0=无，1=悬停到条状（胶囊→compact），2=持续悬停到完整面板（compact→expanded）。
     pub hover_stage: u8,
     pub floating_ball: bool,
+    /// corner（左下角贴角，模块 13a）：静息投影为胶囊、悬停可展开，语义同 floating_ball。
+    pub corner: bool,
     pub click_through: bool,
     pub hide_in_fullscreen: bool,
     pub fullscreen_block: bool,
@@ -77,6 +79,7 @@ impl WindowPolicyInputs {
             hover_expand: false,
             hover_stage: 0,
             floating_ball: false,
+            corner: false,
             click_through: false,
             hide_in_fullscreen: false,
             fullscreen_block: false,
@@ -119,15 +122,15 @@ pub fn reduce(inputs: WindowPolicyInputs, requested_focus: FocusIntent) -> Windo
                 focus: FocusIntent::Preserve,
             };
         }
-        if inputs.hover_stage == 1 && inputs.floating_ball {
+        if inputs.hover_stage == 1 && (inputs.floating_ball || inputs.corner) {
             return WindowDecision {
                 effective_state: IslandState::Compact,
                 focus: FocusIntent::Preserve,
             };
         }
     }
-    // 浮球开启时 compact 意图的休眠投影是 240×80 胶囊。
-    if inputs.floating_ball && inputs.desired_state == IslandState::Compact {
+    // 浮球或 corner（左下角贴角）开启时 compact 意图的休眠投影是 240×80 胶囊。
+    if (inputs.floating_ball || inputs.corner) && inputs.desired_state == IslandState::Compact {
         return WindowDecision {
             effective_state: IslandState::Capsule,
             focus: requested_focus,
@@ -341,8 +344,9 @@ fn restore_click_through_transaction(
     }
 }
 
-/// 调整窗口到目标状态几何。宽度变化时以「当前顶部中心」为锚点重设水平位置，
-/// 避免 240↔720 切换时横向跳动；读取旧几何失败时仅改尺寸、不移动。
+/// 调整窗口到目标状态几何。顶部居中模式以「当前顶部中心」为锚点重设水平位置（避免 240↔720
+/// 切换横向跳动）；corner（左下角贴角）以「当前左下角」为锚点（x 左对齐不变、y 使底边不变，
+/// 面板向上生长）。读取旧几何失败时仅改尺寸、不移动。
 fn resize_window(window: &tauri::WebviewWindow, state: IslandState) -> Result<(), String> {
     let (width, height) = geometry_for(state);
     let anchor = window
@@ -360,14 +364,34 @@ fn resize_window(window: &tauri::WebviewWindow, state: IslandState) -> Result<()
         .map_err(|error| format!("调整灵动岛窗口尺寸失败：{error}"))?;
     if let Some((old_size, old_position, scale)) = anchor {
         let new_width_px = (width * scale).round().max(1.0) as i32;
-        let dx = (old_size.width as i32 - new_width_px) / 2;
-        if dx != 0 {
+        let new_height_px = (height * scale).round().max(1.0) as i32;
+        let (new_x, new_y) = if window_is_corner(window) {
+            // 保左下角：x 左对齐不变，y 使底边不变（新面板向上生长）。
+            (
+                old_position.x,
+                old_position.y + old_size.height as i32 - new_height_px,
+            )
+        } else {
+            // 保顶部中心：y 顶部不变，x 按宽度差重算水平居中。
+            let dx = (old_size.width as i32 - new_width_px) / 2;
+            (old_position.x + dx, old_position.y)
+        };
+        if (new_x, new_y) != (old_position.x, old_position.y) {
             window
-                .set_position(PhysicalPosition::new(old_position.x + dx, old_position.y))
+                .set_position(PhysicalPosition::new(new_x, new_y))
                 .map_err(|error| format!("重设灵动岛窗口位置失败：{error}"))?;
         }
     }
     Ok(())
+}
+
+/// 当前是否 corner（左下角贴角）模式：读 `window:ui_mode` KV。resize 时决定锚定左下角还是顶部居中。
+fn window_is_corner(window: &tauri::WebviewWindow) -> bool {
+    window
+        .app_handle()
+        .try_state::<Db>()
+        .map(|db| crate::monitor::ui_mode_is_corner(db.inner()))
+        .unwrap_or(false)
 }
 
 fn apply_effects(
@@ -477,7 +501,7 @@ pub fn set_desired_state(
 /// hover_stage 合法性归一：穿透或未开启任何悬停能力时归零；
 /// hover_expand 关闭时封顶在阶段 1（胶囊→条状不需要该开关）。
 fn coerce_hover_stage(inputs: &mut WindowPolicyInputs) {
-    if inputs.click_through || (!inputs.floating_ball && !inputs.hover_expand) {
+    if inputs.click_through || (!inputs.floating_ball && !inputs.corner && !inputs.hover_expand) {
         inputs.hover_stage = 0;
     } else if inputs.hover_stage > 2 {
         inputs.hover_stage = 2;
@@ -498,6 +522,11 @@ fn apply_hover_expand_setting(inputs: &mut WindowPolicyInputs, enabled: bool) {
 
 fn apply_floating_ball_setting(inputs: &mut WindowPolicyInputs, enabled: bool) {
     inputs.floating_ball = enabled;
+    coerce_hover_stage(inputs);
+}
+
+fn apply_corner_setting(inputs: &mut WindowPolicyInputs, enabled: bool) {
+    inputs.corner = enabled;
     coerce_hover_stage(inputs);
 }
 
@@ -701,6 +730,16 @@ pub fn restore_floating_ball(app: &AppHandle, db: &Db) -> Result<WindowPolicySna
     )
 }
 
+/// 从 `window:ui_mode` 载入 corner 输入（corner 静息投影为胶囊、悬停可展开）。启动与模式切换后调用。
+pub fn restore_ui_mode(app: &AppHandle, db: &Db) -> Result<WindowPolicySnapshot, String> {
+    let corner = crate::monitor::ui_mode_is_corner(db);
+    update_and_apply(
+        app,
+        |inputs| apply_corner_setting(inputs, corner),
+        FocusIntent::Preserve,
+    )
+}
+
 pub fn restore_hide_in_fullscreen(
     app: &AppHandle,
     db: &Db,
@@ -723,6 +762,7 @@ pub fn reload_persisted_settings(app: &AppHandle, db: &Db) -> Result<WindowPolic
     restore_click_through(app, db)?;
     restore_hover_expand(app, db)?;
     restore_floating_ball(app, db)?;
+    restore_ui_mode(app, db)?;
     restore_hide_in_fullscreen(app, db)
 }
 
@@ -962,6 +1002,42 @@ mod tests {
         assert_eq!(decision.effective_state, IslandState::Capsule);
         // 投影不是 hover：显式请求的 Focus 仍然保留（单实例唤起等路径）。
         assert_eq!(decision.focus, FocusIntent::Focus);
+    }
+
+    #[test]
+    fn corner_projects_compact_intent_to_capsule_like_floating_ball() {
+        // corner（左下角贴角，模块 13a）静息投影为胶囊，语义同浮球。
+        let mut policy_inputs = inputs(IslandState::Compact, false, false);
+        policy_inputs.corner = true;
+
+        let decision = reduce(policy_inputs, FocusIntent::Focus);
+        assert_eq!(decision.effective_state, IslandState::Capsule);
+        assert_eq!(decision.focus, FocusIntent::Focus);
+    }
+
+    #[test]
+    fn corner_hover_stage_one_lifts_capsule_to_strip() {
+        let mut policy_inputs = inputs(IslandState::Compact, false, false);
+        policy_inputs.corner = true;
+        policy_inputs.hover_stage = 1;
+        assert_eq!(
+            reduce(policy_inputs, FocusIntent::Preserve).effective_state,
+            IslandState::Compact
+        );
+    }
+
+    #[test]
+    fn corner_enables_hover_stage_and_clearing_it_zeroes_stage() {
+        let mut policy_inputs = inputs(IslandState::Compact, false, false);
+        // 仅 corner：允许阶段 1（胶囊→条状）。
+        apply_corner_setting(&mut policy_inputs, true);
+        apply_hover_stage_report(&mut policy_inputs, 1);
+        assert_eq!(policy_inputs.hover_stage, 1);
+        // 关闭 corner 且无其它悬停能力：归零。
+        apply_corner_setting(&mut policy_inputs, false);
+        assert_eq!(policy_inputs.hover_stage, 0);
+        apply_hover_stage_report(&mut policy_inputs, 1);
+        assert_eq!(policy_inputs.hover_stage, 0);
     }
 
     #[test]

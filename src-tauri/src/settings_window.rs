@@ -241,7 +241,10 @@ pub fn config_import(
         || old_keys.contains(crate::window_policy::HOVER_EXPAND_KEY)
         || new_keys.contains(crate::window_policy::HOVER_EXPAND_KEY)
         || old_keys.contains(crate::window_policy::HIDE_IN_FULLSCREEN_KEY)
-        || new_keys.contains(crate::window_policy::HIDE_IN_FULLSCREEN_KEY);
+        || new_keys.contains(crate::window_policy::HIDE_IN_FULLSCREEN_KEY)
+        // ui_mode 变更也要重载策略：corner 静息为胶囊需更新 window_policy 的 corner 输入。
+        || old_keys.contains(crate::monitor::UI_MODE_KEY)
+        || new_keys.contains(crate::monitor::UI_MODE_KEY);
 
     let settings_count = settings_vec.len();
     let watchlist_count = watchlist_vec.len();

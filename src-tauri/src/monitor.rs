@@ -11,6 +11,8 @@ pub const PRIMARY_SELECTION: &str = "primary";
 pub const TOP_GAP_PHYSICAL: i32 = 16;
 /// 界面模式 KV（模块 13）：classisland 贴顶（gap=0），其余悬浮（gap=TOP_GAP_PHYSICAL）。
 pub const UI_MODE_KEY: &str = "window:ui_mode";
+/// corner（左下角贴角，模块 13a）贴工作区左下角的小边距（物理像素）。
+pub const CORNER_MARGIN_PHYSICAL: i32 = 12;
 /// 偏移 KV key（07a 窗口外观）；存储为整数字符串，可为负。
 pub const OFFSET_X_KEY: &str = "window:offset_x";
 pub const OFFSET_Y_KEY: &str = "window:offset_y";
@@ -265,17 +267,36 @@ fn read_offsets(db: &Db) -> (i32, i32) {
     )
 }
 
-/// 界面模式 → 顶部间隙（纯函数，便于单测）：classisland 贴顶 0，其余（含缺键/非法）悬浮 16。
-fn top_gap_for_mode(mode: Option<&str>) -> i32 {
+/// 灵动岛停靠方式（模块 13/13a）：顶部居中（island/classisland，gap 区分悬浮/贴顶）或左下角贴角（corner）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Placement {
+    /// 顶部居中，距屏顶 `gap` 物理像素（island=16 悬浮 / classisland=0 贴顶）。
+    TopCenter { gap: i32 },
+    /// 左下角贴工作区角落（任务栏之上），距角 `margin` 物理像素。
+    Corner { margin: i32 },
+}
+
+/// 界面模式 → 停靠方式（纯函数，便于单测）：corner 贴角，classisland 贴顶(0)，其余(含缺键/非法)悬浮(16)。
+fn placement_for_mode(mode: Option<&str>) -> Placement {
     match mode {
-        Some("classisland") => 0,
-        _ => TOP_GAP_PHYSICAL,
+        Some("corner") => Placement::Corner {
+            margin: CORNER_MARGIN_PHYSICAL,
+        },
+        Some("classisland") => Placement::TopCenter { gap: 0 },
+        _ => Placement::TopCenter {
+            gap: TOP_GAP_PHYSICAL,
+        },
     }
 }
 
-/// 读 `window:ui_mode` 决定顶部间隙。供所有「定位灵动岛」路径统一取用。
-fn read_top_gap(db: &Db) -> i32 {
-    top_gap_for_mode(db.setting_get(UI_MODE_KEY).as_deref())
+/// 读 `window:ui_mode` 决定停靠方式。供所有「定位灵动岛」路径统一取用。
+fn read_placement(db: &Db) -> Placement {
+    placement_for_mode(db.setting_get(UI_MODE_KEY).as_deref())
+}
+
+/// 当前界面模式是否为 corner（左下角贴角）。供窗口策略层判定静息胶囊/底边锚定。
+pub fn ui_mode_is_corner(db: &Db) -> bool {
+    db.setting_get(UI_MODE_KEY).as_deref() == Some("corner")
 }
 
 /// 把偏移 clamp 到窗口仍留在 monitor 可视区内的范围：
@@ -307,6 +328,128 @@ fn clamp_offsets(
     (cx, cy)
 }
 
+/// 显示器工作区矩形（物理像素，排除任务栏）：left/top/right/bottom。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct WorkRect {
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+}
+
+/// 显示器完整矩形（含任务栏），作为工作区读取失败时的兜底。
+fn full_rect(monitor: &MonitorInfo) -> WorkRect {
+    WorkRect {
+        left: monitor.position.x,
+        top: monitor.position.y,
+        right: monitor.position.x + monitor.size.width as i32,
+        bottom: monitor.position.y + monitor.size.height as i32,
+    }
+}
+
+/// 取目标显示器的工作区（排除任务栏）。Windows 用 `MonitorFromPoint`(屏中心)+`GetMonitorInfoW` 读 rcWork；
+/// 失败或非 Windows 回退整屏矩形。corner 贴角必须用工作区，否则胶囊会压在任务栏下面。
+#[cfg(windows)]
+fn work_area_for_monitor(monitor: &MonitorInfo) -> WorkRect {
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::Graphics::Gdi::{
+        GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+    };
+    let center = POINT {
+        x: monitor.position.x + monitor.size.width as i32 / 2,
+        y: monitor.position.y + monitor.size.height as i32 / 2,
+    };
+    // SAFETY: center 来自已枚举的显示器坐标；MONITORINFO 在调用期间存活。
+    unsafe {
+        let handle = MonitorFromPoint(center, MONITOR_DEFAULTTONEAREST);
+        if handle.0.is_null() {
+            return full_rect(monitor);
+        }
+        let mut info = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        if GetMonitorInfoW(handle, &mut info).as_bool() {
+            let r = info.rcWork;
+            WorkRect {
+                left: r.left,
+                top: r.top,
+                right: r.right,
+                bottom: r.bottom,
+            }
+        } else {
+            full_rect(monitor)
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn work_area_for_monitor(monitor: &MonitorInfo) -> WorkRect {
+    full_rect(monitor)
+}
+
+/// corner 左下角基准位置：贴工作区左下角，距角 `margin`，再叠加偏移。x 左对齐、y 使底边距角落 margin。
+fn corner_position(
+    work: WorkRect,
+    window_height: u32,
+    margin: i32,
+    offset_x: i32,
+    offset_y: i32,
+) -> MonitorPoint {
+    MonitorPoint {
+        x: work.left + margin + offset_x,
+        y: work.bottom - window_height as i32 - margin + offset_y,
+    }
+}
+
+/// corner 偏移 clamp：保证窗口留在工作区内（左下角贴角基准）。返回 clamp 后 (offset_x, offset_y)。
+fn clamp_corner(
+    work: WorkRect,
+    window_width: u32,
+    window_height: u32,
+    margin: i32,
+    offset_x: i32,
+    offset_y: i32,
+) -> (i32, i32) {
+    let base_x = work.left + margin;
+    let base_y = work.bottom - window_height as i32 - margin;
+    // 横向：左边 ≥ 工作区左，右边 ≤ 工作区右。
+    let min_x = work.left - base_x;
+    let max_x = work.right - window_width as i32 - base_x;
+    let cx = offset_x.max(min_x).min(max_x.max(min_x));
+    // 纵向：顶部 ≥ 工作区顶，底部 ≤ 工作区底。
+    let min_y = work.top - base_y;
+    let max_y = work.bottom - window_height as i32 - base_y;
+    let cy = offset_y.max(min_y).min(max_y.max(min_y));
+    (cx, cy)
+}
+
+/// 按停靠方式计算 clamp 后偏移与最终物理位置。TopCenter 走顶部居中，Corner 走工作区左下角。
+fn place_island(
+    placement: Placement,
+    monitor: &MonitorInfo,
+    window_width: u32,
+    window_height: u32,
+    offset_x: i32,
+    offset_y: i32,
+) -> (i32, i32, MonitorPoint) {
+    match placement {
+        Placement::TopCenter { gap } => {
+            let (cx, cy) =
+                clamp_offsets(monitor, window_width, window_height, gap, offset_x, offset_y);
+            let pos = top_center_position(monitor, window_width, gap, cx, cy);
+            (cx, cy, pos)
+        }
+        Placement::Corner { margin } => {
+            let work = work_area_for_monitor(monitor);
+            let (cx, cy) =
+                clamp_corner(work, window_width, window_height, margin, offset_x, offset_y);
+            let pos = corner_position(work, window_height, margin, cx, cy);
+            (cx, cy, pos)
+        }
+    }
+}
+
 fn selection_state(set: &MonitorSet, selected: &str) -> Result<MonitorSelectionState, String> {
     let infos = set
         .monitors
@@ -329,7 +472,7 @@ fn resolved_monitor<'a>(
 fn move_island_to_monitor(
     app: &AppHandle,
     monitor: &RuntimeMonitor,
-    top_gap: i32,
+    placement: Placement,
     offset_x: i32,
     offset_y: i32,
 ) -> Result<(), String> {
@@ -340,8 +483,8 @@ fn move_island_to_monitor(
     let (logical_width, _) = current_logical_geometry(app);
     let width = physical_window_width(logical_width, scale_factor);
     let height = expanded_physical_height(scale_factor);
-    let (cx, cy) = clamp_offsets(&monitor.info, width, height, top_gap, offset_x, offset_y);
-    let position = top_center_position(&monitor.info, width, top_gap, cx, cy);
+    let (_cx, _cy, position) =
+        place_island(placement, &monitor.info, width, height, offset_x, offset_y);
     window
         .set_position(PhysicalPosition::new(position.x, position.y))
         .map_err(|error| format!("移动灵动岛窗口失败：{error}"))
@@ -355,7 +498,7 @@ fn move_island_to_monitor(
 fn recover_island_to_monitor(
     app: &AppHandle,
     monitor: &RuntimeMonitor,
-    top_gap: i32,
+    placement: Placement,
     offset_x: i32,
     offset_y: i32,
 ) -> Result<(), String> {
@@ -366,8 +509,8 @@ fn recover_island_to_monitor(
     let (logical_width, logical_height) = current_logical_geometry(app);
     let width = physical_window_width(logical_width, scale_factor);
     let height = expanded_physical_height(scale_factor);
-    let (cx, cy) = clamp_offsets(&monitor.info, width, height, top_gap, offset_x, offset_y);
-    let position = top_center_position(&monitor.info, width, top_gap, cx, cy);
+    let (_cx, _cy, position) =
+        place_island(placement, &monitor.info, width, height, offset_x, offset_y);
     window
         .set_size(Size::Logical(LogicalSize {
             width: logical_width,
@@ -424,8 +567,8 @@ pub fn monitor_select(
         .map_err(|error| format!("读取灵动岛窗口位置失败：{error}"))?;
 
     let (offset_x, offset_y) = read_offsets(db.inner());
-    let top_gap = read_top_gap(db.inner());
-    move_island_to_monitor(&app, target, top_gap, offset_x, offset_y)?;
+    let placement = read_placement(db.inner());
+    move_island_to_monitor(&app, target, placement, offset_x, offset_y)?;
     if let Err(error) = db.setting_set(MONITOR_SETTING_KEY, &selection) {
         let _ = window.set_position(previous_position);
         return Err(format!("保存显示器选择失败：{error}"));
@@ -438,8 +581,8 @@ pub fn restore_island_monitor(app: &AppHandle, db: &Db) -> Result<MonitorSelecti
     let state = selection_state(&set, &current_selection(db))?;
     let target = resolved_monitor(&set, &state)?;
     let (offset_x, offset_y) = read_offsets(db);
-    let top_gap = read_top_gap(db);
-    move_island_to_monitor(app, target, top_gap, offset_x, offset_y)?;
+    let placement = read_placement(db);
+    move_island_to_monitor(app, target, placement, offset_x, offset_y)?;
     Ok(state)
 }
 
@@ -457,11 +600,12 @@ pub fn window_offset_apply(
     let state = selection_state(&set, &current_selection(db.inner()))?;
     let target = resolved_monitor(&set, &state)?;
     let scale_factor = target.raw.scale_factor();
-    let top_gap = read_top_gap(db.inner());
+    let placement = read_placement(db.inner());
     let (logical_width, _) = current_logical_geometry(&app);
     let width = physical_window_width(logical_width, scale_factor);
     let height = expanded_physical_height(scale_factor);
-    let (cx, cy) = clamp_offsets(&target.info, width, height, top_gap, offset_x, offset_y);
+    let (cx, cy, position) =
+        place_island(placement, &target.info, width, height, offset_x, offset_y);
     // 先落盘 clamp 后的值，再上屏——即使上屏失败也不会留下跑出屏的持久化值。
     if cx != 0 {
         db.setting_set(OFFSET_X_KEY, &cx.to_string())?;
@@ -474,7 +618,6 @@ pub fn window_offset_apply(
     } else {
         db.setting_delete(OFFSET_Y_KEY)?;
     }
-    let position = top_center_position(&target.info, width, top_gap, cx, cy);
     let window = app
         .get_webview_window("island")
         .ok_or_else(|| "找不到灵动岛窗口".to_string())?;
@@ -484,24 +627,26 @@ pub fn window_offset_apply(
     Ok((cx, cy))
 }
 
-/// 模块 13：切换界面模式（island 悬浮 | classisland 贴顶）。
+/// 模块 13/13a：切换界面模式（island 悬浮 | classisland 贴顶 | corner 左下角贴角）。
 ///
-/// 写 `window:ui_mode` → 按新模式的顶部间隙重新定位灵动岛（贴顶 gap=0 / 悬浮 gap=16，
-/// `read_top_gap` 读到刚落盘的新值）→ 广播 `settings://changed` 让岛窗口与设置窗口即时
-/// 换壳（去/加顶部间隙、圆角）。返回落盘后的规范模式串（非法值回退 island）。
+/// 写 `window:ui_mode` → 更新窗口策略 corner 输入（corner 静息为胶囊，触发一次 resize）→ 按新模式
+/// 的停靠方式（`read_placement`：顶部居中 gap 16/0 或工作区左下角）重新定位灵动岛 → 广播
+/// `settings://changed` 让岛窗口与设置窗口即时换壳。返回落盘后的规范模式串（非法值回退 island）。
 #[tauri::command]
 pub fn window_ui_mode_set(
     app: AppHandle,
     db: State<'_, Db>,
     mode: String,
 ) -> Result<String, String> {
-    let normalized = if mode == "classisland" {
-        "classisland"
-    } else {
-        "island"
+    let normalized = match mode.as_str() {
+        "classisland" => "classisland",
+        "corner" => "corner",
+        _ => "island",
     };
     db.setting_set(UI_MODE_KEY, normalized)?;
-    // KV 已落盘后重新定位；失败也不回滚 KV——位置可由后续 restore/offset 纠正，但换壳需 KV 生效。
+    // 先更新窗口策略 corner 输入（corner→胶囊静息，会触发 resize），再按新停靠方式重定位。
+    // KV 已落盘，window_is_corner/read_placement 读到新值。失败不回滚 KV——位置可由后续 restore 纠正。
+    crate::window_policy::restore_ui_mode(&app, db.inner())?;
     restore_island_monitor(&app, db.inner())?;
     app.emit(
         "settings://changed",
@@ -550,8 +695,9 @@ pub fn start_runtime_watch(app: AppHandle) {
                     };
                     let db = app.state::<Db>();
                     let (offset_x, offset_y) = read_offsets(db.inner());
-                    let top_gap = read_top_gap(db.inner());
-                    if recover_island_to_monitor(&app, target, top_gap, offset_x, offset_y).is_ok() {
+                    let placement = read_placement(db.inner());
+                    if recover_island_to_monitor(&app, target, placement, offset_x, offset_y).is_ok()
+                    {
                         fell_back = false;
                         let _ = app.emit(
                             "monitor://changed",
@@ -570,8 +716,10 @@ pub fn start_runtime_watch(app: AppHandle) {
                     };
                     let db = app.state::<Db>();
                     let (offset_x, offset_y) = read_offsets(db.inner());
-                    let top_gap = read_top_gap(db.inner());
-                    if recover_island_to_monitor(&app, primary, top_gap, offset_x, offset_y).is_ok() {
+                    let placement = read_placement(db.inner());
+                    if recover_island_to_monitor(&app, primary, placement, offset_x, offset_y)
+                        .is_ok()
+                    {
                         fell_back = true;
                         let _ = app.emit(
                             "monitor://changed",
@@ -725,12 +873,83 @@ mod tests {
     }
 
     #[test]
-    fn top_gap_for_mode_maps_only_classisland_to_zero() {
-        assert_eq!(top_gap_for_mode(Some("classisland")), 0);
-        assert_eq!(top_gap_for_mode(Some("island")), TOP_GAP_PHYSICAL);
-        assert_eq!(top_gap_for_mode(None), TOP_GAP_PHYSICAL);
-        assert_eq!(top_gap_for_mode(Some("garbage")), TOP_GAP_PHYSICAL);
-        assert_eq!(top_gap_for_mode(Some("")), TOP_GAP_PHYSICAL);
+    fn placement_for_mode_maps_each_ui_mode() {
+        assert_eq!(
+            placement_for_mode(Some("classisland")),
+            Placement::TopCenter { gap: 0 }
+        );
+        assert_eq!(
+            placement_for_mode(Some("corner")),
+            Placement::Corner {
+                margin: CORNER_MARGIN_PHYSICAL
+            }
+        );
+        assert_eq!(
+            placement_for_mode(Some("island")),
+            Placement::TopCenter {
+                gap: TOP_GAP_PHYSICAL
+            }
+        );
+        assert_eq!(
+            placement_for_mode(None),
+            Placement::TopCenter {
+                gap: TOP_GAP_PHYSICAL
+            }
+        );
+        assert_eq!(
+            placement_for_mode(Some("garbage")),
+            Placement::TopCenter {
+                gap: TOP_GAP_PHYSICAL
+            }
+        );
+    }
+
+    #[test]
+    fn corner_position_anchors_bottom_left_of_work_area() {
+        // 工作区 (0,0)-(1920,1040)（任务栏占底部 40px），窗口高 80，margin 12。
+        let work = WorkRect {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 1040,
+        };
+        // 左对齐 x=0+12=12；底边距角 12 → y=1040-80-12=948。
+        assert_eq!(
+            corner_position(work, 80, 12, 0, 0),
+            MonitorPoint { x: 12, y: 948 }
+        );
+        // 偏移叠加 (30,-20) → (42, 928)。
+        assert_eq!(
+            corner_position(work, 80, 12, 30, -20),
+            MonitorPoint { x: 42, y: 928 }
+        );
+        // 负坐标副屏工作区，窗口高 400。
+        let left = WorkRect {
+            left: -2560,
+            top: -200,
+            right: 0,
+            bottom: 1240,
+        };
+        assert_eq!(
+            corner_position(left, 400, 12, 0, 0),
+            MonitorPoint { x: -2548, y: 828 }
+        );
+    }
+
+    #[test]
+    fn clamp_corner_keeps_window_in_work_area() {
+        let work = WorkRect {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 1040,
+        };
+        // 基准 (12, 948)，窗口 240×80：min_x=-12/max_x=1668；min_y=-948/max_y=12。
+        assert_eq!(clamp_corner(work, 240, 80, 12, 0, 0), (0, 0));
+        assert_eq!(clamp_corner(work, 240, 80, 12, -9999, 9999), (-12, 12));
+        assert_eq!(clamp_corner(work, 240, 80, 12, 9999, -9999), (1668, -948));
+        // 区间内原值保留。
+        assert_eq!(clamp_corner(work, 240, 80, 12, 30, -20), (30, -20));
     }
 
     #[test]
