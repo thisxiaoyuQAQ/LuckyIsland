@@ -18,12 +18,12 @@ export const KEYS = {
   terminalFontSize: "terminal:font_size",
   terminalShortcuts: "terminal:shortcuts",
   windowMonitor: "window:monitor",
-  /** 07a 窗口外观：岛容器 CSS 背景透明度（0.10~1.00）。13a.2 起按模式独立，实际键为
+  /** 07a 窗口外观：岛容器 CSS 背景透明度（0.10~1.00）。按界面模式独立，实际键为
    *  `modeKey(windowOpacity, mode)`；此裸键只作为旧版本迁移来源保留。 */
   windowOpacity: "window:opacity",
-  /** 07a 窗口外观：横向物理像素偏移。13a.2 起按模式独立（见 `modeKey`）。 */
+  /** 07a 窗口外观：横向物理像素偏移。按界面模式独立（见 `modeKey`）。 */
   windowOffsetX: "window:offset_x",
-  /** 07a 窗口外观：纵向物理像素偏移（负=上移，正=下移）。13a.2 起按模式独立。 */
+  /** 07a 窗口外观：纵向物理像素偏移（负=上移，正=下移）。按界面模式独立。 */
   windowOffsetY: "window:offset_y",
   /** 整个灵动岛忽略鼠标事件，默认关闭。 */
   windowClickThrough: "window:click_through",
@@ -198,26 +198,25 @@ export function parseVisualStyle(v: string | null | undefined): VisualStyle {
   return v === "legacy" ? "legacy" : "new";
 }
 
-/** 界面模式（模块 13/13a）：island（悬浮，默认）| classisland（贴顶）| corner（左下角贴角）。 */
-export type UiMode = "island" | "classisland" | "corner";
+/** 界面模式（模块 13）：island（悬浮灵动岛，默认）| classisland（贴顶新 UI）。 */
+export type UiMode = "island" | "classisland";
 
-/** 严格解析 window:ui_mode：classisland/corner 为对应模式，缺键与一切非法值回退 "island"。 */
+/** 严格解析 window:ui_mode：仅 "classisland" 为新 UI，缺键与一切非法值回退 "island"。 */
 export function parseUiMode(v: string | null | undefined): UiMode {
-  return v === "classisland" || v === "corner" ? v : "island";
+  return v === "classisland" ? "classisland" : "island";
 }
 
-export const UI_MODES: UiMode[] = ["island", "classisland", "corner"];
+export const UI_MODES: UiMode[] = ["island", "classisland"];
 
-/** 三种界面模式的中文名（设置面板与提示文案共用）。 */
+/** 两种界面模式的中文名（设置面板与提示文案共用）。 */
 export const UI_MODE_LABELS: Record<UiMode, string> = {
   island: "悬浮灵动岛",
   classisland: "贴顶",
-  corner: "左下角嵌入任务栏",
 };
 
 /**
- * 13a.2：外观键按界面模式独立存储 —— `window:opacity` → `window:opacity:corner`。
- * 三模式的透明度与偏移互不影响；Rust 侧 `monitor::mode_key` 是同一套约定。
+ * 外观键按界面模式独立存储 —— `window:opacity` → `window:opacity:classisland`。
+ * 两种模式的透明度与偏移互不影响；Rust 侧 `monitor::mode_key` 是同一套约定。
  */
 export function modeKey(base: string, mode: UiMode): string {
   return `${base}:${mode}`;

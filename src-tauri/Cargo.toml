@@ -75,14 +75,11 @@ tracing-appender = "0.2"
 # + Win32_System_Com 特性，不下模型不加原生库。Lock 里 windows 已是 0.61.3（cpal/tauri 的传递依赖），
 # 这里显式声明确保这些 feature 被启用；版本跟着传递依赖走，不会拉新版本破 cpal 的 windows-core 收敛。
 # 注意 windows crate 不导 coclass CLSID（如 CLSID_SpVoice），需在代码里按 GUID 硬编码。
-# 13a.2 任务栏嵌入还需要 Win32_System_Threading（AttachThreadInput：跨进程父子窗口
-# 不共享输入队列，不 attach 时嵌入条收不到 hover/click）。
 windows = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
     "Win32_Media_Speech",
     "Win32_System_Com",
-    "Win32_System_Threading",
     "Win32_UI_WindowsAndMessaging",
 ] }
 windows-version = "0.1"

@@ -243,7 +243,7 @@ describe("App event subscriptions", () => {
     await dispatch(() => {
       settingsSubscriptions[0].callback(KEYS.theme, "dark");
       settingsSubscriptions[0].callback(KEYS.blur, "false");
-      // 13a.2：透明度按界面模式独立，裸键 window:opacity 不再驱动任何模式。
+      // 透明度按界面模式独立，裸键 window:opacity 不再驱动任何模式。
       settingsSubscriptions[0].callback(KEYS.windowOpacity, "0.3");
       settingsSubscriptions[0].callback(modeKey(KEYS.windowOpacity, "island"), "0.5");
     });
@@ -251,9 +251,9 @@ describe("App event subscriptions", () => {
     expect(islandContainer().className).not.toContain("backdrop-blur-xl");
     expect(islandContainer().dataset.backgroundColor).toContain("50%");
 
-    // 其它模式的透明度不能影响当前（island）模式——「三模式共享」回归护栏。
+    // 另一个模式的透明度不能影响当前（island）模式——「两模式共享」回归护栏。
     await dispatch(() => {
-      settingsSubscriptions[0].callback(modeKey(KEYS.windowOpacity, "corner"), "0.9");
+      settingsSubscriptions[0].callback(modeKey(KEYS.windowOpacity, "classisland"), "0.9");
     });
     expect(islandContainer().dataset.backgroundColor).toContain("50%");
 

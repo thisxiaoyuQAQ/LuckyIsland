@@ -63,9 +63,6 @@ pub struct WindowPolicyInputs {
     /// 右侧悬停阶段：0=无，1=悬停到条状（胶囊→compact），2=持续悬停到完整面板（compact→expanded）。
     pub hover_stage: u8,
     pub floating_ball: bool,
-    /// corner（左下角嵌入任务栏，模块 13a.2）：静息时 island 窗口整个隐藏、静息 UI 交给
-    /// 嵌入任务栏的 `taskbar-strip` 窗口；悬停/点击才把 island 作为展开面板抬起来。
-    pub corner: bool,
     pub click_through: bool,
     pub hide_in_fullscreen: bool,
     pub fullscreen_block: bool,
@@ -80,7 +77,6 @@ impl WindowPolicyInputs {
             hover_expand: false,
             hover_stage: 0,
             floating_ball: false,
-            corner: false,
             click_through: false,
             hide_in_fullscreen: false,
             fullscreen_block: false,
@@ -123,21 +119,12 @@ pub fn reduce(inputs: WindowPolicyInputs, requested_focus: FocusIntent) -> Windo
                 focus: FocusIntent::Preserve,
             };
         }
-        if inputs.hover_stage == 1 && (inputs.floating_ball || inputs.corner) {
+        if inputs.hover_stage == 1 && inputs.floating_ball {
             return WindowDecision {
                 effective_state: IslandState::Compact,
                 focus: FocusIntent::Preserve,
             };
         }
-    }
-    // corner（13a.2 真嵌入任务栏）：静息 UI 是嵌入任务栏的 `taskbar-strip` 窗口，
-    // island 窗口在静息时整个隐藏；只有悬停/点击把 hover_stage 抬上来或显式 Expanded
-    // 时它才作为「展开面板」出现在任务栏正上方。判定放在浮球之前——两者同开时以 corner 为准。
-    if inputs.corner && inputs.desired_state == IslandState::Compact {
-        return WindowDecision {
-            effective_state: IslandState::Hidden,
-            focus: FocusIntent::Preserve,
-        };
     }
     // 浮球开启时 compact 意图的休眠投影是 240×80 胶囊。
     if inputs.floating_ball && inputs.desired_state == IslandState::Compact {
@@ -150,16 +137,6 @@ pub fn reduce(inputs: WindowPolicyInputs, requested_focus: FocusIntent) -> Windo
         effective_state: inputs.desired_state,
         focus: requested_focus,
     }
-}
-
-/// 13a.2：嵌入任务栏的静息条是否应显示。
-///
-/// 它与 island 窗口的可见性互补——corner 模式静息时只有条、展开时两者同在（条留在
-/// 任务栏里不动）。Alt+X 隐藏与「全屏时隐藏」对两个窗口一视同仁。
-pub fn strip_visible(inputs: WindowPolicyInputs) -> bool {
-    inputs.corner
-        && inputs.desired_state != IslandState::Hidden
-        && !(inputs.hide_in_fullscreen && inputs.fullscreen_block)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -364,9 +341,8 @@ fn restore_click_through_transaction(
     }
 }
 
-/// 调整窗口到目标状态几何。顶部居中模式以「当前顶部中心」为锚点重设水平位置（避免 240↔720
-/// 切换横向跳动）；corner（嵌入任务栏的展开面板）以「当前左下角」为锚点（x 左对齐不变、y 使底边不变，
-/// 面板向上生长）。读取旧几何失败时仅改尺寸、不移动。
+/// 调整窗口到目标状态几何。宽度变化时以「当前顶部中心」为锚点重设水平位置，
+/// 避免 240↔720 切换时横向跳动；读取旧几何失败时仅改尺寸、不移动。
 fn resize_window(window: &tauri::WebviewWindow, state: IslandState) -> Result<(), String> {
     let (width, height) = geometry_for(state);
     let anchor = window
@@ -384,34 +360,14 @@ fn resize_window(window: &tauri::WebviewWindow, state: IslandState) -> Result<()
         .map_err(|error| format!("调整灵动岛窗口尺寸失败：{error}"))?;
     if let Some((old_size, old_position, scale)) = anchor {
         let new_width_px = (width * scale).round().max(1.0) as i32;
-        let new_height_px = (height * scale).round().max(1.0) as i32;
-        let (new_x, new_y) = if window_is_corner(window) {
-            // 保左下角：x 左对齐不变，y 使底边不变（新面板向上生长）。
-            (
-                old_position.x,
-                old_position.y + old_size.height as i32 - new_height_px,
-            )
-        } else {
-            // 保顶部中心：y 顶部不变，x 按宽度差重算水平居中。
-            let dx = (old_size.width as i32 - new_width_px) / 2;
-            (old_position.x + dx, old_position.y)
-        };
-        if (new_x, new_y) != (old_position.x, old_position.y) {
+        let dx = (old_size.width as i32 - new_width_px) / 2;
+        if dx != 0 {
             window
-                .set_position(PhysicalPosition::new(new_x, new_y))
+                .set_position(PhysicalPosition::new(old_position.x + dx, old_position.y))
                 .map_err(|error| format!("重设灵动岛窗口位置失败：{error}"))?;
         }
     }
     Ok(())
-}
-
-/// 当前是否 corner 模式：读 `window:ui_mode` KV。resize 时决定锚定左下角还是顶部居中。
-fn window_is_corner(window: &tauri::WebviewWindow) -> bool {
-    window
-        .app_handle()
-        .try_state::<Db>()
-        .map(|db| crate::monitor::ui_mode_is_corner(db.inner()))
-        .unwrap_or(false)
 }
 
 fn apply_effects(
@@ -481,11 +437,6 @@ fn update_and_apply(
         }
         return Err(error);
     }
-    // 13a.2：嵌入条与 island 窗口同一个裁决点同步。它失败不回滚 island 效果——静息 UI
-    // 缺失只是观感降级，回滚窗口状态反而会放大故障；看门狗会在下一次轮询重试。
-    if let Err(error) = crate::taskbar::sync_strip(app, inputs.corner, strip_visible(inputs)) {
-        tracing::warn!("[taskbar] 同步嵌入条失败：{error}");
-    }
 
     let current = {
         let mut runtime = policy.0.lock().map_err(|error| error.to_string())?;
@@ -526,7 +477,7 @@ pub fn set_desired_state(
 /// hover_stage 合法性归一：穿透或未开启任何悬停能力时归零；
 /// hover_expand 关闭时封顶在阶段 1（胶囊→条状不需要该开关）。
 fn coerce_hover_stage(inputs: &mut WindowPolicyInputs) {
-    if inputs.click_through || (!inputs.floating_ball && !inputs.corner && !inputs.hover_expand) {
+    if inputs.click_through || (!inputs.floating_ball && !inputs.hover_expand) {
         inputs.hover_stage = 0;
     } else if inputs.hover_stage > 2 {
         inputs.hover_stage = 2;
@@ -547,11 +498,6 @@ fn apply_hover_expand_setting(inputs: &mut WindowPolicyInputs, enabled: bool) {
 
 fn apply_floating_ball_setting(inputs: &mut WindowPolicyInputs, enabled: bool) {
     inputs.floating_ball = enabled;
-    coerce_hover_stage(inputs);
-}
-
-fn apply_corner_setting(inputs: &mut WindowPolicyInputs, enabled: bool) {
-    inputs.corner = enabled;
     coerce_hover_stage(inputs);
 }
 
@@ -755,17 +701,6 @@ pub fn restore_floating_ball(app: &AppHandle, db: &Db) -> Result<WindowPolicySna
     )
 }
 
-/// 从 `window:ui_mode` 载入 corner 输入（corner 静息隐藏 island、由嵌入条承担静息 UI）。
-/// 启动与模式切换后调用；同一次 update_and_apply 里顺带创建/销毁嵌入条窗口。
-pub fn restore_ui_mode(app: &AppHandle, db: &Db) -> Result<WindowPolicySnapshot, String> {
-    let corner = crate::monitor::ui_mode_is_corner(db);
-    update_and_apply(
-        app,
-        |inputs| apply_corner_setting(inputs, corner),
-        FocusIntent::Preserve,
-    )
-}
-
 pub fn restore_hide_in_fullscreen(
     app: &AppHandle,
     db: &Db,
@@ -788,7 +723,6 @@ pub fn reload_persisted_settings(app: &AppHandle, db: &Db) -> Result<WindowPolic
     restore_click_through(app, db)?;
     restore_hover_expand(app, db)?;
     restore_floating_ball(app, db)?;
-    restore_ui_mode(app, db)?;
     restore_hide_in_fullscreen(app, db)
 }
 
@@ -877,57 +811,6 @@ pub fn window_hover_expand_set(
         return Err(error);
     }
     Ok(snapshot)
-}
-
-/// 点是否落在矩形内（物理像素，右/下开区间）。
-fn point_in_rect(x: f64, y: f64, left: i32, top: i32, width: u32, height: u32) -> bool {
-    x >= left as f64
-        && y >= top as f64
-        && x < (left + width as i32) as f64
-        && y < (top + height as i32) as f64
-}
-
-/// 指针此刻是否落在 island 窗口上。读不到光标或窗口几何时按 false 处理
-/// （宁可收起也不要卡住一个收不掉的面板）。
-fn cursor_over_island(app: &AppHandle) -> bool {
-    let Some(window) = app.get_webview_window("island") else {
-        return false;
-    };
-    if !window.is_visible().unwrap_or(false) {
-        return false;
-    }
-    let (Ok(cursor), Ok(position), Ok(size)) = (
-        app.cursor_position(),
-        window.outer_position(),
-        window.outer_size(),
-    ) else {
-        return false;
-    };
-    point_in_rect(
-        cursor.x,
-        cursor.y,
-        position.x,
-        position.y,
-        size.width,
-        size.height,
-    )
-}
-
-/// 13a.2：嵌入条报告「指针离开条」。
-///
-/// 两个窗口不共享 DOM 的 mouseenter/mouseleave：指针从任务栏里的条移到上方的面板时，
-/// 条只看到 leave、面板看不到任何 enter。若无条件清零 hover 阶段，面板会在鼠标移过去的
-/// 半路上消失。因此先看指针是否已经落在 island 面板上——是就交给面板自己的 leave 收起。
-#[tauri::command]
-pub fn window_strip_hover_release(app: AppHandle) -> Result<WindowPolicySnapshot, String> {
-    if cursor_over_island(&app) {
-        return window_policy_snapshot(&app);
-    }
-    update_and_apply(
-        &app,
-        |inputs| apply_hover_stage_report(inputs, 0),
-        FocusIntent::Preserve,
-    )
 }
 
 #[tauri::command]
@@ -1079,101 +962,6 @@ mod tests {
         assert_eq!(decision.effective_state, IslandState::Capsule);
         // 投影不是 hover：显式请求的 Focus 仍然保留（单实例唤起等路径）。
         assert_eq!(decision.focus, FocusIntent::Focus);
-    }
-
-    #[test]
-    fn corner_hides_island_at_rest_because_strip_is_the_resting_ui() {
-        // 13a.2：corner 静息 UI 是嵌入任务栏的独立条窗口，island 窗口整个隐藏
-        // （13a.1 的「静息=胶囊」已作废）。焦点不跟随——隐藏不该抢焦点。
-        let mut policy_inputs = inputs(IslandState::Compact, false, false);
-        policy_inputs.corner = true;
-
-        let decision = reduce(policy_inputs, FocusIntent::Focus);
-        assert_eq!(decision.effective_state, IslandState::Hidden);
-        assert_eq!(decision.focus, FocusIntent::Preserve);
-        // 但嵌入条要显示。
-        assert!(strip_visible(policy_inputs));
-    }
-
-    #[test]
-    fn corner_overrides_floating_ball_capsule_projection() {
-        // 两个开关同开时以 corner 为准（静息交给嵌入条），不退回胶囊。
-        let mut policy_inputs = inputs(IslandState::Compact, false, false);
-        policy_inputs.corner = true;
-        policy_inputs.floating_ball = true;
-        assert_eq!(
-            reduce(policy_inputs, FocusIntent::Preserve).effective_state,
-            IslandState::Hidden
-        );
-    }
-
-    #[test]
-    fn corner_hover_stage_one_shows_island_as_strip_panel() {
-        let mut policy_inputs = inputs(IslandState::Compact, false, false);
-        policy_inputs.corner = true;
-        policy_inputs.hover_stage = 1;
-        assert_eq!(
-            reduce(policy_inputs, FocusIntent::Preserve).effective_state,
-            IslandState::Compact
-        );
-        // 展开时嵌入条仍留在任务栏里。
-        assert!(strip_visible(policy_inputs));
-    }
-
-    #[test]
-    fn corner_click_expands_island_to_full_panel() {
-        // 点击嵌入条 → set_island_state("expanded")：面板出现在任务栏正上方。
-        let mut policy_inputs = inputs(IslandState::Expanded, false, false);
-        policy_inputs.corner = true;
-        assert_eq!(
-            reduce(policy_inputs, FocusIntent::Preserve).effective_state,
-            IslandState::Expanded
-        );
-        assert!(strip_visible(policy_inputs));
-    }
-
-    #[test]
-    fn cursor_hit_test_uses_right_open_bounds() {
-        // 面板 720×400 落在 (0, 632)：左上角命中、右下边界外。
-        assert!(point_in_rect(0.0, 632.0, 0, 632, 720, 400));
-        assert!(point_in_rect(719.0, 1031.0, 0, 632, 720, 400));
-        assert!(!point_in_rect(720.0, 700.0, 0, 632, 720, 400));
-        assert!(!point_in_rect(100.0, 1032.0, 0, 632, 720, 400));
-        // 任务栏里的条（y=1050）不在面板矩形内——指针回到条上时不算「在面板上」。
-        assert!(!point_in_rect(100.0, 1050.0, 0, 632, 720, 400));
-        assert!(!point_in_rect(-1.0, 700.0, 0, 632, 720, 400));
-    }
-
-    #[test]
-    fn hiding_or_fullscreen_block_hides_the_strip_too() {
-        // Alt+X 隐藏：两个窗口一起消失。
-        let mut hidden = inputs(IslandState::Hidden, false, false);
-        hidden.corner = true;
-        assert!(!strip_visible(hidden));
-        // 同屏全屏且开启「全屏时隐藏」：同样一起消失。
-        let mut blocked = inputs(IslandState::Compact, false, false);
-        blocked.corner = true;
-        blocked.hide_in_fullscreen = true;
-        blocked.fullscreen_block = true;
-        assert!(!strip_visible(blocked));
-        // 非 corner 模式永远没有嵌入条。
-        let mut island_mode = inputs(IslandState::Compact, false, false);
-        island_mode.corner = false;
-        assert!(!strip_visible(island_mode));
-    }
-
-    #[test]
-    fn corner_enables_hover_stage_and_clearing_it_zeroes_stage() {
-        let mut policy_inputs = inputs(IslandState::Compact, false, false);
-        // 仅 corner：允许阶段 1（胶囊→条状）。
-        apply_corner_setting(&mut policy_inputs, true);
-        apply_hover_stage_report(&mut policy_inputs, 1);
-        assert_eq!(policy_inputs.hover_stage, 1);
-        // 关闭 corner 且无其它悬停能力：归零。
-        apply_corner_setting(&mut policy_inputs, false);
-        assert_eq!(policy_inputs.hover_stage, 0);
-        apply_hover_stage_report(&mut policy_inputs, 1);
-        assert_eq!(policy_inputs.hover_stage, 0);
     }
 
     #[test]

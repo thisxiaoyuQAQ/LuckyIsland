@@ -8,30 +8,28 @@ describe("parseUiMode", () => {
     expect(parseUiMode(undefined)).toBe("island");
     expect(parseUiMode("")).toBe("island");
     expect(parseUiMode("CLASSISLAND")).toBe("island");
-    expect(parseUiMode("CORNER")).toBe("island");
     expect(parseUiMode("docked")).toBe("island");
     expect(parseUiMode("classislandd")).toBe("island");
   });
 
-  it("accepts the exact classisland and corner values", () => {
+  it("accepts only the exact classisland value", () => {
     expect(parseUiMode("classisland")).toBe("classisland");
-    expect(parseUiMode("corner")).toBe("corner");
     expect(parseUiMode("island")).toBe("island");
   });
 });
 
-describe("modeKey（13a.2 三模式独立外观键）", () => {
+describe("modeKey（两种界面模式独立外观键）", () => {
   it("每个模式的外观键互不相同", () => {
-    expect(modeKey(KEYS.windowOpacity, "corner")).toBe("window:opacity:corner");
-    expect(modeKey(KEYS.windowOffsetX, "island")).toBe("window:offset_x:island");
-    expect(modeKey(KEYS.windowOffsetY, "classisland")).toBe("window:offset_y:classisland");
-    // 三模式 × 三个外观项 = 9 个互不相同的键（「共享同一份值」的回归护栏）。
+    expect(modeKey(KEYS.windowOpacity, "island")).toBe("window:opacity:island");
+    expect(modeKey(KEYS.windowOffsetX, "classisland")).toBe("window:offset_x:classisland");
+    expect(modeKey(KEYS.windowOffsetY, "island")).toBe("window:offset_y:island");
+    // 两模式 × 三个外观项 = 6 个互不相同的键（「共享同一份值」的回归护栏）。
     const keys = UI_MODES.flatMap((mode) =>
       [KEYS.windowOpacity, KEYS.windowOffsetX, KEYS.windowOffsetY].map((base) =>
         modeKey(base, mode),
       ),
     );
-    expect(new Set(keys).size).toBe(9);
+    expect(new Set(keys).size).toBe(6);
   });
 
   it("与后端 monitor::mode_key 的裸键前缀保持一致", () => {
@@ -57,8 +55,6 @@ describe("ui mode store", () => {
   it("applies and reverts modes through the parser", () => {
     applyUiModeSetting("classisland");
     expect(getUiMode()).toBe("classisland");
-    applyUiModeSetting("corner");
-    expect(getUiMode()).toBe("corner");
     applyUiModeSetting("garbage");
     expect(getUiMode()).toBe("island");
     applyUiModeSetting("classisland");

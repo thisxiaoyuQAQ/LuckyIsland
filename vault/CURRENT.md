@@ -1,6 +1,6 @@
 # 当前执行入口
 
-> 当前阶段：模块 13「贴顶新 UI 与设置分类」（2026-07-26 用户授权「全做」，单人模式，main 分支线性）
+> 当前阶段：模块 13「贴顶新 UI 与设置分类」已完成并验收；增量 13a 已取消（见「唯一当前动作」）。单人模式，main 分支线性
 > 前置状态：模块 11a「悬浮胶囊/两段悬停/双视觉样式」✅ 已完成并发布 v0.4.0；工作区干净
 > 更新时间：2026-07-26
 > 冻结契约：[13-贴顶新UI与设置分类.md](./13-贴顶新UI与设置分类.md)
@@ -16,11 +16,11 @@
 
 ## 唯一当前动作
 
-**模块 13 已真机验收通过（2026-07-26），本地 4 commit（未 push）。当前：模块 13a 左下角贴角模式已实现，待真机验收。**
+**模块 13 已真机验收通过（2026-07-26），本地 commit 未 push。模块 13a（左下角贴角/嵌入任务栏）2026-07-26 已被用户取消，代码全部删除——不要再实现。当前无进行中的模块，等待用户指定下一项。**
 
-- 13a = `window:ui_mode` 第三值 `corner`：`monitor.rs` `Placement`(工作区左下角定位) + `window_policy.rs` corner 静息胶囊 / 底边锚定展开 + `window_ui_mode_set` 接受 corner + 前端 corner 外壳/三选一开关。冻结契约 `vault/13a-左下角贴角模式.md`。
-- 自动化全绿：前端 typecheck + 430 tests + build；Rust `cargo test --lib` 150/0 + `clippy --lib -D warnings` 干净（独立 `CARGO_TARGET_DIR=.omc/cargo-check-target` + `SHERPA_ONNX_LIB_DIR` + `CARGO_HTTP_CHECK_REVOKE=false`，未抢 tauri dev 锁）。
-- 待用户真机验收：贴左下角在任务栏之上、胶囊静息、悬停/点击向上展开、三模式互切即时生效、重启保持、导入导出携带、多屏/DPI；展开动画衔接若有 jank 需迭代。逐次授权提交（docs(13a) + feat(13a) Rust + feat(13a) 前端）。
+- 13a 取消结论与踩坑记录见 `vault/13a-左下角贴角模式.md`（🚫 已取消，非待办）。`window:ui_mode` 值域回到 `island` | `classisland` 两值。
+- 同轮保留的独立需求：透明度/偏移**按界面模式独立存储**（`window:<项>:<mode>`，旧裸键启动时幂等迁移给 island），契约并入 `vault/07a-窗口外观与配置导入导出.md` §接口与类型。
+- 取消后自动化全绿：前端 typecheck + 432 tests + 三入口 build；Rust fmt + 严格 clippy + `cargo test --lib` 146 passed/1 ignored + check（默认 target，确认 tauri dev 未在跑）。真机行为待用户日常使用中确认（本轮只做删除 + 两模式独立外观）。
 
 ## 已完成状态
 

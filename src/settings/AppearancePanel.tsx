@@ -66,7 +66,7 @@ export function AppearancePanel() {
     };
   }, []);
 
-  // 13a.2：透明度/偏移按界面模式独立存储，读写都要带上模式后缀。
+  // 透明度/偏移按界面模式独立存储，读写都要带上模式后缀。
   const loadAppearanceFor = async (mode: UiMode) => {
     const [o, ox, oy] = await Promise.all([
       settingGet(modeKey(KEYS.windowOpacity, mode)),
@@ -119,7 +119,7 @@ export function AppearancePanel() {
   };
 
   // 界面模式：走后端 window_ui_mode_set（写 KV + 重新定位窗口 + 广播），失败回读真实值。
-  // 切换后三个外观滑块要跟到新模式的独立值（13a.2）。
+  // 切换后三个外观滑块要跟到新模式的独立值。
   const changeUiMode = async (value: UiMode) => {
     cancelPendingAppearance();
     setUiMode(value);
@@ -193,8 +193,8 @@ export function AppearancePanel() {
     setBusy(true);
     try {
       // windowOpacity/offset_x/offset_y 的默认值与 settings.ts DEFAULTS 对齐：
-      // 透明度 0.7（原 bg-card/70 视觉），偏移 0/0。13a.2：只重置当前界面模式，
-      // 另外两个模式各自调好的值不受影响。
+      // 透明度 0.7（原 bg-card/70 视觉），偏移 0/0。只重置当前界面模式，
+      // 另一个模式各自调好的值不受影响。
       await Promise.all([
         settingSetEmit(modeKey(KEYS.windowOpacity, uiMode), "0.7"),
         settingSetEmit(modeKey(KEYS.windowOffsetX, uiMode), null),
@@ -308,30 +308,26 @@ export function AppearancePanel() {
       <div className="flex flex-col gap-1">
         <h2 className="text-base font-semibold">外观</h2>
         <p className="text-sm text-muted-foreground">
-          调节灵动岛窗口透明度与位置偏移。超出可视区会自动拉回边界。
+          调节灵动岛窗口透明度与位置偏移。偏移相对「屏幕顶部居中」位置，超出可视区会自动拉回边界。
         </p>
       </div>
 
       <Row
         label="界面模式"
-        desc="悬浮：顶部居中灵动岛；贴顶：贴屏幕顶部、只留下方圆角、并排时间/日期/天气/待办；左下角嵌入任务栏：把一条时间/天气嵌进任务栏左端，悬停或点击才向上展开完整面板"
+        desc="老 UI 为悬浮灵动岛；新 UI 贴屏幕顶部、只保留下方圆角（ClassIsland 风），紧凑态并排显示时间/日期/天气/待办"
       >
         <select
           className="rounded-md border border-input bg-background px-2 py-1 text-sm outline-none focus:border-ring focus:ring-[3px] focus:ring-ring/50"
           value={uiMode}
           onChange={(e) => void changeUiMode(e.target.value as UiMode)}
         >
-          <option value="island">悬浮灵动岛（默认）</option>
-          <option value="classisland">贴顶（ClassIsland 风）</option>
-          <option value="corner">左下角嵌入任务栏（省地方）</option>
+          <option value="island">老 UI（悬浮灵动岛）</option>
+          <option value="classisland">新 UI（贴顶）</option>
         </select>
       </Row>
 
       <p className="-mb-2 text-xs text-muted-foreground">
         以下三项按界面模式各自独立保存，当前调整的是「{UI_MODE_LABELS[uiMode]}」。
-        {uiMode === "corner"
-          ? "偏移同时移动任务栏内的静息条与向上展开的面板（各自不会移出任务栏/屏幕）。"
-          : "偏移相对「屏幕顶部居中」位置。"}
       </p>
 
       <Row

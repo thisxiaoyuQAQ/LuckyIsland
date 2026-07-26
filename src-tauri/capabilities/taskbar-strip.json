@@ -1,7 +1,0 @@
-{
-  "$schema": "../gen/schemas/desktop-schema.json",
-  "identifier": "taskbar-strip",
-  "description": "Capability for the taskbar-embedded resting strip (13a.2)：只需事件监听与主题同步",
-  "windows": ["taskbar-strip"],
-  "permissions": ["core:default"]
-}
