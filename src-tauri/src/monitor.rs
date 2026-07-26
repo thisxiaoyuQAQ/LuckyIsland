@@ -425,26 +425,32 @@ fn clamp_corner(
 }
 
 /// 按停靠方式计算 clamp 后偏移与最终物理位置。TopCenter 走顶部居中，Corner 走工作区左下角。
+///
+/// `current_height` = 当前有效态（静息胶囊）物理高度，`expanded_height` = 展开态物理高度。
+/// 顶部居中是顶边锚定：位置与高度无关，clamp 用 `expanded_height` 保守兜底（防展开时底部越界）。
+/// corner 是底边锚定：位置随 `current_height`（让静息胶囊底边贴工作区角落），展开由 resize_window
+/// 保底边不动向上生长——若这里错用 expanded_height，胶囊会被抬高约「展开高−胶囊高」而离开任务栏。
 fn place_island(
     placement: Placement,
     monitor: &MonitorInfo,
     window_width: u32,
-    window_height: u32,
+    current_height: u32,
+    expanded_height: u32,
     offset_x: i32,
     offset_y: i32,
 ) -> (i32, i32, MonitorPoint) {
     match placement {
         Placement::TopCenter { gap } => {
             let (cx, cy) =
-                clamp_offsets(monitor, window_width, window_height, gap, offset_x, offset_y);
+                clamp_offsets(monitor, window_width, expanded_height, gap, offset_x, offset_y);
             let pos = top_center_position(monitor, window_width, gap, cx, cy);
             (cx, cy, pos)
         }
         Placement::Corner { margin } => {
             let work = work_area_for_monitor(monitor);
             let (cx, cy) =
-                clamp_corner(work, window_width, window_height, margin, offset_x, offset_y);
-            let pos = corner_position(work, window_height, margin, cx, cy);
+                clamp_corner(work, window_width, current_height, margin, offset_x, offset_y);
+            let pos = corner_position(work, current_height, margin, cx, cy);
             (cx, cy, pos)
         }
     }
@@ -480,11 +486,19 @@ fn move_island_to_monitor(
         .get_webview_window("island")
         .ok_or_else(|| "找不到灵动岛窗口".to_string())?;
     let scale_factor = monitor.raw.scale_factor();
-    let (logical_width, _) = current_logical_geometry(app);
+    let (logical_width, logical_height) = current_logical_geometry(app);
     let width = physical_window_width(logical_width, scale_factor);
-    let height = expanded_physical_height(scale_factor);
-    let (_cx, _cy, position) =
-        place_island(placement, &monitor.info, width, height, offset_x, offset_y);
+    let current_height = physical_window_height(logical_height, scale_factor);
+    let expanded_height = expanded_physical_height(scale_factor);
+    let (_cx, _cy, position) = place_island(
+        placement,
+        &monitor.info,
+        width,
+        current_height,
+        expanded_height,
+        offset_x,
+        offset_y,
+    );
     window
         .set_position(PhysicalPosition::new(position.x, position.y))
         .map_err(|error| format!("移动灵动岛窗口失败：{error}"))
@@ -508,9 +522,17 @@ fn recover_island_to_monitor(
     let scale_factor = monitor.raw.scale_factor();
     let (logical_width, logical_height) = current_logical_geometry(app);
     let width = physical_window_width(logical_width, scale_factor);
-    let height = expanded_physical_height(scale_factor);
-    let (_cx, _cy, position) =
-        place_island(placement, &monitor.info, width, height, offset_x, offset_y);
+    let current_height = physical_window_height(logical_height, scale_factor);
+    let expanded_height = expanded_physical_height(scale_factor);
+    let (_cx, _cy, position) = place_island(
+        placement,
+        &monitor.info,
+        width,
+        current_height,
+        expanded_height,
+        offset_x,
+        offset_y,
+    );
     window
         .set_size(Size::Logical(LogicalSize {
             width: logical_width,
@@ -601,11 +623,19 @@ pub fn window_offset_apply(
     let target = resolved_monitor(&set, &state)?;
     let scale_factor = target.raw.scale_factor();
     let placement = read_placement(db.inner());
-    let (logical_width, _) = current_logical_geometry(&app);
+    let (logical_width, logical_height) = current_logical_geometry(&app);
     let width = physical_window_width(logical_width, scale_factor);
-    let height = expanded_physical_height(scale_factor);
-    let (cx, cy, position) =
-        place_island(placement, &target.info, width, height, offset_x, offset_y);
+    let current_height = physical_window_height(logical_height, scale_factor);
+    let expanded_height = expanded_physical_height(scale_factor);
+    let (cx, cy, position) = place_island(
+        placement,
+        &target.info,
+        width,
+        current_height,
+        expanded_height,
+        offset_x,
+        offset_y,
+    );
     // 先落盘 clamp 后的值，再上屏——即使上屏失败也不会留下跑出屏的持久化值。
     if cx != 0 {
         db.setting_set(OFFSET_X_KEY, &cx.to_string())?;
