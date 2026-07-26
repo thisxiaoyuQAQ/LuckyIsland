@@ -11,7 +11,9 @@ import {
   subscribeUpdate,
 } from "@/lib/update-store";
 import { useVisualStyle } from "@/lib/visual-style";
+import { useUiMode } from "@/lib/ui-mode";
 import { islandStyleRecipe, scrollIndicatorGeometry } from "@/lib/window-policy";
+import { DockedStrip } from "./DockedStrip";
 import type { PageMeta } from "./registry";
 
 /** 紧凑内容右侧滚动指示轨道高度（px）。 */
@@ -70,6 +72,8 @@ export function IslandTopBar({
   useEffect(() => subscribeUpdate(() => setUpdateSnapshot(getUpdateSnapshot())), []);
 
   const recipe = islandStyleRecipe(useVisualStyle());
+  // 贴顶新 UI：紧凑态用并排信息条替代单页切换（模块 13 C）。
+  const docked = useUiMode() === "classisland";
   const scrollIndicator = recipe.showScrollIndicator
     ? scrollIndicatorGeometry(pageIndex, pages.length, SCROLL_INDICATOR_TRACK_PX)
     : null;
@@ -114,6 +118,9 @@ export function IslandTopBar({
               </button>
             ))}
           </div>
+        ) : docked && !capsule && !collapsing ? (
+          // 贴顶新 UI（classisland）：紧凑态并排信息条，替代单页 + 页点/滚动指示。
+          <DockedStrip />
         ) : (
           <div className={cn("flex min-w-0 items-center gap-3", capsule && "justify-center")}>
             {!capsule &&
