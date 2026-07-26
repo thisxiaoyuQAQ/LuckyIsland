@@ -279,7 +279,7 @@ function App() {
     <div
       className={cn(
         "flex h-screen w-screen",
-        // corner：左下角贴角（底部左对齐，边距由 Rust 定位控制）；
+        // corner（13a.2）：展开面板贴在任务栏正上方，底部左对齐（位置由 Rust 定位控制）；
         // 顶部居中模式：classisland 贴顶(pt-0) / island 悬浮(pt-3)。
         corner
           ? "items-end justify-start"
@@ -290,8 +290,12 @@ function App() {
         onMouseLeave={() => hoverControllerRef.current?.leave()}
         className={cn(
           "flex w-full max-w-[700px] flex-col border border-border/60 px-4 shadow-2xl",
-          // classisland：只保留下方圆角、去掉顶边（贴屏顶的直边）；island：四角圆角。
-          docked ? "rounded-b-2xl rounded-t-none border-t-0" : "rounded-2xl",
+          // classisland：只保留下方圆角、去掉顶边（贴屏顶的直边）；
+          // corner：只保留上方圆角、去掉底边——面板底边压在任务栏顶边上，像从嵌入条里长出来；
+          // island：四角圆角。
+          docked && "rounded-b-2xl rounded-t-none border-t-0",
+          corner && "rounded-t-2xl rounded-b-none border-b-0",
+          !docked && !corner && "rounded-2xl",
           blur && "backdrop-blur-xl",
         )}
         style={{

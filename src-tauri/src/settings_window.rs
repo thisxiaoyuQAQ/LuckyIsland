@@ -228,10 +228,13 @@ pub fn config_import(
         .collect::<std::collections::BTreeSet<_>>();
     // needs_offset_apply 也覆盖 window:ui_mode 变化：贴顶/悬浮的顶部间隙不同，导入后需让
     // 前端触发一次 window_offset_apply（会按新 ui_mode 的 gap 重新定位窗口），否则窗口 y 不动。
-    let needs_offset_apply = old_keys.contains(OFFSET_X_KEY)
-        || old_keys.contains(OFFSET_Y_KEY)
-        || new_keys.contains(OFFSET_X_KEY)
-        || new_keys.contains(OFFSET_Y_KEY)
+    // 13a.2：偏移键按模式带后缀（window:offset_x:corner），改用前缀匹配覆盖新旧两种写法。
+    let touches_offset = |keys: &std::collections::BTreeSet<String>| {
+        keys.iter()
+            .any(|key| key.starts_with(OFFSET_X_KEY) || key.starts_with(OFFSET_Y_KEY))
+    };
+    let needs_offset_apply = touches_offset(&old_keys)
+        || touches_offset(&new_keys)
         || old_keys.contains(UI_MODE_KEY)
         || new_keys.contains(UI_MODE_KEY);
     let needs_hotkeys_apply = old_keys.iter().any(|k| k.starts_with("hotkeys:"))

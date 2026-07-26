@@ -37,13 +37,15 @@ export default defineConfig(async () => ({
     },
   },
 
-  // 多页入口：island（index.html）+ 设置面板（settings.html）
+  // 多页入口：island（index.html）+ 设置面板（settings.html）+ AI（ai.html）
+  //          + 13a.2 嵌入任务栏的静息条（corner.html）
   build: {
     rollupOptions: {
       input: {
         main: fileURLToPath(new URL("./index.html", import.meta.url)),
         settings: fileURLToPath(new URL("./settings.html", import.meta.url)),
         ai: fileURLToPath(new URL("./ai.html", import.meta.url)),
+        corner: fileURLToPath(new URL("./corner.html", import.meta.url)),
       },
     },
   },

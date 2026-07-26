@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import {
   KEYS,
+  modeKey,
   onSettingsChanged,
   parseBool,
   parseOpacity,
@@ -11,7 +12,7 @@ import {
 } from "@/lib/settings";
 import { parseThemeMode } from "@/lib/theme";
 import { applyVisualStyleSetting } from "@/lib/visual-style";
-import { applyUiModeSetting } from "@/lib/ui-mode";
+import { applyUiModeSetting, getUiMode } from "@/lib/ui-mode";
 import { useAsyncSubscription } from "@/lib/useAsyncSubscription";
 
 export interface IslandSettingsHandlers {
@@ -33,6 +34,16 @@ export function useIslandSettings(handlers: IslandSettingsHandlers): void {
     setAutoCheckUpdates,
   } = handlers;
 
+  // 13a.2：透明度按界面模式独立（window:opacity:<mode>），必须在 ui_mode 应用之后再读，
+  // 否则会拿到上一模式的值。ui_mode 变化时同样重读一次。
+  const applyOpacityForCurrentMode = async () => {
+    const raw = await settingGet(modeKey(KEYS.windowOpacity, getUiMode())).catch((error) => {
+      console.error("[settings] 读取当前模式透明度失败:", error);
+      return null;
+    });
+    setOpacity(parseOpacity(raw));
+  };
+
   // settings KV 初始化：各项独立应用，单个读取失败不影响其余设置。
   useEffect(() => {
     (async () => {
@@ -41,7 +52,6 @@ export function useIslandSettings(handlers: IslandSettingsHandlers): void {
         order,
         theme,
         blurResult,
-        opacityResult,
         updateAutoCheckResult,
         visualStyle,
         uiMode,
@@ -50,7 +60,6 @@ export function useIslandSettings(handlers: IslandSettingsHandlers): void {
         settingGet(KEYS.pagesOrder),
         settingGet(KEYS.theme),
         settingGet(KEYS.blur),
-        settingGet(KEYS.windowOpacity),
         settingGet(KEYS.updateAutoCheck),
         settingGet(KEYS.windowVisualStyle),
         settingGet(KEYS.windowUiMode),
@@ -80,9 +89,6 @@ export function useIslandSettings(handlers: IslandSettingsHandlers): void {
       applySetting(KEYS.blur, blurResult, (value) => {
         setBlur(parseBool(value, true));
       });
-      applySetting(KEYS.windowOpacity, opacityResult, (value) => {
-        setOpacity(parseOpacity(value));
-      });
       applySetting(KEYS.updateAutoCheck, updateAutoCheckResult, (value) => {
         setAutoCheckUpdates(parseBool(value, true));
       });
@@ -92,6 +98,7 @@ export function useIslandSettings(handlers: IslandSettingsHandlers): void {
       applySetting(KEYS.windowUiMode, uiMode, (value) => {
         applyUiModeSetting(value);
       });
+      await applyOpacityForCurrentMode();
     })();
     // handlers 均来自 useState setter（稳定引用），只需挂载时跑一次。
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -104,10 +111,14 @@ export function useIslandSettings(handlers: IslandSettingsHandlers): void {
       if (key === KEYS.pagesOrder) setPagesOrder(parsePagesOrder(value));
       if (key === KEYS.theme) setThemeMode(parseThemeMode(value) ?? "auto");
       if (key === KEYS.blur) setBlur(parseBool(value, true));
-      if (key === KEYS.windowOpacity) setOpacity(parseOpacity(value));
+      if (key === modeKey(KEYS.windowOpacity, getUiMode())) setOpacity(parseOpacity(value));
       if (key === KEYS.updateAutoCheck) setAutoCheckUpdates(parseBool(value, true));
       if (key === KEYS.windowVisualStyle) applyVisualStyleSetting(value);
-      if (key === KEYS.windowUiMode) applyUiModeSetting(value);
+      if (key === KEYS.windowUiMode) {
+        applyUiModeSetting(value);
+        // 切模式即切外观：新模式有自己的透明度。
+        void applyOpacityForCurrentMode();
+      }
     }),
     // 同上：全部为稳定 setter，无需重建订阅。
     // eslint-disable-next-line react-hooks/exhaustive-deps

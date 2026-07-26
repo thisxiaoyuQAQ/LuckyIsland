@@ -4,8 +4,10 @@ import { Button } from "@/components/ui/button";
 import { useTauriEvent } from "@/lib/useTauriEvent";
 import {
   KEYS,
+  UI_MODE_LABELS,
   configExport,
   configImport,
+  modeKey,
   parseBool,
   parseOffset,
   parseOpacity,
@@ -64,22 +66,30 @@ export function AppearancePanel() {
     };
   }, []);
 
+  // 13a.2：透明度/偏移按界面模式独立存储，读写都要带上模式后缀。
+  const loadAppearanceFor = async (mode: UiMode) => {
+    const [o, ox, oy] = await Promise.all([
+      settingGet(modeKey(KEYS.windowOpacity, mode)),
+      settingGet(modeKey(KEYS.windowOffsetX, mode)),
+      settingGet(modeKey(KEYS.windowOffsetY, mode)),
+    ]);
+    setOpacity(parseOpacity(o));
+    setOffsetX(parseOffset(ox));
+    setOffsetY(parseOffset(oy));
+  };
+
   useEffect(() => {
     void (async () => {
-      const [o, ox, oy, b, vs, um] = await Promise.all([
-        settingGet(KEYS.windowOpacity),
-        settingGet(KEYS.windowOffsetX),
-        settingGet(KEYS.windowOffsetY),
+      const [b, vs, um] = await Promise.all([
         settingGet(KEYS.blur),
         settingGet(KEYS.windowVisualStyle),
         settingGet(KEYS.windowUiMode),
       ]);
-      setOpacity(parseOpacity(o));
-      setOffsetX(parseOffset(ox));
-      setOffsetY(parseOffset(oy));
+      const mode = parseUiMode(um);
       setBlur(parseBool(b, true));
       setVisualStyle(parseVisualStyle(vs));
-      setUiMode(parseUiMode(um));
+      setUiMode(mode);
+      await loadAppearanceFor(mode);
       setLoading(false);
     })();
   }, []);
@@ -90,7 +100,10 @@ export function AppearancePanel() {
       setVisualStyle(parseVisualStyle(event.payload.value));
     }
     if (event.payload.key === KEYS.windowUiMode) {
-      setUiMode(parseUiMode(event.payload.value));
+      const next = parseUiMode(event.payload.value);
+      setUiMode(next);
+      // 模式变了，三个滑块要切到新模式自己的值。
+      void loadAppearanceFor(next);
     }
   });
 
@@ -106,13 +119,18 @@ export function AppearancePanel() {
   };
 
   // 界面模式：走后端 window_ui_mode_set（写 KV + 重新定位窗口 + 广播），失败回读真实值。
+  // 切换后三个外观滑块要跟到新模式的独立值（13a.2）。
   const changeUiMode = async (value: UiMode) => {
+    cancelPendingAppearance();
     setUiMode(value);
     try {
-      await windowUiModeSet(value);
+      const applied = await windowUiModeSet(value);
+      setUiMode(applied);
+      await loadAppearanceFor(applied);
     } catch (error) {
-      const actual = await settingGet(KEYS.windowUiMode).catch(() => null);
-      setUiMode(parseUiMode(actual));
+      const actual = parseUiMode(await settingGet(KEYS.windowUiMode).catch(() => null));
+      setUiMode(actual);
+      await loadAppearanceFor(actual);
       setMsg({ kind: "err", text: `切换界面模式失败：${String(error)}` });
     }
   };
@@ -123,7 +141,7 @@ export function AppearancePanel() {
     setOpacity(clamped);
     if (opacityTimer.current) clearTimeout(opacityTimer.current);
     opacityTimer.current = setTimeout(() => {
-      void settingSetEmit(KEYS.windowOpacity, clamped.toFixed(2)).catch((e) => {
+      void settingSetEmit(modeKey(KEYS.windowOpacity, uiMode), clamped.toFixed(2)).catch((e) => {
         setMsg({ kind: "err", text: `保存透明度失败：${String(e)}` });
       });
     }, 80);
@@ -175,17 +193,18 @@ export function AppearancePanel() {
     setBusy(true);
     try {
       // windowOpacity/offset_x/offset_y 的默认值与 settings.ts DEFAULTS 对齐：
-      // 透明度 0.7（原 bg-card/70 视觉），偏移 0/0。
+      // 透明度 0.7（原 bg-card/70 视觉），偏移 0/0。13a.2：只重置当前界面模式，
+      // 另外两个模式各自调好的值不受影响。
       await Promise.all([
-        settingSetEmit(KEYS.windowOpacity, "0.7"),
-        settingSetEmit(KEYS.windowOffsetX, null),
-        settingSetEmit(KEYS.windowOffsetY, null),
+        settingSetEmit(modeKey(KEYS.windowOpacity, uiMode), "0.7"),
+        settingSetEmit(modeKey(KEYS.windowOffsetX, uiMode), null),
+        settingSetEmit(modeKey(KEYS.windowOffsetY, uiMode), null),
       ]);
       const [cx, cy] = await windowOffsetApply(0, 0);
       setOpacity(0.7);
       setOffsetX(cx);
       setOffsetY(cy);
-      setMsg({ kind: "ok", text: "已重置为默认外观" });
+      setMsg({ kind: "ok", text: `已重置「${UI_MODE_LABELS[uiMode]}」的外观` });
     } catch (e) {
       setMsg({ kind: "err", text: String(e) });
     } finally {
@@ -241,13 +260,16 @@ export function AppearancePanel() {
         return;
       }
       const summary = await configImport(path);
-      const [opRaw, oxRaw, oyRaw, blurRaw, vsRaw, umRaw] = await Promise.all([
-        settingGet(KEYS.windowOpacity),
-        settingGet(KEYS.windowOffsetX),
-        settingGet(KEYS.windowOffsetY),
+      const [blurRaw, vsRaw, umRaw] = await Promise.all([
         settingGet(KEYS.blur),
         settingGet(KEYS.windowVisualStyle),
         settingGet(KEYS.windowUiMode),
+      ]);
+      const importedMode = parseUiMode(umRaw);
+      const [opRaw, oxRaw, oyRaw] = await Promise.all([
+        settingGet(modeKey(KEYS.windowOpacity, importedMode)),
+        settingGet(modeKey(KEYS.windowOffsetX, importedMode)),
+        settingGet(modeKey(KEYS.windowOffsetY, importedMode)),
       ]);
       const op = parseOpacity(opRaw);
       const ox = parseOffset(oxRaw);
@@ -255,7 +277,7 @@ export function AppearancePanel() {
       setOpacity(op);
       setBlur(parseBool(blurRaw, true));
       setVisualStyle(parseVisualStyle(vsRaw));
-      setUiMode(parseUiMode(umRaw));
+      setUiMode(importedMode);
       // 含偏移项（或原配置有偏移但导入文件删掉）：导入只改数据不上屏，
       // 需额外触发一次让窗口移动。后端会返回 clamp 后实际值。
       if (summary.needsOffsetApply) {
@@ -286,13 +308,13 @@ export function AppearancePanel() {
       <div className="flex flex-col gap-1">
         <h2 className="text-base font-semibold">外观</h2>
         <p className="text-sm text-muted-foreground">
-          调节灵动岛窗口透明度与位置偏移。偏移相对「屏幕顶部居中」位置，超出可视区会自动拉回边界。
+          调节灵动岛窗口透明度与位置偏移。超出可视区会自动拉回边界。
         </p>
       </div>
 
       <Row
         label="界面模式"
-        desc="悬浮：顶部居中灵动岛；贴顶：贴屏幕顶部、只留下方圆角、并排时间/日期/天气/待办；左下角贴角：贴屏幕左下角、最小胶囊、悬停/点击展开，省屏幕空间"
+        desc="悬浮：顶部居中灵动岛；贴顶：贴屏幕顶部、只留下方圆角、并排时间/日期/天气/待办；左下角嵌入任务栏：把一条时间/天气嵌进任务栏左端，悬停或点击才向上展开完整面板"
       >
         <select
           className="rounded-md border border-input bg-background px-2 py-1 text-sm outline-none focus:border-ring focus:ring-[3px] focus:ring-ring/50"
@@ -301,9 +323,16 @@ export function AppearancePanel() {
         >
           <option value="island">悬浮灵动岛（默认）</option>
           <option value="classisland">贴顶（ClassIsland 风）</option>
-          <option value="corner">左下角贴角（省地方）</option>
+          <option value="corner">左下角嵌入任务栏（省地方）</option>
         </select>
       </Row>
+
+      <p className="-mb-2 text-xs text-muted-foreground">
+        以下三项按界面模式各自独立保存，当前调整的是「{UI_MODE_LABELS[uiMode]}」。
+        {uiMode === "corner"
+          ? "偏移同时移动任务栏内的静息条与向上展开的面板（各自不会移出任务栏/屏幕）。"
+          : "偏移相对「屏幕顶部居中」位置。"}
+      </p>
 
       <Row
         label="视觉样式"

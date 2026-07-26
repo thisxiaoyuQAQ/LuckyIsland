@@ -11,11 +11,19 @@ pub const PRIMARY_SELECTION: &str = "primary";
 pub const TOP_GAP_PHYSICAL: i32 = 16;
 /// 界面模式 KV（模块 13）：classisland 贴顶（gap=0），其余悬浮（gap=TOP_GAP_PHYSICAL）。
 pub const UI_MODE_KEY: &str = "window:ui_mode";
-/// corner（左下角贴角，模块 13a）贴工作区左下角的小边距（物理像素）。
-pub const CORNER_MARGIN_PHYSICAL: i32 = 12;
-/// 偏移 KV key（07a 窗口外观）；存储为整数字符串，可为负。
+/// corner 展开面板距屏幕左边与任务栏顶边的边距（物理像素）。
+/// 13a.2 起为 0——面板要贴死最左下角、底边压在任务栏顶边上，像是从嵌入条里长出来的。
+pub const CORNER_MARGIN_PHYSICAL: i32 = 0;
+/// 偏移 KV key 前缀（07a 窗口外观）；存储为整数字符串，可为负。
+/// 13a.2 起按界面模式独立：真实读写的是 `window:offset_x:<mode>`，这两个常量只作为
+/// 前缀与「旧全局值」的迁移来源保留。
 pub const OFFSET_X_KEY: &str = "window:offset_x";
 pub const OFFSET_Y_KEY: &str = "window:offset_y";
+/// 背景透明度 KV key 前缀（07a）；同样按模式独立，Rust 侧只负责迁移，取值在前端。
+pub const OPACITY_KEY: &str = "window:opacity";
+/// 三种界面模式（模块 13/13a）；值域真源是 `normalize_ui_mode`。
+#[cfg(test)]
+const UI_MODES: [&str; 3] = ["island", "classisland", "corner"];
 /// 运行时显示器变化轮询间隔。副屏断开后最多延迟此时间即临时跳回主屏。
 const RUNTIME_WATCH_INTERVAL: Duration = Duration::from_secs(2);
 
@@ -256,14 +264,55 @@ fn current_selection(db: &Db) -> String {
     normalize_selection(db.setting_get(MONITOR_SETTING_KEY).as_deref())
 }
 
-/// 读 `window:offset_x`/`window:offset_y`，无效回 0/0。供所有「定位灵动岛」路径统一取用。
+/// 界面模式串规范化：缺键/空/非法一律 `island`。
+pub fn normalize_ui_mode(value: Option<&str>) -> &'static str {
+    match value.map(str::trim) {
+        Some("classisland") => "classisland",
+        Some("corner") => "corner",
+        _ => "island",
+    }
+}
+
+/// 当前界面模式串（缺键/非法回退 island）。
+pub fn current_ui_mode(db: &Db) -> &'static str {
+    normalize_ui_mode(db.setting_get(UI_MODE_KEY).as_deref())
+}
+
+/// 13a.2：外观键按界面模式独立存储 —— `window:offset_x` → `window:offset_x:corner`。
+/// 三种模式的偏移/透明度互不影响（为贴角调的偏移不该破坏悬浮灵动岛的位置）。
+pub fn mode_key(base: &str, mode: &str) -> String {
+    format!("{base}:{mode}")
+}
+
+/// 13a.2 一次性迁移：把旧的全局外观键复制给 `island`，另两模式留默认值。
+///
+/// 幂等——只在目标键缺失且旧键存在时复制；旧键保留不动（老版本回滚仍可读）。
+/// 启动时调用一次，成本是最多 3 次 KV 读 + 3 次写。
+pub fn migrate_appearance_keys(db: &Db) {
+    for base in [OFFSET_X_KEY, OFFSET_Y_KEY, OPACITY_KEY] {
+        let target = mode_key(base, "island");
+        if db.setting_get(&target).is_some() {
+            continue;
+        }
+        let Some(legacy) = db.setting_get(base) else {
+            continue;
+        };
+        if let Err(error) = db.setting_set(&target, &legacy) {
+            tracing::warn!("[monitor] 迁移外观键 {base} 失败：{error}");
+        }
+    }
+}
+
+/// 读当前界面模式的偏移（`window:offset_x:<mode>`），无效回 0/0。
+/// 供所有「定位灵动岛」路径统一取用。
 fn read_offsets(db: &Db) -> (i32, i32) {
+    let mode = current_ui_mode(db);
     let parse = |raw: Option<String>| -> i32 {
         raw.and_then(|v| v.trim().parse::<i32>().ok()).unwrap_or(0)
     };
     (
-        parse(db.setting_get(OFFSET_X_KEY)),
-        parse(db.setting_get(OFFSET_Y_KEY)),
+        parse(db.setting_get(&mode_key(OFFSET_X_KEY, mode))),
+        parse(db.setting_get(&mode_key(OFFSET_Y_KEY, mode))),
     )
 }
 
@@ -328,8 +377,11 @@ fn clamp_offsets(
     (cx, cy)
 }
 
-/// 显示器矩形（物理像素）：left/top/right/bottom。corner 贴角用**整屏**（含任务栏）底部，
-/// 让胶囊落在任务栏内（省屏幕内容区），而非任务栏之上。
+/// 显示器矩形（物理像素）：left/top/right/bottom。
+///
+/// 13a.2：corner 的**展开面板**用「整屏矩形 + 底边替换为任务栏顶边」——任务栏那一格
+/// 已经由嵌入条 `taskbar-strip` 占据，面板只需贴在它正上方（13a.1「面板锚整屏底部、
+/// 压住任务栏」的做法随双窗口架构作废）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ScreenRect {
     left: i32,
@@ -346,6 +398,27 @@ fn full_rect(monitor: &MonitorInfo) -> ScreenRect {
         right: monitor.position.x + monitor.size.width as i32,
         bottom: monitor.position.y + monitor.size.height as i32,
     }
+}
+
+/// corner 展开面板的底边基准：目标显示器上任务栏的顶边；探测不到任务栏时退回屏底。
+///
+/// 只认「贴屏底的横向任务栏」——任务栏在左/右/上侧时它的顶边不是我们要的底边基准，
+/// 这种情况按屏底处理（面板仍在左下角，只是可能与侧边任务栏并排）。
+fn corner_bottom_anchor(monitor: &MonitorInfo) -> i32 {
+    let screen = crate::taskbar::monitor_rect(monitor);
+    #[cfg(windows)]
+    {
+        let bars = crate::taskbar::taskbar_rects();
+        if let Some(bar) = crate::taskbar::pick_taskbar_for_monitor(&bars, screen) {
+            let bottom_docked = (bar.bottom - screen.bottom).abs() <= 2
+                && bar.top > screen.top
+                && bar.width() >= screen.width() / 2;
+            if bottom_docked {
+                return bar.top;
+            }
+        }
+    }
+    screen.bottom
 }
 
 /// corner 左下角基准位置：贴整屏左下角，距角 `margin`，再叠加偏移。x 左对齐、y 使底边距屏底 margin
@@ -385,33 +458,66 @@ fn clamp_corner(
     (cx, cy)
 }
 
-/// 按停靠方式计算 clamp 后偏移与最终物理位置。TopCenter 走顶部居中，Corner 走工作区左下角。
+/// 定位所需的窗口几何（物理像素）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PlacementGeometry {
+    /// 当前有效态窗口宽度。
+    window_width: u32,
+    /// 当前有效态窗口高度（corner 底边锚定用）。
+    current_height: u32,
+    /// 展开态高度（顶部居中的 clamp 保守兜底用）。
+    expanded_height: u32,
+    /// corner 展开面板的底边基准（任务栏顶边；无任务栏时为屏底）。
+    corner_bottom: i32,
+}
+
+/// 按停靠方式计算 clamp 后偏移与最终物理位置。TopCenter 走顶部居中，Corner 走任务栏正上方。
 ///
 /// `current_height` = 当前有效态（静息胶囊）物理高度，`expanded_height` = 展开态物理高度。
 /// 顶部居中是顶边锚定：位置与高度无关，clamp 用 `expanded_height` 保守兜底（防展开时底部越界）。
-/// corner 是底边锚定：位置随 `current_height`（让静息胶囊底边贴工作区角落），展开由 resize_window
-/// 保底边不动向上生长——若这里错用 expanded_height，胶囊会被抬高约「展开高−胶囊高」而离开任务栏。
+/// corner 是底边锚定：位置随 `current_height`（让当前形态的底边压在任务栏顶边上），展开由
+/// resize_window 保底边不动向上生长——若这里错用 expanded_height，面板会被抬高约
+/// 「展开高−当前高」而离开任务栏。`corner_bottom` 是任务栏顶边（见 `corner_bottom_anchor`）。
 fn place_island(
     placement: Placement,
     monitor: &MonitorInfo,
-    window_width: u32,
-    current_height: u32,
-    expanded_height: u32,
+    geometry: PlacementGeometry,
     offset_x: i32,
     offset_y: i32,
 ) -> (i32, i32, MonitorPoint) {
+    let PlacementGeometry {
+        window_width,
+        current_height,
+        expanded_height,
+        corner_bottom,
+    } = geometry;
     match placement {
         Placement::TopCenter { gap } => {
-            let (cx, cy) =
-                clamp_offsets(monitor, window_width, expanded_height, gap, offset_x, offset_y);
+            let (cx, cy) = clamp_offsets(
+                monitor,
+                window_width,
+                expanded_height,
+                gap,
+                offset_x,
+                offset_y,
+            );
             let pos = top_center_position(monitor, window_width, gap, cx, cy);
             (cx, cy, pos)
         }
         Placement::Corner { margin } => {
-            // 贴角锚定**整屏**底部（含任务栏）：胶囊底边落在任务栏带内（省内容区），非任务栏之上。
-            let screen = full_rect(monitor);
-            let (cx, cy) =
-                clamp_corner(screen, window_width, current_height, margin, offset_x, offset_y);
+            // 展开面板贴在任务栏正上方：底边 = 任务栏顶边，左边 = 屏幕最左。
+            let screen = ScreenRect {
+                bottom: corner_bottom,
+                ..full_rect(monitor)
+            };
+            let (cx, cy) = clamp_corner(
+                screen,
+                window_width,
+                current_height,
+                margin,
+                offset_x,
+                offset_y,
+            );
             let pos = corner_position(screen, current_height, margin, cx, cy);
             (cx, cy, pos)
         }
@@ -455,9 +561,12 @@ fn move_island_to_monitor(
     let (_cx, _cy, position) = place_island(
         placement,
         &monitor.info,
-        width,
-        current_height,
-        expanded_height,
+        PlacementGeometry {
+            window_width: width,
+            current_height,
+            expanded_height,
+            corner_bottom: corner_bottom_anchor(&monitor.info),
+        },
         offset_x,
         offset_y,
     );
@@ -489,9 +598,12 @@ fn recover_island_to_monitor(
     let (_cx, _cy, position) = place_island(
         placement,
         &monitor.info,
-        width,
-        current_height,
-        expanded_height,
+        PlacementGeometry {
+            window_width: width,
+            current_height,
+            expanded_height,
+            corner_bottom: corner_bottom_anchor(&monitor.info),
+        },
         offset_x,
         offset_y,
     );
@@ -560,6 +672,19 @@ pub fn monitor_select(
     Ok(state)
 }
 
+/// 13a.2：当前生效显示器的信息与缩放因子（嵌入条定位用；与灵动岛走同一套选屏解析）。
+pub fn resolved_monitor_target(app: &AppHandle, db: &Db) -> Result<(MonitorInfo, f64), String> {
+    let set = capture_monitors(app)?;
+    let state = selection_state(&set, &current_selection(db))?;
+    let target = resolved_monitor(&set, &state)?;
+    Ok((target.info.clone(), target.raw.scale_factor()))
+}
+
+/// 13a.2：当前界面模式的偏移（嵌入条与灵动岛共用同一组值）。
+pub fn current_offsets(db: &Db) -> (i32, i32) {
+    read_offsets(db)
+}
+
 pub fn restore_island_monitor(app: &AppHandle, db: &Db) -> Result<MonitorSelectionState, String> {
     let set = capture_monitors(app)?;
     let state = selection_state(&set, &current_selection(db))?;
@@ -570,9 +695,12 @@ pub fn restore_island_monitor(app: &AppHandle, db: &Db) -> Result<MonitorSelecti
     Ok(state)
 }
 
-/// 07a 实时应用偏移（不切屏）：写 `window:offset_x/y` KV + 按当前 resolved monitor
-/// 重算 `set_position` 让灵动岛真正上屏。前端拖动偏移滑块时调用，值经 clamp 后落盘，
-/// 这样持久化的是 clamp 后的安全值（用户重启后窗口不会跑到屏外）。
+/// 07a 实时应用偏移（不切屏）：写**当前界面模式**的 `window:offset_x/y:<mode>` KV +
+/// 按当前 resolved monitor 重算 `set_position` 让灵动岛真正上屏。前端拖动偏移滑块时调用，
+/// 值经 clamp 后落盘，这样持久化的是 clamp 后的安全值（用户重启后窗口不会跑到屏外）。
+///
+/// corner 模式下同一组偏移同时喂给展开面板和嵌入条，但两者 clamp 边界不同：面板按整屏
+/// clamp，嵌入条按任务栏矩形 clamp（超出任务栏的部分嵌入后会被父窗口裁掉）。
 #[tauri::command]
 pub fn window_offset_apply(
     app: AppHandle,
@@ -592,23 +720,29 @@ pub fn window_offset_apply(
     let (cx, cy, position) = place_island(
         placement,
         &target.info,
-        width,
-        current_height,
-        expanded_height,
+        PlacementGeometry {
+            window_width: width,
+            current_height,
+            expanded_height,
+            corner_bottom: corner_bottom_anchor(&target.info),
+        },
         offset_x,
         offset_y,
     );
     // 先落盘 clamp 后的值，再上屏——即使上屏失败也不会留下跑出屏的持久化值。
+    let mode = current_ui_mode(db.inner());
+    let x_key = mode_key(OFFSET_X_KEY, mode);
+    let y_key = mode_key(OFFSET_Y_KEY, mode);
     if cx != 0 {
-        db.setting_set(OFFSET_X_KEY, &cx.to_string())?;
+        db.setting_set(&x_key, &cx.to_string())?;
     } else {
         // 0 用删除表示「无偏移」，保持 settings 表干净
-        db.setting_delete(OFFSET_X_KEY)?;
+        db.setting_delete(&x_key)?;
     }
     if cy != 0 {
-        db.setting_set(OFFSET_Y_KEY, &cy.to_string())?;
+        db.setting_set(&y_key, &cy.to_string())?;
     } else {
-        db.setting_delete(OFFSET_Y_KEY)?;
+        db.setting_delete(&y_key)?;
     }
     let window = app
         .get_webview_window("island")
@@ -616,6 +750,10 @@ pub fn window_offset_apply(
     window
         .set_position(PhysicalPosition::new(position.x, position.y))
         .map_err(|error| format!("应用偏移失败：{error}"))?;
+    // corner：嵌入条也吃这组偏移，按任务栏矩形重新 clamp 定位。
+    if let Err(error) = crate::taskbar::resync_strip(&app) {
+        tracing::warn!("[taskbar] 偏移后重定位嵌入条失败：{error}");
+    }
     Ok((cx, cy))
 }
 
@@ -665,6 +803,11 @@ pub fn start_runtime_watch(app: AppHandle) {
         let mut fell_back = false;
         loop {
             tokio::time::sleep(RUNTIME_WATCH_INTERVAL).await;
+            // 13a.2 嵌入条看门狗：explorer 重启会销毁 Shell_TrayWnd 让子窗口失去父窗口，
+            // 任务栏高度/位置/DPI 变化也会让条错位——每轮检查一次并按需重挂/重定位。
+            if let Err(error) = crate::taskbar::watchdog(&app) {
+                tracing::warn!("[taskbar] 嵌入条看门狗失败：{error}");
+            }
             let Some(set) = capture_monitors(&app).ok() else {
                 continue;
             };
@@ -688,7 +831,8 @@ pub fn start_runtime_watch(app: AppHandle) {
                     let db = app.state::<Db>();
                     let (offset_x, offset_y) = read_offsets(db.inner());
                     let placement = read_placement(db.inner());
-                    if recover_island_to_monitor(&app, target, placement, offset_x, offset_y).is_ok()
+                    if recover_island_to_monitor(&app, target, placement, offset_x, offset_y)
+                        .is_ok()
                     {
                         fell_back = false;
                         let _ = app.emit(
@@ -826,7 +970,13 @@ mod tests {
     #[test]
     fn centers_on_positive_and_negative_monitor_coordinates() {
         assert_eq!(
-            top_center_position(&info("MAIN", 0, 0, 1920, 1080, true), 720, TOP_GAP_PHYSICAL, 0, 0),
+            top_center_position(
+                &info("MAIN", 0, 0, 1920, 1080, true),
+                720,
+                TOP_GAP_PHYSICAL,
+                0,
+                0
+            ),
             MonitorPoint { x: 600, y: 16 }
         );
         assert_eq!(
@@ -845,7 +995,13 @@ mod tests {
     fn applies_offsets_on_top_of_top_center_baseline() {
         // 基准 (600, 16)，offset (50, -8) → (650, 8)
         assert_eq!(
-            top_center_position(&info("MAIN", 0, 0, 1920, 1080, true), 720, TOP_GAP_PHYSICAL, 50, -8),
+            top_center_position(
+                &info("MAIN", 0, 0, 1920, 1080, true),
+                720,
+                TOP_GAP_PHYSICAL,
+                50,
+                -8
+            ),
             MonitorPoint { x: 650, y: 8 }
         );
     }
@@ -945,6 +1101,110 @@ mod tests {
     }
 
     #[test]
+    fn corner_panel_sits_on_top_of_the_taskbar_not_over_it() {
+        // 13a.2：1920×1080 屏 + 48px 任务栏 → 任务栏顶边 y=1032 是面板底边基准。
+        let monitor = info("MAIN", 0, 0, 1920, 1080, true);
+        let taskbar_top = 1032;
+        // 展开态 720×400：底边压在任务栏顶边上 → y = 1032-400 = 632，x 贴最左 = 0。
+        let (cx, cy, pos) = place_island(
+            Placement::Corner { margin: 0 },
+            &monitor,
+            PlacementGeometry {
+                window_width: 720,
+                current_height: 400,
+                expanded_height: 400,
+                corner_bottom: taskbar_top,
+            },
+            0,
+            0,
+        );
+        assert_eq!((cx, cy), (0, 0));
+        assert_eq!(pos, MonitorPoint { x: 0, y: 632 });
+        // 紧凑态 720×80：底边同样贴任务栏顶边 → y = 1032-80 = 952。
+        let (_, _, compact) = place_island(
+            Placement::Corner { margin: 0 },
+            &monitor,
+            PlacementGeometry {
+                window_width: 720,
+                current_height: 80,
+                expanded_height: 400,
+                corner_bottom: taskbar_top,
+            },
+            0,
+            0,
+        );
+        assert_eq!(compact, MonitorPoint { x: 0, y: 952 });
+        // 探测不到任务栏时退回屏底：y = 1080-80 = 1000。
+        let (_, _, no_bar) = place_island(
+            Placement::Corner { margin: 0 },
+            &monitor,
+            PlacementGeometry {
+                window_width: 720,
+                current_height: 80,
+                expanded_height: 400,
+                corner_bottom: 1080,
+            },
+            0,
+            0,
+        );
+        assert_eq!(no_bar, MonitorPoint { x: 0, y: 1000 });
+    }
+
+    #[test]
+    fn top_center_modes_ignore_the_corner_bottom_anchor() {
+        // corner_bottom 只服务 Corner 分支；island/classisland 的结果不能被它改变。
+        let monitor = info("MAIN", 0, 0, 1920, 1080, true);
+        let with_bar = place_island(
+            Placement::TopCenter {
+                gap: TOP_GAP_PHYSICAL,
+            },
+            &monitor,
+            PlacementGeometry {
+                window_width: 720,
+                current_height: 80,
+                expanded_height: 400,
+                corner_bottom: 1032,
+            },
+            0,
+            0,
+        );
+        let without_bar = place_island(
+            Placement::TopCenter {
+                gap: TOP_GAP_PHYSICAL,
+            },
+            &monitor,
+            PlacementGeometry {
+                window_width: 720,
+                current_height: 80,
+                expanded_height: 400,
+                corner_bottom: 1080,
+            },
+            0,
+            0,
+        );
+        assert_eq!(with_bar, without_bar);
+        assert_eq!(with_bar.2, MonitorPoint { x: 600, y: 16 });
+    }
+
+    #[test]
+    fn appearance_keys_are_namespaced_per_ui_mode() {
+        assert_eq!(mode_key(OFFSET_X_KEY, "corner"), "window:offset_x:corner");
+        assert_eq!(mode_key(OPACITY_KEY, "island"), "window:opacity:island");
+        // 归一化：缺键/空/非法一律 island，三个合法值原样通过。
+        assert_eq!(normalize_ui_mode(None), "island");
+        assert_eq!(normalize_ui_mode(Some("")), "island");
+        assert_eq!(normalize_ui_mode(Some("garbage")), "island");
+        assert_eq!(normalize_ui_mode(Some("corner")), "corner");
+        assert_eq!(normalize_ui_mode(Some("classisland")), "classisland");
+        // 三个模式的键互不相同（共享 bug 的回归护栏）。
+        let keys: std::collections::BTreeSet<String> = UI_MODES
+            .iter()
+            .map(|mode| mode_key(OFFSET_X_KEY, mode))
+            .collect();
+        assert_eq!(keys.len(), UI_MODES.len());
+    }
+
+    #[test]
     fn clamp_offsets_keeps_window_on_screen() {
         let monitor = info("MAIN", 0, 0, 1920, 1080, true);
         // 基准 x = (1920-720)/2 = 600, base_y = 16。窗口宽 720、保守高 400。
@@ -952,14 +1212,29 @@ mod tests {
         //       右极限 窗口右端 ≤ 屏右-1 → 600+offset_x+720 ≤ 1919 → offset_x ≤ 599。
         // 纵向：顶部 ≥ 0 → offset_y ≥ -16；底部 ≤ 1080-400=680 → 16+offset_y ≤ 680 → offset_y ≤ 664。
         // 超界偏移被拉回边界。
-        assert_eq!(clamp_offsets(&monitor, 720, 400, TOP_GAP_PHYSICAL, 9999, 9999), (599, 664));
-        assert_eq!(clamp_offsets(&monitor, 720, 400, TOP_GAP_PHYSICAL, -9999, -9999), (-599, -16));
+        assert_eq!(
+            clamp_offsets(&monitor, 720, 400, TOP_GAP_PHYSICAL, 9999, 9999),
+            (599, 664)
+        );
+        assert_eq!(
+            clamp_offsets(&monitor, 720, 400, TOP_GAP_PHYSICAL, -9999, -9999),
+            (-599, -16)
+        );
         // 区间内原值保留。
-        assert_eq!(clamp_offsets(&monitor, 720, 400, TOP_GAP_PHYSICAL, 50, -8), (50, -8));
+        assert_eq!(
+            clamp_offsets(&monitor, 720, 400, TOP_GAP_PHYSICAL, 50, -8),
+            (50, -8)
+        );
         // 0,0 仍是 0,0。
-        assert_eq!(clamp_offsets(&monitor, 720, 400, TOP_GAP_PHYSICAL, 0, 0), (0, 0));
+        assert_eq!(
+            clamp_offsets(&monitor, 720, 400, TOP_GAP_PHYSICAL, 0, 0),
+            (0, 0)
+        );
         // 150% DPI：展开态物理高度 600px，纵向下移上限随之收紧到 464。
-        assert_eq!(clamp_offsets(&monitor, 1080, 600, TOP_GAP_PHYSICAL, 0, 9999), (0, 464));
+        assert_eq!(
+            clamp_offsets(&monitor, 1080, 600, TOP_GAP_PHYSICAL, 0, 9999),
+            (0, 464)
+        );
     }
 
     #[test]
@@ -967,7 +1242,10 @@ mod tests {
         let monitor = info("MAIN", 0, 0, 1920, 1080, true);
         // 贴顶模式 base_y=0：向上偏移下限为 0（不能越过屏顶），负 offset_y 被拉回 0；
         // 横向极负 offset_x 仍拉回左极限 -599。
-        assert_eq!(clamp_offsets(&monitor, 720, 400, 0, -9999, -9999), (-599, 0));
+        assert_eq!(
+            clamp_offsets(&monitor, 720, 400, 0, -9999, -9999),
+            (-599, 0)
+        );
         // 默认 0/0 仍贴顶。
         assert_eq!(clamp_offsets(&monitor, 720, 400, 0, 0, 0), (0, 0));
         // 向下偏移上限随 base_y=0 放宽到 屏高-窗口高 = 680。

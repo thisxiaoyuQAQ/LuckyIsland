@@ -173,7 +173,7 @@ vi.mock("@/lib/window-policy", async (importOriginal) => {
 });
 
 import App from "@/App";
-import { KEYS } from "@/lib/settings";
+import { KEYS, modeKey } from "@/lib/settings";
 
 function emit(name: string, payload: unknown) {
   const subscription = eventSubscriptions.find((entry) => entry.name === name);
@@ -243,10 +243,18 @@ describe("App event subscriptions", () => {
     await dispatch(() => {
       settingsSubscriptions[0].callback(KEYS.theme, "dark");
       settingsSubscriptions[0].callback(KEYS.blur, "false");
-      settingsSubscriptions[0].callback(KEYS.windowOpacity, "0.5");
+      // 13a.2：透明度按界面模式独立，裸键 window:opacity 不再驱动任何模式。
+      settingsSubscriptions[0].callback(KEYS.windowOpacity, "0.3");
+      settingsSubscriptions[0].callback(modeKey(KEYS.windowOpacity, "island"), "0.5");
     });
     expect(document.documentElement.dataset.theme).toBe("dark");
     expect(islandContainer().className).not.toContain("backdrop-blur-xl");
+    expect(islandContainer().dataset.backgroundColor).toContain("50%");
+
+    // 其它模式的透明度不能影响当前（island）模式——「三模式共享」回归护栏。
+    await dispatch(() => {
+      settingsSubscriptions[0].callback(modeKey(KEYS.windowOpacity, "corner"), "0.9");
+    });
     expect(islandContainer().dataset.backgroundColor).toContain("50%");
 
     await dispatch(() => emit("window://state-changed", "hidden" satisfies IslandState));

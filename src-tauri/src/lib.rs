@@ -9,6 +9,7 @@ mod notify;
 mod settings;
 mod settings_window;
 mod storage;
+mod taskbar;
 mod terminal;
 mod voice;
 mod window_policy;
@@ -188,6 +189,7 @@ pub fn run() {
             window_policy::window_policy_get,
             window_policy::window_click_through_set,
             window_policy::window_hover_stage_set,
+            window_policy::window_strip_hover_release,
             window_policy::window_hover_expand_set,
             window_policy::window_floating_ball_set,
             window_policy::window_hide_in_fullscreen_set,
@@ -404,12 +406,23 @@ pub fn run() {
                 notify::server::start(notify_app).await;
             });
 
+            // 13a.2：外观键（透明度/偏移）改为按界面模式独立存储，旧全局值一次性迁移给
+            // island。必须在恢复位置之前跑——否则本次启动会用默认值把窗口放到别处。
+            monitor::migrate_appearance_keys(app.state::<storage::Db>().inner());
+
             // 恢复所选显示器位置，再按设置面板的启动默认态显示。
             // 已保存的具体显示器缺失时只临时回退主屏，不覆盖用户选择。
             if let Err(error) =
                 restore_island_monitor(app.handle(), app.state::<storage::Db>().inner())
             {
                 eprintln!("[monitor] 启动恢复显示器失败：{error}");
+            }
+            // 13a.2：ui_mode 必须在首次 reapply 之前载入。corner 模式的静息态是「岛隐藏 +
+            // 嵌入条显示」，先 reapply 会让岛在左下角闪一下再被隐藏。
+            if let Err(error) =
+                window_policy::restore_ui_mode(app.handle(), app.state::<storage::Db>().inner())
+            {
+                eprintln!("[window-policy] restore ui-mode failed: {error}");
             }
             if let Err(error) = window_policy::reapply(app.handle()) {
                 eprintln!("[window-policy] 启动应用窗口状态失败：{error}");
@@ -431,12 +444,6 @@ pub fn run() {
                 app.state::<storage::Db>().inner(),
             ) {
                 eprintln!("[window-policy] restore floating-ball failed: {error}");
-            }
-            if let Err(error) = window_policy::restore_ui_mode(
-                app.handle(),
-                app.state::<storage::Db>().inner(),
-            ) {
-                eprintln!("[window-policy] restore ui-mode failed: {error}");
             }
             if let Err(error) = window_policy::restore_hide_in_fullscreen(
                 app.handle(),

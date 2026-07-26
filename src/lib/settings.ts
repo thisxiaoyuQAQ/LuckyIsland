@@ -18,11 +18,12 @@ export const KEYS = {
   terminalFontSize: "terminal:font_size",
   terminalShortcuts: "terminal:shortcuts",
   windowMonitor: "window:monitor",
-  /** 07a 窗口外观：岛容器 CSS 背景透明度（0.10~1.00）。 */
+  /** 07a 窗口外观：岛容器 CSS 背景透明度（0.10~1.00）。13a.2 起按模式独立，实际键为
+   *  `modeKey(windowOpacity, mode)`；此裸键只作为旧版本迁移来源保留。 */
   windowOpacity: "window:opacity",
-  /** 07a 窗口外观：相对默认顶部居中位置的横向物理像素偏移。 */
+  /** 07a 窗口外观：横向物理像素偏移。13a.2 起按模式独立（见 `modeKey`）。 */
   windowOffsetX: "window:offset_x",
-  /** 07a 窗口外观：纵向物理像素偏移（负=上移，正=下移）。 */
+  /** 07a 窗口外观：纵向物理像素偏移（负=上移，正=下移）。13a.2 起按模式独立。 */
   windowOffsetY: "window:offset_y",
   /** 整个灵动岛忽略鼠标事件，默认关闭。 */
   windowClickThrough: "window:click_through",
@@ -203,6 +204,23 @@ export type UiMode = "island" | "classisland" | "corner";
 /** 严格解析 window:ui_mode：classisland/corner 为对应模式，缺键与一切非法值回退 "island"。 */
 export function parseUiMode(v: string | null | undefined): UiMode {
   return v === "classisland" || v === "corner" ? v : "island";
+}
+
+export const UI_MODES: UiMode[] = ["island", "classisland", "corner"];
+
+/** 三种界面模式的中文名（设置面板与提示文案共用）。 */
+export const UI_MODE_LABELS: Record<UiMode, string> = {
+  island: "悬浮灵动岛",
+  classisland: "贴顶",
+  corner: "左下角嵌入任务栏",
+};
+
+/**
+ * 13a.2：外观键按界面模式独立存储 —— `window:opacity` → `window:opacity:corner`。
+ * 三模式的透明度与偏移互不影响；Rust 侧 `monitor::mode_key` 是同一套约定。
+ */
+export function modeKey(base: string, mode: UiMode): string {
+  return `${base}:${mode}`;
 }
 
 /** 通知来源过滤：返回每个来源是否允许弹卡片 */
