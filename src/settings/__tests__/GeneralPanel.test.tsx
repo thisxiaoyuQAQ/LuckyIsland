@@ -174,6 +174,16 @@ describe("GeneralPanel event subscriptions", () => {
     document.body.replaceChildren();
   });
 
+  it("在本页（而不是外观页）提供配置导入导出入口", async () => {
+    const tree = await mountPanel();
+
+    expect(document.body.textContent).toContain("配置导入导出");
+    const labels = Array.from(document.querySelectorAll("button")).map((b) => b.textContent);
+    expect(labels).toContain("导出配置…");
+    expect(labels).toContain("导入配置…");
+    await tree.unmount();
+  });
+
   it("registers both event listeners once across event-driven rerenders", async () => {
     const tree = await mountPanel();
 

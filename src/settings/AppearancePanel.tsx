@@ -1,12 +1,9 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { Button } from "@/components/ui/button";
 import { useTauriEvent } from "@/lib/useTauriEvent";
 import {
   KEYS,
   UI_MODE_LABELS,
-  configExport,
-  configImport,
   modeKey,
   parseBool,
   parseOffset,
@@ -21,9 +18,6 @@ import {
   type VisualStyle,
 } from "@/lib/settings";
 
-const btnGhost =
-  "rounded-md border border-border/70 bg-card/50 px-3 py-1.5 text-sm transition-colors hover:bg-accent";
-
 function Row({ label, desc, children }: { label: string; desc?: string; children: ReactNode }) {
   return (
     <div className="flex items-center justify-between gap-4 py-2">
@@ -36,7 +30,8 @@ function Row({ label, desc, children }: { label: string; desc?: string; children
   );
 }
 
-/** 窗口外观 + 配置导入导出（07a） */
+/** 窗口外观（07a）：界面模式 / 视觉样式 / 按模式独立的透明度与偏移。
+ *  配置导入导出在「总体开关」页（GeneralPanel）。 */
 export function AppearancePanel() {
   // 透明度：岛容器 CSS 背景 alpha。0.1~1.0，默认 0.7（保持原 bg-card/70 视觉）。
   const [opacity, setOpacity] = useState(0.7);
@@ -212,93 +207,6 @@ export function AppearancePanel() {
     }
   };
 
-  // 导出：save 对话框选路径 → config_export（时间戳/ISO 前端拼）。
-  const doExport = async () => {
-    if (busy) return;
-    setBusy(true);
-    setMsg(null);
-    try {
-      const now = new Date();
-      const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`;
-      const path = await saveDialog({
-        defaultPath: `luckyisland-config-${stamp}.json`,
-        filters: [{ name: "LuckyIsland 配置", extensions: ["json"] }],
-      });
-      if (!path) {
-        setBusy(false);
-        return;
-      }
-      await configExport(path, now.toISOString());
-      setMsg({ kind: "ok", text: `已导出到：${path}` });
-    } catch (e) {
-      setMsg({ kind: "err", text: `导出失败：${String(e)}` });
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  // 导入：open 对话框选路径 → 前端弹确认 → config_import。
-  const doImport = async () => {
-    if (busy) return;
-    cancelPendingAppearance();
-    setBusy(true);
-    setMsg(null);
-    try {
-      const path = await openDialog({
-        multiple: false,
-        filters: [{ name: "LuckyIsland 配置", extensions: ["json"] }],
-      });
-      if (!path || typeof path !== "string") {
-        setBusy(false);
-        return;
-      }
-      const ok = window.confirm(
-        "导入将覆盖可迁移的用户设置、自选股和天气城市（不可撤销）；本机 API 密钥、通知 token 和缓存不会被导入或删除。确认继续？",
-      );
-      if (!ok) {
-        setBusy(false);
-        return;
-      }
-      const summary = await configImport(path);
-      const [blurRaw, vsRaw, umRaw] = await Promise.all([
-        settingGet(KEYS.blur),
-        settingGet(KEYS.windowVisualStyle),
-        settingGet(KEYS.windowUiMode),
-      ]);
-      const importedMode = parseUiMode(umRaw);
-      const [opRaw, oxRaw, oyRaw] = await Promise.all([
-        settingGet(modeKey(KEYS.windowOpacity, importedMode)),
-        settingGet(modeKey(KEYS.windowOffsetX, importedMode)),
-        settingGet(modeKey(KEYS.windowOffsetY, importedMode)),
-      ]);
-      const op = parseOpacity(opRaw);
-      const ox = parseOffset(oxRaw);
-      const oy = parseOffset(oyRaw);
-      setOpacity(op);
-      setBlur(parseBool(blurRaw, true));
-      setVisualStyle(parseVisualStyle(vsRaw));
-      setUiMode(importedMode);
-      // 含偏移项（或原配置有偏移但导入文件删掉）：导入只改数据不上屏，
-      // 需额外触发一次让窗口移动。后端会返回 clamp 后实际值。
-      if (summary.needsOffsetApply) {
-        const [cx, cy] = await windowOffsetApply(ox, oy);
-        setOffsetX(cx);
-        setOffsetY(cy);
-      } else {
-        setOffsetX(ox);
-        setOffsetY(oy);
-      }
-      setMsg({
-        kind: "ok",
-        text: `已导入：设置 ${summary.settings} 项 / 自选股 ${summary.watchlist} / 天气城市 ${summary.cities}。界面设置已即时应用；语音监听、CLI 路径等后端运行配置建议重启后完全生效。`,
-      });
-    } catch (e) {
-      setMsg({ kind: "err", text: `导入失败：${String(e)}` });
-    } finally {
-      setBusy(false);
-    }
-  };
-
   if (loading) {
     return <p className="text-sm text-muted-foreground">加载中…</p>;
   }
@@ -395,22 +303,6 @@ export function AppearancePanel() {
         </Button>
       </div>
 
-      <div className="my-2 h-px bg-border/60" />
-
-      <div className="flex flex-col gap-1">
-        <h2 className="text-base font-semibold">配置导入导出</h2>
-        <p className="text-sm text-muted-foreground">
-          导出当前设置、自选股、天气城市为一个 JSON 文件，可在另一台机导入恢复。
-        </p>
-      </div>
-      <div className="flex gap-2">
-        <button type="button" className={btnGhost} onClick={() => void doExport()} disabled={busy}>
-          导出配置…
-        </button>
-        <button type="button" className={btnGhost} onClick={() => void doImport()} disabled={busy}>
-          导入配置…
-        </button>
-      </div>
       {msg && (
         <p className={msg.kind === "ok" ? "text-sm text-emerald-600 dark:text-emerald-400" : "text-sm text-destructive"}>
           {msg.text}
@@ -418,8 +310,4 @@ export function AppearancePanel() {
       )}
     </section>
   );
-}
-
-function pad(n: number): string {
-  return n < 10 ? `0${n}` : `${n}`;
 }

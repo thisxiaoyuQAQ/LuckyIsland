@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { useTauriEvent } from "@/lib/useTauriEvent";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -11,9 +12,15 @@ import {
 } from "@/lib/window-policy";
 import {
   KEYS,
+  configExport,
+  configImport,
+  modeKey,
   parseBool,
+  parseOffset,
+  parseUiMode,
   settingGet,
   settingSetEmit,
+  windowOffsetApply,
   autostartGet,
   autostartSet,
   monitorGetSelection,
@@ -28,6 +35,9 @@ type IslandState = "compact" | "expanded" | "hidden";
 
 const selectCls =
   "rounded-md border border-input bg-background px-2 py-1 text-sm outline-none focus:border-ring focus:ring-[3px] focus:ring-ring/50";
+
+const btnGhost =
+  "rounded-md border border-border/70 bg-card/50 px-3 py-1.5 text-sm transition-colors hover:bg-accent";
 
 function Row({ label, desc, children }: { label: string; desc?: string; children: ReactNode }) {
   return (
@@ -67,61 +77,72 @@ export function GeneralPanel() {
   const [monitorSwitching, setMonitorSwitching] = useState(false);
   const [monitorError, setMonitorError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const monitorLifecycleGeneration = useRef(0);
+  // 配置导入导出（07a）：与上面的开关共用本页，但自己一套 busy/消息状态。
+  const [configBusy, setConfigBusy] = useState(false);
+  const [configMsg, setConfigMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const panelGeneration = useRef(0);
 
   useEffect(() => {
     return () => {
-      monitorLifecycleGeneration.current += 1;
+      panelGeneration.current += 1;
     };
   }, []);
 
+  /** 读取并应用本页全部设置；`isActive` 为 false 时丢弃晚到的写入。挂载与导入后各调一次。 */
+  const loadGeneralSettings = async (isActive: () => boolean) => {
+    const monitorLoad = Promise.all([monitorList(), monitorGetSelection()])
+      .then(([list, state]) => {
+        if (!isActive()) return;
+        setMonitors(list);
+        setMonitorState(state);
+      })
+      .catch((error) => {
+        if (isActive()) {
+          setMonitorError(error instanceof Error ? error.message : String(error));
+        }
+      });
+
+    const [auto, ds, t, th, b, updateAutoCheck, policy] = await Promise.all([
+      autostartGet().catch(() => false),
+      settingGet(KEYS.defaultState),
+      settingGet(KEYS.toast),
+      settingGet(KEYS.theme),
+      settingGet(KEYS.blur),
+      settingGet(KEYS.updateAutoCheck),
+      windowPolicyGet().catch(() => null),
+    ]);
+    if (!isActive()) return;
+    setAutostart(auto);
+    if (ds === "compact" || ds === "expanded" || ds === "hidden") setDefaultState(ds);
+    setToast(parseBool(t, true));
+    if (th === "light" || th === "dark" || th === "auto") setTheme(th);
+    setBlur(parseBool(b, true));
+    setAutoCheckUpdates(parseBool(updateAutoCheck, true));
+    setClickThrough(policy?.clickThrough ?? false);
+    setHoverExpand(policy?.hoverExpand ?? false);
+    setFloatingBall(policy?.floatingBall ?? false);
+    setHideInFullscreen(policy?.hideInFullscreen ?? false);
+    setFullscreenSupported(policy?.fullscreenSupported ?? false);
+    await monitorLoad;
+  };
+
   useEffect(() => {
     let disposed = false;
-    void (async () => {
-      const monitorLoad = Promise.all([monitorList(), monitorGetSelection()])
-        .then(([list, state]) => {
-          if (disposed) return;
-          setMonitors(list);
-          setMonitorState(state);
-        })
-        .catch((error) => {
-          if (!disposed) {
-            setMonitorError(error instanceof Error ? error.message : String(error));
-          }
-        });
-
-      const [auto, ds, t, th, b, updateAutoCheck, policy] = await Promise.all([
-        autostartGet().catch(() => false),
-        settingGet(KEYS.defaultState),
-        settingGet(KEYS.toast),
-        settingGet(KEYS.theme),
-        settingGet(KEYS.blur),
-        settingGet(KEYS.updateAutoCheck),
-        windowPolicyGet().catch(() => null),
-      ]);
-      if (disposed) return;
-      setAutostart(auto);
-      if (ds === "compact" || ds === "expanded" || ds === "hidden") setDefaultState(ds);
-      setToast(parseBool(t, true));
-      if (th === "light" || th === "dark" || th === "auto") setTheme(th);
-      setBlur(parseBool(b, true));
-      setAutoCheckUpdates(parseBool(updateAutoCheck, true));
-      setClickThrough(policy?.clickThrough ?? false);
-      setHoverExpand(policy?.hoverExpand ?? false);
-      setFloatingBall(policy?.floatingBall ?? false);
-      setHideInFullscreen(policy?.hideInFullscreen ?? false);
-      setFullscreenSupported(policy?.fullscreenSupported ?? false);
-      await monitorLoad;
-      if (!disposed) setLoading(false);
-    })().catch((error) => {
-      if (!disposed) {
-        console.error("加载总体设置失败", error);
-        setLoading(false);
-      }
-    });
+    void loadGeneralSettings(() => !disposed)
+      .then(() => {
+        if (!disposed) setLoading(false);
+      })
+      .catch((error) => {
+        if (!disposed) {
+          console.error("加载总体设置失败", error);
+          setLoading(false);
+        }
+      });
     return () => {
       disposed = true;
     };
+    // loadGeneralSettings 只依赖稳定的 setter，无需重跑。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const toggleAutostart = async (v: boolean) => {
@@ -229,18 +250,89 @@ export function GeneralPanel() {
     }
   };
 
+  // 导出：save 对话框选路径 → config_export（时间戳/ISO 前端拼）。
+  const doExport = async () => {
+    if (configBusy) return;
+    setConfigBusy(true);
+    setConfigMsg(null);
+    try {
+      const now = new Date();
+      const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`;
+      const path = await saveDialog({
+        defaultPath: `luckyisland-config-${stamp}.json`,
+        filters: [{ name: "LuckyIsland 配置", extensions: ["json"] }],
+      });
+      if (!path) {
+        setConfigBusy(false);
+        return;
+      }
+      await configExport(path, now.toISOString());
+      setConfigMsg({ kind: "ok", text: `已导出到：${path}` });
+    } catch (e) {
+      setConfigMsg({ kind: "err", text: `导出失败：${String(e)}` });
+    } finally {
+      setConfigBusy(false);
+    }
+  };
+
+  // 导入：open 对话框选路径 → 前端弹确认 → config_import → 补一次偏移上屏 → 刷新本页。
+  const doImport = async () => {
+    if (configBusy) return;
+    setConfigBusy(true);
+    setConfigMsg(null);
+    try {
+      const path = await openDialog({
+        multiple: false,
+        filters: [{ name: "LuckyIsland 配置", extensions: ["json"] }],
+      });
+      if (!path || typeof path !== "string") {
+        setConfigBusy(false);
+        return;
+      }
+      const ok = window.confirm(
+        "导入将覆盖可迁移的用户设置、自选股和天气城市（不可撤销）；本机 API 密钥、通知 token 和缓存不会被导入或删除。确认继续？",
+      );
+      if (!ok) {
+        setConfigBusy(false);
+        return;
+      }
+      const summary = await configImport(path);
+      // 含偏移项（或原配置有偏移但导入文件删掉）：导入只改数据不移动窗口，
+      // 需额外触发一次让窗口真正上屏；偏移按导入后的界面模式各自独立取值。
+      if (summary.needsOffsetApply) {
+        const mode = parseUiMode(await settingGet(KEYS.windowUiMode));
+        const [oxRaw, oyRaw] = await Promise.all([
+          settingGet(modeKey(KEYS.windowOffsetX, mode)),
+          settingGet(modeKey(KEYS.windowOffsetY, mode)),
+        ]);
+        await windowOffsetApply(parseOffset(oxRaw), parseOffset(oyRaw));
+      }
+      // 本页开关同样被导入覆盖，重新读一遍；外观页在切回去时自行重载。
+      const generation = panelGeneration.current;
+      await loadGeneralSettings(() => generation === panelGeneration.current);
+      setConfigMsg({
+        kind: "ok",
+        text: `已导入：设置 ${summary.settings} 项 / 自选股 ${summary.watchlist} / 天气城市 ${summary.cities}。界面设置已即时应用；语音监听、CLI 路径等后端运行配置建议重启后完全生效。`,
+      });
+    } catch (e) {
+      setConfigMsg({ kind: "err", text: `导入失败：${String(e)}` });
+    } finally {
+      setConfigBusy(false);
+    }
+  };
+
   // 后端运行时显示器变化（副屏热插拔）emit monitor://changed，
   // 同步更新本页的回退提示与可用显示器列表。
   useTauriEvent<MonitorSelectionState>("monitor://changed", (event) => {
     setMonitorState(event.payload);
     setMonitorError(null);
-    const generation = monitorLifecycleGeneration.current;
+    const generation = panelGeneration.current;
     void monitorList().then(
       (list) => {
-        if (generation === monitorLifecycleGeneration.current) setMonitors(list);
+        if (generation === panelGeneration.current) setMonitors(list);
       },
       (error: unknown) => {
-        if (generation === monitorLifecycleGeneration.current) {
+        if (generation === panelGeneration.current) {
           setMonitorError(error instanceof Error ? error.message : String(error));
         }
       },
@@ -410,6 +502,48 @@ export function GeneralPanel() {
           <option value="dark">暗色</option>
         </select>
       </Row>
+
+      <div className="my-2 h-px bg-border/60" />
+
+      <div className="flex flex-col gap-1">
+        <h2 className="text-base font-semibold">配置导入导出</h2>
+        <p className="text-sm text-muted-foreground">
+          导出当前设置、自选股、天气城市为一个 JSON 文件，可在另一台机导入恢复。
+        </p>
+      </div>
+      <div className="flex gap-2">
+        <button
+          type="button"
+          className={btnGhost}
+          onClick={() => void doExport()}
+          disabled={configBusy}
+        >
+          导出配置…
+        </button>
+        <button
+          type="button"
+          className={btnGhost}
+          onClick={() => void doImport()}
+          disabled={configBusy}
+        >
+          导入配置…
+        </button>
+      </div>
+      {configMsg && (
+        <p
+          className={
+            configMsg.kind === "ok"
+              ? "text-sm text-emerald-600 dark:text-emerald-400"
+              : "text-sm text-destructive"
+          }
+        >
+          {configMsg.text}
+        </p>
+      )}
     </section>
   );
+}
+
+function pad(n: number): string {
+  return n < 10 ? `0${n}` : `${n}`;
 }
