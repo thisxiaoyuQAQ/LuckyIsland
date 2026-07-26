@@ -328,18 +328,19 @@ fn clamp_offsets(
     (cx, cy)
 }
 
-/// 显示器工作区矩形（物理像素，排除任务栏）：left/top/right/bottom。
+/// 显示器矩形（物理像素）：left/top/right/bottom。corner 贴角用**整屏**（含任务栏）底部，
+/// 让胶囊落在任务栏内（省屏幕内容区），而非任务栏之上。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct WorkRect {
+struct ScreenRect {
     left: i32,
     top: i32,
     right: i32,
     bottom: i32,
 }
 
-/// 显示器完整矩形（含任务栏），作为工作区读取失败时的兜底。
-fn full_rect(monitor: &MonitorInfo) -> WorkRect {
-    WorkRect {
+/// 显示器完整矩形（含任务栏）。
+fn full_rect(monitor: &MonitorInfo) -> ScreenRect {
+    ScreenRect {
         left: monitor.position.x,
         top: monitor.position.y,
         right: monitor.position.x + monitor.size.width as i32,
@@ -347,79 +348,39 @@ fn full_rect(monitor: &MonitorInfo) -> WorkRect {
     }
 }
 
-/// 取目标显示器的工作区（排除任务栏）。Windows 用 `MonitorFromPoint`(屏中心)+`GetMonitorInfoW` 读 rcWork；
-/// 失败或非 Windows 回退整屏矩形。corner 贴角必须用工作区，否则胶囊会压在任务栏下面。
-#[cfg(windows)]
-fn work_area_for_monitor(monitor: &MonitorInfo) -> WorkRect {
-    use windows::Win32::Foundation::POINT;
-    use windows::Win32::Graphics::Gdi::{
-        GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTONEAREST,
-    };
-    let center = POINT {
-        x: monitor.position.x + monitor.size.width as i32 / 2,
-        y: monitor.position.y + monitor.size.height as i32 / 2,
-    };
-    // SAFETY: center 来自已枚举的显示器坐标；MONITORINFO 在调用期间存活。
-    unsafe {
-        let handle = MonitorFromPoint(center, MONITOR_DEFAULTTONEAREST);
-        if handle.0.is_null() {
-            return full_rect(monitor);
-        }
-        let mut info = MONITORINFO {
-            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
-            ..Default::default()
-        };
-        if GetMonitorInfoW(handle, &mut info).as_bool() {
-            let r = info.rcWork;
-            WorkRect {
-                left: r.left,
-                top: r.top,
-                right: r.right,
-                bottom: r.bottom,
-            }
-        } else {
-            full_rect(monitor)
-        }
-    }
-}
-
-#[cfg(not(windows))]
-fn work_area_for_monitor(monitor: &MonitorInfo) -> WorkRect {
-    full_rect(monitor)
-}
-
-/// corner 左下角基准位置：贴工作区左下角，距角 `margin`，再叠加偏移。x 左对齐、y 使底边距角落 margin。
+/// corner 左下角基准位置：贴整屏左下角，距角 `margin`，再叠加偏移。x 左对齐、y 使底边距屏底 margin
+/// （胶囊底边落在任务栏带内）。
 fn corner_position(
-    work: WorkRect,
+    screen: ScreenRect,
     window_height: u32,
     margin: i32,
     offset_x: i32,
     offset_y: i32,
 ) -> MonitorPoint {
     MonitorPoint {
-        x: work.left + margin + offset_x,
-        y: work.bottom - window_height as i32 - margin + offset_y,
+        x: screen.left + margin + offset_x,
+        y: screen.bottom - window_height as i32 - margin + offset_y,
     }
 }
 
-/// corner 偏移 clamp：保证窗口留在工作区内（左下角贴角基准）。返回 clamp 后 (offset_x, offset_y)。
+/// corner 偏移 clamp：保证窗口左右/上下留在整屏内（左下角贴角基准）。返回 clamp 后 (offset_x, offset_y)。
 fn clamp_corner(
-    work: WorkRect,
+    screen: ScreenRect,
     window_width: u32,
     window_height: u32,
     margin: i32,
     offset_x: i32,
     offset_y: i32,
 ) -> (i32, i32) {
-    let base_x = work.left + margin;
-    let base_y = work.bottom - window_height as i32 - margin;
-    // 横向：左边 ≥ 工作区左，右边 ≤ 工作区右。
-    let min_x = work.left - base_x;
-    let max_x = work.right - window_width as i32 - base_x;
+    let base_x = screen.left + margin;
+    let base_y = screen.bottom - window_height as i32 - margin;
+    // 横向：左边 ≥ 屏左，右边 ≤ 屏右。
+    let min_x = screen.left - base_x;
+    let max_x = screen.right - window_width as i32 - base_x;
     let cx = offset_x.max(min_x).min(max_x.max(min_x));
-    // 纵向：顶部 ≥ 工作区顶，底部 ≤ 工作区底。
-    let min_y = work.top - base_y;
-    let max_y = work.bottom - window_height as i32 - base_y;
+    // 纵向：顶部 ≥ 屏顶，底部 ≤ 屏底。
+    let min_y = screen.top - base_y;
+    let max_y = screen.bottom - window_height as i32 - base_y;
     let cy = offset_y.max(min_y).min(max_y.max(min_y));
     (cx, cy)
 }
@@ -447,10 +408,11 @@ fn place_island(
             (cx, cy, pos)
         }
         Placement::Corner { margin } => {
-            let work = work_area_for_monitor(monitor);
+            // 贴角锚定**整屏**底部（含任务栏）：胶囊底边落在任务栏带内（省内容区），非任务栏之上。
+            let screen = full_rect(monitor);
             let (cx, cy) =
-                clamp_corner(work, window_width, current_height, margin, offset_x, offset_y);
-            let pos = corner_position(work, current_height, margin, cx, cy);
+                clamp_corner(screen, window_width, current_height, margin, offset_x, offset_y);
+            let pos = corner_position(screen, current_height, margin, cx, cy);
             (cx, cy, pos)
         }
     }
@@ -935,26 +897,26 @@ mod tests {
     }
 
     #[test]
-    fn corner_position_anchors_bottom_left_of_work_area() {
-        // 工作区 (0,0)-(1920,1040)（任务栏占底部 40px），窗口高 80，margin 12。
-        let work = WorkRect {
+    fn corner_position_anchors_bottom_left_of_screen() {
+        // 整屏 (0,0)-(1920,1080)（含任务栏），窗口高 80，margin 12。
+        let screen = ScreenRect {
             left: 0,
             top: 0,
             right: 1920,
-            bottom: 1040,
+            bottom: 1080,
         };
-        // 左对齐 x=0+12=12；底边距角 12 → y=1040-80-12=948。
+        // 左对齐 x=0+12=12；底边距屏底 12 → y=1080-80-12=988（落在任务栏带内）。
         assert_eq!(
-            corner_position(work, 80, 12, 0, 0),
-            MonitorPoint { x: 12, y: 948 }
+            corner_position(screen, 80, 12, 0, 0),
+            MonitorPoint { x: 12, y: 988 }
         );
-        // 偏移叠加 (30,-20) → (42, 928)。
+        // 偏移叠加 (30,-20) → (42, 968)。
         assert_eq!(
-            corner_position(work, 80, 12, 30, -20),
-            MonitorPoint { x: 42, y: 928 }
+            corner_position(screen, 80, 12, 30, -20),
+            MonitorPoint { x: 42, y: 968 }
         );
-        // 负坐标副屏工作区，窗口高 400。
-        let left = WorkRect {
+        // 负坐标副屏整屏，窗口高 400。
+        let left = ScreenRect {
             left: -2560,
             top: -200,
             right: 0,
@@ -967,19 +929,19 @@ mod tests {
     }
 
     #[test]
-    fn clamp_corner_keeps_window_in_work_area() {
-        let work = WorkRect {
+    fn clamp_corner_keeps_window_in_screen() {
+        let screen = ScreenRect {
             left: 0,
             top: 0,
             right: 1920,
-            bottom: 1040,
+            bottom: 1080,
         };
-        // 基准 (12, 948)，窗口 240×80：min_x=-12/max_x=1668；min_y=-948/max_y=12。
-        assert_eq!(clamp_corner(work, 240, 80, 12, 0, 0), (0, 0));
-        assert_eq!(clamp_corner(work, 240, 80, 12, -9999, 9999), (-12, 12));
-        assert_eq!(clamp_corner(work, 240, 80, 12, 9999, -9999), (1668, -948));
+        // 基准 (12, 988)，窗口 240×80：min_x=-12/max_x=1668；min_y=-988/max_y=12。
+        assert_eq!(clamp_corner(screen, 240, 80, 12, 0, 0), (0, 0));
+        assert_eq!(clamp_corner(screen, 240, 80, 12, -9999, 9999), (-12, 12));
+        assert_eq!(clamp_corner(screen, 240, 80, 12, 9999, -9999), (1668, -988));
         // 区间内原值保留。
-        assert_eq!(clamp_corner(work, 240, 80, 12, 30, -20), (30, -20));
+        assert_eq!(clamp_corner(screen, 240, 80, 12, 30, -20), (30, -20));
     }
 
     #[test]
