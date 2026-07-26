@@ -16,9 +16,11 @@
 
 ## 唯一当前动作
 
-**模块 13 实施中**：契约已冻结（`vault/13-贴顶新UI与设置分类.md`）。按顺序：A 设置分类（`SettingsApp.tsx` 侧栏分组）→ B 贴顶停靠+新 UI 外壳（`window:ui_mode`、`monitor.rs` 模式化 gap、`window_ui_mode_set`、`App.tsx` 换壳、`ui-mode.ts`、`AppearancePanel` 开关）→ C 紧凑组件条（`IslandTopBar` 复用各页 compact 渲染并排显示）。每部分自审 + 自动化测试后逐次授权提交，GUI 真机由用户验收。
+**模块 13 已真机验收通过（2026-07-26），本地 4 commit（未 push）。当前：模块 13a 左下角贴角模式已实现，待真机验收。**
 
-**A/B/C 自动化证据（2026-07-26）**：前端 `pnpm typecheck` + `pnpm test:frontend`（430 passed）+ `pnpm build` 全绿；Rust `cargo test --lib` 145 passed / 0 failed（独立 `CARGO_TARGET_DIR=.omc/cargo-check-target` + `SHERPA_ONNX_LIB_DIR` 指向 sherpa 预编译 shared lib + `CARGO_HTTP_CHECK_REVOKE=false`，未抢 tauri dev 锁）。新增测试：monitor 3 项（gap0 贴顶 / `top_gap_for_mode` / clamp gap0）、ui-mode store、SettingsApp 分组、DockedStrip 组合。**待用户 Windows 真机验收**：切老/新 UI 即时生效、贴顶只下圆角、组件条显示、展开仍现有页面、重启保持、导入导出携带、设置分组清晰。
+- 13a = `window:ui_mode` 第三值 `corner`：`monitor.rs` `Placement`(工作区左下角定位) + `window_policy.rs` corner 静息胶囊 / 底边锚定展开 + `window_ui_mode_set` 接受 corner + 前端 corner 外壳/三选一开关。冻结契约 `vault/13a-左下角贴角模式.md`。
+- 自动化全绿：前端 typecheck + 430 tests + build；Rust `cargo test --lib` 150/0 + `clippy --lib -D warnings` 干净（独立 `CARGO_TARGET_DIR=.omc/cargo-check-target` + `SHERPA_ONNX_LIB_DIR` + `CARGO_HTTP_CHECK_REVOKE=false`，未抢 tauri dev 锁）。
+- 待用户真机验收：贴左下角在任务栏之上、胶囊静息、悬停/点击向上展开、三模式互切即时生效、重启保持、导入导出携带、多屏/DPI；展开动画衔接若有 jank 需迭代。逐次授权提交（docs(13a) + feat(13a) Rust + feat(13a) 前端）。
 
 ## 已完成状态
 
