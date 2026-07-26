@@ -197,12 +197,12 @@ export function parseVisualStyle(v: string | null | undefined): VisualStyle {
   return v === "legacy" ? "legacy" : "new";
 }
 
-/** 界面模式（模块 13）：island（悬浮灵动岛，默认）| classisland（贴顶新 UI）。 */
-export type UiMode = "island" | "classisland";
+/** 界面模式（模块 13/13a）：island（悬浮，默认）| classisland（贴顶）| corner（左下角贴角）。 */
+export type UiMode = "island" | "classisland" | "corner";
 
-/** 严格解析 window:ui_mode：仅 "classisland" 为新 UI，缺键与一切非法值回退 "island"。 */
+/** 严格解析 window:ui_mode：classisland/corner 为对应模式，缺键与一切非法值回退 "island"。 */
 export function parseUiMode(v: string | null | undefined): UiMode {
-  return v === "classisland" ? "classisland" : "island";
+  return v === "classisland" || v === "corner" ? v : "island";
 }
 
 /** 通知来源过滤：返回每个来源是否允许弹卡片 */

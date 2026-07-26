@@ -8,12 +8,14 @@ describe("parseUiMode", () => {
     expect(parseUiMode(undefined)).toBe("island");
     expect(parseUiMode("")).toBe("island");
     expect(parseUiMode("CLASSISLAND")).toBe("island");
+    expect(parseUiMode("CORNER")).toBe("island");
     expect(parseUiMode("docked")).toBe("island");
     expect(parseUiMode("classislandd")).toBe("island");
   });
 
-  it("accepts only the exact classisland value", () => {
+  it("accepts the exact classisland and corner values", () => {
     expect(parseUiMode("classisland")).toBe("classisland");
+    expect(parseUiMode("corner")).toBe("corner");
     expect(parseUiMode("island")).toBe("island");
   });
 });
@@ -30,6 +32,8 @@ describe("ui mode store", () => {
   it("applies and reverts modes through the parser", () => {
     applyUiModeSetting("classisland");
     expect(getUiMode()).toBe("classisland");
+    applyUiModeSetting("corner");
+    expect(getUiMode()).toBe("corner");
     applyUiModeSetting("garbage");
     expect(getUiMode()).toBe("island");
     applyUiModeSetting("classisland");

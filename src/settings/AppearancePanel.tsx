@@ -292,15 +292,16 @@ export function AppearancePanel() {
 
       <Row
         label="界面模式"
-        desc="老 UI 为悬浮灵动岛；新 UI 贴屏幕顶部、只保留下方圆角（ClassIsland 风），紧凑态并排显示时间/日期/天气/待办"
+        desc="悬浮：顶部居中灵动岛；贴顶：贴屏幕顶部、只留下方圆角、并排时间/日期/天气/待办；左下角贴角：贴屏幕左下角、最小胶囊、悬停/点击展开，省屏幕空间"
       >
         <select
           className="rounded-md border border-input bg-background px-2 py-1 text-sm outline-none focus:border-ring focus:ring-[3px] focus:ring-ring/50"
           value={uiMode}
           onChange={(e) => void changeUiMode(e.target.value as UiMode)}
         >
-          <option value="island">老 UI（悬浮灵动岛）</option>
-          <option value="classisland">新 UI（贴顶）</option>
+          <option value="island">悬浮灵动岛（默认）</option>
+          <option value="classisland">贴顶（ClassIsland 风）</option>
+          <option value="corner">左下角贴角（省地方）</option>
         </select>
       </Row>
 

@@ -46,9 +46,10 @@ import { useIslandNavigation } from "@/pages/useIslandNavigation";
 
 function App() {
   const { resolvedTheme, setThemeMode } = useTheme();
-  // 界面模式（模块 13）：classisland 贴顶（去顶部间隙、只下圆角），island 保持悬浮。
+  // 界面模式（模块 13/13a）：classisland 贴顶（去顶部间隙、只下圆角）；corner 左下角贴角；island 悬浮。
   const uiMode = useUiMode();
   const docked = uiMode === "classisland";
+  const corner = uiMode === "corner";
   const [policy, setPolicy] = useState<WindowPolicySnapshot | null>(null);
   const [visualPhase, setVisualPhase] = useState<IslandVisualPhase>("compact");
   const reducedMotion = useReducedMotion();
@@ -277,9 +278,12 @@ function App() {
   return (
     <div
       className={cn(
-        "flex h-screen w-screen items-start justify-center",
-        // classisland：容器贴屏顶（无顶部间隙）；island：保留 12px 悬浮间隙。
-        docked ? "pt-0" : "pt-3",
+        "flex h-screen w-screen",
+        // corner：左下角贴角（底部左对齐，边距由 Rust 定位控制）；
+        // 顶部居中模式：classisland 贴顶(pt-0) / island 悬浮(pt-3)。
+        corner
+          ? "items-end justify-start"
+          : cn("items-start justify-center", docked ? "pt-0" : "pt-3"),
       )}
     >
       <motion.div
