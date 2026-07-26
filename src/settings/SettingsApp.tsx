@@ -23,19 +23,35 @@ import { checkForUpdate, getUpdateSnapshot } from "@/lib/update-store";
 
 type Tab = SettingsTab;
 
-const TABS: { id: Tab; label: string }[] = [
-  { id: "general", label: "总体" },
-  { id: "appearance", label: "外观" },
-  { id: "pages", label: "页面管理" },
-  { id: "notify", label: "通知" },
-  { id: "terminal", label: "终端" },
-  { id: "weather", label: "天气" },
-  { id: "stock", label: "股票" },
-  { id: "ai", label: "AI" },
-  { id: "voice", label: "语音" },
-  { id: "hotkeys", label: "快捷键" },
-  { id: "time_widgets", label: "时间组件" },
-  { id: "time_appearance", label: "时间外观" },
+/** 侧栏分组（模块 13）：只改视觉分区，tab id 与后端 allowlist 不变。关于单独置底。 */
+const GROUPS: { title: string; tabs: { id: Tab; label: string }[] }[] = [
+  {
+    title: "常规",
+    tabs: [
+      { id: "general", label: "总体" },
+      { id: "appearance", label: "外观" },
+      { id: "hotkeys", label: "快捷键" },
+      { id: "pages", label: "页面管理" },
+    ],
+  },
+  {
+    title: "数据页",
+    tabs: [
+      { id: "time_widgets", label: "时间组件" },
+      { id: "time_appearance", label: "时间外观" },
+      { id: "weather", label: "天气" },
+      { id: "stock", label: "股票" },
+      { id: "terminal", label: "终端" },
+      { id: "notify", label: "通知" },
+    ],
+  },
+  {
+    title: "智能",
+    tabs: [
+      { id: "ai", label: "AI" },
+      { id: "voice", label: "语音" },
+    ],
+  },
 ];
 
 function SettingsApp() {
@@ -50,9 +66,17 @@ function SettingsApp() {
     }
   });
 
+  const tabClass = (active: boolean) =>
+    cn(
+      "rounded-md px-3 py-1.5 text-left text-sm transition-colors",
+      active
+        ? "bg-primary text-primary-foreground"
+        : "text-muted-foreground hover:bg-accent hover:text-foreground",
+    );
+
   return (
     <div className="flex h-screen w-screen bg-background text-foreground">
-      {/* 侧栏 */}
+      {/* 侧栏：模块 13 分组（常规/数据页/智能 + 置底关于） */}
       <nav className="flex w-44 shrink-0 flex-col border-r border-border/60 bg-card/40 p-3">
         <header className="mb-3 flex shrink-0 items-center gap-2 px-2">
           <img
@@ -64,30 +88,27 @@ function SettingsApp() {
             LuckyIsland 设置
           </h1>
         </header>
-        <div className="min-h-0 flex flex-1 flex-col gap-1 overflow-y-auto">
-          {TABS.map((t) => (
-            <button
-              key={t.id}
-              onClick={() => setTab(t.id)}
-              className={cn(
-                "rounded-md px-3 py-1.5 text-left text-sm transition-colors",
-                tab === t.id
-                  ? "bg-primary text-primary-foreground"
-                  : "text-muted-foreground hover:bg-accent hover:text-foreground",
-              )}
-            >
-              {t.label}
-            </button>
+        <div className="min-h-0 flex flex-1 flex-col gap-3 overflow-y-auto">
+          {GROUPS.map((group) => (
+            <div key={group.title} className="flex flex-col gap-1">
+              <div className="px-3 pb-0.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/70">
+                {group.title}
+              </div>
+              {group.tabs.map((t) => (
+                <button
+                  key={t.id}
+                  onClick={() => setTab(t.id)}
+                  className={tabClass(tab === t.id)}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
           ))}
         </div>
         <button
           onClick={() => setTab("about")}
-          className={cn(
-            "mt-2 shrink-0 rounded-md px-3 py-1.5 text-left text-sm transition-colors",
-            tab === "about"
-              ? "bg-primary text-primary-foreground"
-              : "text-muted-foreground hover:bg-accent hover:text-foreground",
-          )}
+          className={cn("mt-2 shrink-0", tabClass(tab === "about"))}
         >
           关于
         </button>

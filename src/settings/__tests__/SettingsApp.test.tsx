@@ -163,6 +163,35 @@ describe("SettingsApp navigation subscription", () => {
     await tree.unmount();
   });
 
+  it("groups sidebar tabs under category headers with 关于 kept separate", async () => {
+    const tree = await mountReactTree(<SettingsApp />);
+    const nav = document.querySelector("nav");
+    const navText = nav?.textContent ?? "";
+    for (const header of ["常规", "数据页", "智能"]) {
+      expect(navText).toContain(header);
+    }
+
+    const labels = Array.from(nav?.querySelectorAll("button") ?? []).map(
+      (button) => button.textContent,
+    );
+    // 每个分组的代表性 tab 都在，且关于作为独立置底按钮存在。
+    expect(labels).toEqual(
+      expect.arrayContaining([
+        "总体",
+        "外观",
+        "快捷键",
+        "页面管理",
+        "时间组件",
+        "天气",
+        "终端",
+        "AI",
+        "语音",
+        "关于",
+      ]),
+    );
+    await tree.unmount();
+  });
+
   it("ignores a pending navigation callback after unmount", async () => {
     const tree = await mountReactTree(<SettingsApp />);
     const stale = navigationSubscription();
