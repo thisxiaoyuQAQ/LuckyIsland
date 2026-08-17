@@ -9,6 +9,8 @@ export function createIslandDragController(options: {
   let generation = 0;
   let dragging = false;
   let finishing = false;
+  let nativeSettled = false;
+  let finishRequested = false;
   let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
 
   const cleanup = () => {
@@ -21,11 +23,19 @@ export function createIslandDragController(options: {
     cleanup();
     dragging = false;
     finishing = false;
+    nativeSettled = false;
+    finishRequested = false;
     options.setDragging(false);
   };
 
+  const requestFinish = (currentGeneration: number) => {
+    if (currentGeneration !== generation || !dragging) return;
+    finishRequested = true;
+    if (nativeSettled) void finish(currentGeneration);
+  };
+
   const finish = async (currentGeneration: number) => {
-    if (!dragging || finishing || currentGeneration !== generation) return;
+    if (!dragging || finishing || !finishRequested || !nativeSettled || currentGeneration !== generation) return;
     finishing = true;
     cleanup();
     try {
@@ -46,11 +56,21 @@ export function createIslandDragController(options: {
     const currentGeneration = ++generation;
     dragging = true;
     finishing = false;
+    nativeSettled = false;
+    finishRequested = false;
     options.setDragging(true);
     const appWindow = getCurrentWindow();
-    timeoutTimer = setTimeout(() => void finish(currentGeneration), SETTLE_TIMEOUT_MS);
+    timeoutTimer = setTimeout(() => {
+      nativeSettled = true;
+      finishRequested = true;
+      void finish(currentGeneration);
+    }, SETTLE_TIMEOUT_MS);
     void appWindow.startDragging().then(
-      () => void finish(currentGeneration),
+      () => {
+        if (currentGeneration !== generation) return;
+        nativeSettled = true;
+        requestFinish(currentGeneration);
+      },
       (error) => {
         if (currentGeneration !== generation) return;
         release(currentGeneration);
@@ -60,7 +80,7 @@ export function createIslandDragController(options: {
   };
 
   const onMouseUp = () => {
-    if (dragging) void finish(generation);
+    if (dragging) requestFinish(generation);
   };
 
   const dispose = () => {
@@ -69,6 +89,8 @@ export function createIslandDragController(options: {
     if (dragging) options.setDragging(false);
     dragging = false;
     finishing = false;
+    nativeSettled = false;
+    finishRequested = false;
   };
 
   return { onMouseDown, onMouseUp, dispose };

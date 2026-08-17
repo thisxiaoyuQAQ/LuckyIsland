@@ -55,7 +55,22 @@ describe("createIslandDragController", () => {
     controller.dispose();
   });
 
-  it("settles only once when mouseup and mocks.startDragging resolution both signal completion", async () => {
+  it("does not settle on an early mouseup while native dragging is pending", async () => {
+    const nativeDrag = deferred<void>();
+    mocks.startDragging.mockReturnValue(nativeDrag.promise);
+    mocks.windowDragDropSettle.mockResolvedValue("top");
+    const states: boolean[] = [];
+    const controller = createIslandDragController({ setDragging: (value) => states.push(value) });
+
+    controller.onMouseDown(altMouseDown());
+    controller.onMouseUp();
+    await Promise.resolve();
+
+    expect(mocks.windowDragDropSettle).not.toHaveBeenCalled();
+    expect(states).toEqual([true]);
+  });
+
+  it("settles after native dragging resolves following an early mouseup", async () => {
     const nativeDrag = deferred<void>();
     const settle = deferred<string>();
     mocks.startDragging.mockReturnValue(nativeDrag.promise);
@@ -67,6 +82,28 @@ describe("createIslandDragController", () => {
     controller.onMouseUp();
     nativeDrag.resolve();
     await Promise.resolve();
+
+    expect(mocks.windowDragDropSettle).toHaveBeenCalledTimes(1);
+    expect(states).toEqual([true]);
+    settle.resolve("top");
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(states).toEqual([true, false]);
+  });
+
+  it("settles exactly once when native completion and the timeout both signal completion", async () => {
+    const nativeDrag = deferred<void>();
+    const settle = deferred<string>();
+    mocks.startDragging.mockReturnValue(nativeDrag.promise);
+    mocks.windowDragDropSettle.mockReturnValue(settle.promise);
+    const states: boolean[] = [];
+    const controller = createIslandDragController({ setDragging: (value) => states.push(value) });
+
+    controller.onMouseDown(altMouseDown());
+    controller.onMouseUp();
+    nativeDrag.resolve();
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(3000);
 
     expect(mocks.windowDragDropSettle).toHaveBeenCalledTimes(1);
     expect(states).toEqual([true]);
