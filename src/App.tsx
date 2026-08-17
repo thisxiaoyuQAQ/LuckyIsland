@@ -248,6 +248,7 @@ function App() {
 
   useEffect(() => {
     const hoverCapable =
+      !dragging &&
       policy !== null &&
       !policy.clickThrough &&
       (policy.floatingBall || policy.hoverExpand);

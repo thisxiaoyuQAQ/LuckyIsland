@@ -23,9 +23,9 @@ pub const WIDTH_KEY: &str = "window:width";
 /// 当前界面模式的停靠边键（模块 14）。
 pub const DOCK_EDGE_KEY: &str = "window:dock_edge";
 pub const SNAP_THRESHOLD_PHYSICAL: i32 = 48;
-/// 两种界面模式（模块 13）；值域真源是 `normalize_ui_mode`。
+/// 三种正式界面模式；缺键、非法值及历史 `corner` 均由 `normalize_ui_mode` 安全回退 `island`。
 #[cfg(test)]
-const UI_MODES: [&str; 2] = ["island", "classisland"];
+const UI_MODES: [&str; 3] = ["island", "classisland", "taskbar"];
 /// 运行时显示器变化轮询间隔。副屏断开后最多延迟此时间即临时跳回主屏。
 const RUNTIME_WATCH_INTERVAL: Duration = Duration::from_secs(2);
 
@@ -277,10 +277,11 @@ fn current_selection(db: &Db) -> String {
     normalize_selection(db.setting_get(MONITOR_SETTING_KEY).as_deref())
 }
 
-/// 界面模式串规范化：缺键/空/非法一律 `island`。
+/// 界面模式串规范化：仅正式三值有效；缺键/空/非法（含历史 `corner`）一律 `island`。
 pub fn normalize_ui_mode(value: Option<&str>) -> &'static str {
     match value.map(str::trim) {
         Some("classisland") => "classisland",
+        Some("taskbar") => "taskbar",
         _ => "island",
     }
 }
@@ -290,8 +291,8 @@ pub fn current_ui_mode(db: &Db) -> &'static str {
     normalize_ui_mode(db.setting_get(UI_MODE_KEY).as_deref())
 }
 
-/// 外观键按界面模式独立存储 —— `window:offset_x` → `window:offset_x:classisland`。
-/// 悬浮与贴顶的透明度、偏移互不影响（为贴顶调的偏移不该把悬浮灵动岛也挪走）。
+/// 外观键按界面模式独立存储 —— `window:offset_x` → `window:offset_x:<mode>`。
+/// 三种模式的透明度、偏移、长度与停靠边均互不影响；taskbar 不静默读取既有模式值。
 pub fn mode_key(base: &str, mode: &str) -> String {
     format!("{base}:{mode}")
 }
@@ -706,6 +707,15 @@ fn restore_setting(db: &Db, key: &str, value: Option<&str>) -> Result<(), String
     }
 }
 
+fn restore_window_rect(
+    window: &tauri::WebviewWindow,
+    position: PhysicalPosition<i32>,
+    size: tauri::PhysicalSize<u32>,
+) {
+    let _ = window.set_size(Size::Physical(size));
+    let _ = window.set_position(position);
+}
+
 fn restore_dock_settings(
     db: &Db,
     edge_key: &str,
@@ -802,6 +812,7 @@ pub fn window_drag_drop_settle(app: AppHandle, db: State<'_, Db>) -> Result<Stri
         position: monitor_point(&monitor),
         size: monitor_size(&monitor),
     };
+    let previous_monitor = db.setting_get(MONITOR_SETTING_KEY);
     let current = current_dock_edge(db.inner());
     let rect = WindowRect {
         x: position.x,
@@ -817,6 +828,7 @@ pub fn window_drag_drop_settle(app: AppHandle, db: State<'_, Db>) -> Result<Stri
     let previous_x = db.setting_get(&x_key);
     let previous_y = db.setting_get(&y_key);
     let result = (|| -> Result<DockEdge, String> {
+        db.setting_set(MONITOR_SETTING_KEY, &info.id)?;
         let selected = select_dock_edge(rect, &info, current);
         let edge = if let Some(edge) = selected {
             db.setting_set(&edge_key, edge.as_str())?;
@@ -849,11 +861,23 @@ pub fn window_drag_drop_settle(app: AppHandle, db: State<'_, Db>) -> Result<Stri
             },
         )
         .map_err(|error| format!("广播拖动落点失败：{error}"))?;
+        let state = MonitorSelectionState {
+            selected: info.id.clone(),
+            resolved: info.id.clone(),
+            fallback: false,
+        };
+        app.emit("monitor://changed", state)
+            .map_err(|error| format!("广播显示器变更失败：{error}"))?;
         Ok(edge)
     })();
     match result {
         Ok(edge) => Ok(edge.as_str().to_string()),
         Err(error) => {
+            if let Err(rollback_error) =
+                restore_setting(db.inner(), MONITOR_SETTING_KEY, previous_monitor.as_deref())
+            {
+                tracing::warn!("[monitor] 回滚显示器选择失败：{rollback_error}");
+            }
             restore_dock_settings(
                 db.inner(),
                 &edge_key,
@@ -865,38 +889,59 @@ pub fn window_drag_drop_settle(app: AppHandle, db: State<'_, Db>) -> Result<Stri
             );
             let _ = crate::window_policy::resize_current_for_dock(&app, db.inner());
             let _ = restore_island_monitor(&app, db.inner());
+            restore_window_rect(&window, position, size);
             Err(error)
         }
     }
 }
 
-/// 模块 13：切换界面模式（island 悬浮 | classisland 贴顶）。
+/// 模块 14：切换界面模式（island 悬浮 | classisland 贴顶 | taskbar 任务栏）。
 ///
-/// 写 `window:ui_mode` → 按新模式的顶部间隙重新定位灵动岛（贴顶 gap=0 / 悬浮 gap=16，
-/// `read_top_gap` 读到刚落盘的新值）→ 广播 `settings://changed` 让岛窗口与设置窗口即时
-/// 换壳（去/加顶部间隙、圆角）。返回落盘后的规范模式串（非法值回退 island）。
+/// 写 `window:ui_mode` → 按新模式宽度调整窗口 → 按新模式偏移恢复显示器位置
+/// → 广播 `settings://changed`。任一步失败都恢复旧模式、尺寸和位置。
 #[tauri::command]
 pub fn window_ui_mode_set(
     app: AppHandle,
     db: State<'_, Db>,
     mode: String,
 ) -> Result<String, String> {
-    let normalized = if mode == "classisland" {
-        "classisland"
-    } else {
-        "island"
-    };
-    db.setting_set(UI_MODE_KEY, normalized)?;
-    // KV 已落盘后重新定位；失败也不回滚 KV——位置可由后续 restore/offset 纠正，但换壳需 KV 生效。
-    restore_island_monitor(&app, db.inner())?;
-    app.emit(
-        "settings://changed",
-        crate::settings_window::SettingsChanged {
-            key: UI_MODE_KEY.to_string(),
-            value: Some(normalized.to_string()),
-        },
-    )
-    .map_err(|error| format!("广播界面模式变更失败：{error}"))?;
+    let normalized = normalize_ui_mode(Some(&mode));
+    let previous_mode = db.setting_get(UI_MODE_KEY);
+    let window = app
+        .get_webview_window("island")
+        .ok_or_else(|| "找不到灵动岛窗口".to_string())?;
+    let previous_position = window
+        .outer_position()
+        .map_err(|error| format!("读取灵动岛窗口位置失败：{error}"))?;
+    let previous_size = window
+        .outer_size()
+        .map_err(|error| format!("读取灵动岛窗口尺寸失败：{error}"))?;
+
+    let result = (|| -> Result<(), String> {
+        db.setting_set(UI_MODE_KEY, normalized)?;
+        crate::window_policy::resize_current_for_dock(&app, db.inner())?;
+        restore_island_monitor(&app, db.inner())?;
+        app.emit(
+            "settings://changed",
+            crate::settings_window::SettingsChanged {
+                key: UI_MODE_KEY.to_string(),
+                value: Some(normalized.to_string()),
+            },
+        )
+        .map_err(|error| format!("广播界面模式变更失败：{error}"))
+    })();
+
+    if let Err(error) = result {
+        if let Err(rollback_error) =
+            restore_setting(db.inner(), UI_MODE_KEY, previous_mode.as_deref())
+        {
+            tracing::warn!("[monitor] 回滚界面模式失败：{rollback_error}");
+        }
+        let _ = crate::window_policy::resize_current_for_dock(&app, db.inner());
+        let _ = restore_island_monitor(&app, db.inner());
+        restore_window_rect(&window, previous_position, previous_size);
+        return Err(error);
+    }
     Ok(normalized.to_string())
 }
 
@@ -1156,13 +1201,16 @@ mod tests {
             "window:offset_x:classisland"
         );
         assert_eq!(mode_key(OPACITY_KEY, "island"), "window:opacity:island");
+        assert_eq!(mode_key(WIDTH_KEY, "taskbar"), "window:width:taskbar");
+        assert_eq!(mode_key(OFFSET_X_KEY, "taskbar"), "window:offset_x:taskbar");
         // 归一化：缺键/空/非法一律 island，合法值原样通过。
         assert_eq!(normalize_ui_mode(None), "island");
         assert_eq!(normalize_ui_mode(Some("")), "island");
         assert_eq!(normalize_ui_mode(Some("garbage")), "island");
         assert_eq!(normalize_ui_mode(Some("classisland")), "classisland");
-        assert_eq!(normalize_ui_mode(Some("island")), "island");
-        // 两种模式的键互不相同（「共享同一份偏移」的回归护栏）。
+        assert_eq!(normalize_ui_mode(Some("taskbar")), "taskbar");
+        assert_eq!(normalize_ui_mode(Some("corner")), "island");
+        // 三种模式的键互不相同（「共享同一份偏移」的回归护栏）。
         let keys: std::collections::BTreeSet<String> = UI_MODES
             .iter()
             .map(|mode| mode_key(OFFSET_X_KEY, mode))
@@ -1175,6 +1223,39 @@ mod tests {
             // 可迁移设置白名单按 `window:` 前缀放行。
             assert!(mode_key(OPACITY_KEY, mode).starts_with("window:"));
         }
+    }
+
+    #[test]
+    fn persisted_taskbar_mode_and_legacy_fallback_preserve_appearance_keys() {
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);")
+            .unwrap();
+        let db = Db(std::sync::Mutex::new(connection));
+        db.setting_set(UI_MODE_KEY, "taskbar").unwrap();
+        db.setting_set(&mode_key(WIDTH_KEY, "taskbar"), "560")
+            .unwrap();
+        db.setting_set(&mode_key(OPACITY_KEY, "classisland"), "0.4")
+            .unwrap();
+
+        assert_eq!(current_ui_mode(&db), "taskbar");
+        assert_eq!(db.setting_get(UI_MODE_KEY).as_deref(), Some("taskbar"));
+        assert_eq!(
+            db.setting_get(&mode_key(WIDTH_KEY, "taskbar")).as_deref(),
+            Some("560")
+        );
+
+        db.setting_set(UI_MODE_KEY, "corner").unwrap();
+        assert_eq!(current_ui_mode(&db), "island");
+        assert_eq!(
+            db.setting_get(&mode_key(WIDTH_KEY, "taskbar")).as_deref(),
+            Some("560")
+        );
+        assert_eq!(
+            db.setting_get(&mode_key(OPACITY_KEY, "classisland"))
+                .as_deref(),
+            Some("0.4")
+        );
     }
 
     #[test]

@@ -1,7 +1,6 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { windowDragDropSettle } from "@/lib/settings";
 
-const STABLE_MS = 180;
 const SETTLE_TIMEOUT_MS = 3000;
 
 export function createIslandDragController(options: {
@@ -9,37 +8,33 @@ export function createIslandDragController(options: {
 }) {
   let generation = 0;
   let dragging = false;
-  let stableTimer: ReturnType<typeof setTimeout> | undefined;
+  let finishing = false;
   let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
-  let unlistenMoved: (() => void) | undefined;
 
   const cleanup = () => {
-    if (stableTimer) clearTimeout(stableTimer);
     if (timeoutTimer) clearTimeout(timeoutTimer);
-    stableTimer = undefined;
     timeoutTimer = undefined;
-    unlistenMoved?.();
-    unlistenMoved = undefined;
+  };
+
+  const release = (currentGeneration: number) => {
+    if (currentGeneration !== generation) return;
+    cleanup();
+    dragging = false;
+    finishing = false;
+    options.setDragging(false);
   };
 
   const finish = async (currentGeneration: number) => {
-    if (!dragging || currentGeneration !== generation) return;
+    if (!dragging || finishing || currentGeneration !== generation) return;
+    finishing = true;
     cleanup();
     try {
       await windowDragDropSettle();
     } catch (error) {
       console.error("[island-drag] 保存拖动落点失败:", error);
     } finally {
-      if (currentGeneration === generation) {
-        dragging = false;
-        options.setDragging(false);
-      }
+      release(currentGeneration);
     }
-  };
-
-  const scheduleFinish = (currentGeneration: number) => {
-    if (stableTimer) clearTimeout(stableTimer);
-    stableTimer = setTimeout(() => void finish(currentGeneration), STABLE_MS);
   };
 
   const onMouseDown = (event: MouseEvent) => {
@@ -50,24 +45,22 @@ export function createIslandDragController(options: {
     cleanup();
     const currentGeneration = ++generation;
     dragging = true;
+    finishing = false;
     options.setDragging(true);
     const appWindow = getCurrentWindow();
-    void appWindow.onMoved(() => scheduleFinish(currentGeneration)).then((unlisten) => {
-      if (currentGeneration !== generation) unlisten();
-      else unlistenMoved = unlisten;
-    });
     timeoutTimer = setTimeout(() => void finish(currentGeneration), SETTLE_TIMEOUT_MS);
-    void appWindow.startDragging().catch((error) => {
-      if (currentGeneration !== generation) return;
-      cleanup();
-      dragging = false;
-      options.setDragging(false);
-      console.error("[island-drag] 开始拖动失败:", error);
-    });
+    void appWindow.startDragging().then(
+      () => void finish(currentGeneration),
+      (error) => {
+        if (currentGeneration !== generation) return;
+        release(currentGeneration);
+        console.error("[island-drag] 开始拖动失败:", error);
+      },
+    );
   };
 
   const onMouseUp = () => {
-    if (dragging) scheduleFinish(generation);
+    if (dragging) void finish(generation);
   };
 
   const dispose = () => {
@@ -75,6 +68,7 @@ export function createIslandDragController(options: {
     cleanup();
     if (dragging) options.setDragging(false);
     dragging = false;
+    finishing = false;
   };
 
   return { onMouseDown, onMouseUp, dispose };
