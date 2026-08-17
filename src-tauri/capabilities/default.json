@@ -3,5 +3,11 @@
   "identifier": "default",
   "description": "Capability for the island window",
   "windows": ["island"],
-  "permissions": ["core:default", "dialog:default", "opener:default", "updater:allow-check"]
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    "dialog:default",
+    "opener:default",
+    "updater:allow-check"
+  ]
 }

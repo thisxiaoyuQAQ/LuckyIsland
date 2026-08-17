@@ -12,14 +12,12 @@ import {
 } from "@/lib/update-store";
 import { useVisualStyle } from "@/lib/visual-style";
 import { useUiMode } from "@/lib/ui-mode";
-import { islandStyleRecipe, scrollIndicatorGeometry } from "@/lib/window-policy";
+import { expandedTabsWrap, islandStyleRecipe, scrollIndicatorGeometry } from "@/lib/window-policy";
 import { DockedStrip } from "./DockedStrip";
 import type { PageMeta } from "./registry";
 
 /** 紧凑内容右侧滚动指示轨道高度（px）。 */
 const SCROLL_INDICATOR_TRACK_PX = 24;
-
-/** 页面切换横向滑入/滑出变体；方向由 custom={direction} 决定（+1 新页从右滑入、-1 从左滑入） */
 export const pageVariants = {
   enter: (dir: number) => ({ x: dir > 0 ? "100%" : "-100%", opacity: 0 }),
   center: { x: 0, opacity: 1 },
@@ -39,7 +37,14 @@ interface IslandTopBarProps {
   currentPage: ComponentType<{ compact: boolean }>;
   /** 整条顶部条的 wheel 命中区容器：滚轮切页绑定于此，绝不提交 hover 状态。 */
   wheelZoneRef: RefObject<HTMLDivElement | null>;
-  /** 右侧命中区 pointer enter（撤销待决悬停收起 + 进入 hover 周期）。 */
+  /** 当前容器宽度（App 动画目标，px）。短岛展开时用于判定页签是否换行显示。 */
+  containerWidthPx: number;
+  /** 岛长度渲染期 ref（window:width:<mode> 目标值）；拖动滑块时容器宽度可能滞后于它。 */
+  islandWidthRef: RefObject<number>;
+  /** Alt+拖动进行中：抑制悬停展开/收起，避免拖动途中改变窗口状态。 */
+  dragging: boolean;
+  dockEdge: "top" | "bottom" | "left" | "right";
+  vertical: boolean;
   onRightZoneEnter: () => void;
   onSetPage: (index: number) => void;
   onToggleExpanded: () => void;
@@ -62,6 +67,11 @@ export function IslandTopBar({
   direction,
   currentPage: CurrentPage,
   wheelZoneRef,
+  containerWidthPx,
+  islandWidthRef,
+  dragging,
+  dockEdge,
+  vertical,
   onRightZoneEnter,
   onSetPage,
   onToggleExpanded,
@@ -77,13 +87,22 @@ export function IslandTopBar({
   const scrollIndicator = recipe.showScrollIndicator
     ? scrollIndicatorGeometry(pageIndex, pages.length, SCROLL_INDICATOR_TRACK_PX)
     : null;
+  // 短岛展开（模块 14）：容器过窄放不下单行页签时换行显示。拖动岛长度滑块时，
+  // containerWidthPx（动画目标）可能滞后于 islandWidthRef.current（新 KV 值），
+  // 用两者较小者判定，保证拖动中也按实际容器宽及时换行/回行。
+  const effectiveWidth = Math.min(containerWidthPx, islandWidthRef.current);
+  const wrapTabs = expanded && expandedTabsWrap(effectiveWidth, pages.length);
 
   return (
     <div
-      data-tauri-drag-region
       ref={wheelZoneRef}
-      className="flex h-14 shrink-0 items-center gap-3"
-      onMouseEnter={capsule && !collapsing ? onRightZoneEnter : undefined}
+      data-dock-edge={dockEdge}
+      className={cn(
+        "flex h-14 shrink-0 gap-3",
+        vertical ? "h-full w-14 flex-col items-center py-3" : "",
+        !vertical && (wrapTabs ? "flex-col justify-center gap-1" : "items-center"),
+      )}
+      onMouseEnter={capsule && !collapsing && !dragging ? onRightZoneEnter : undefined}
     >
       {/* 左侧：页点/页签 + 紧凑内容。capsule 时占满整条（无右侧命中区），内容居中。
           collapsing 相位按 compact 形态渲染（单行紧凑内容），不再渲染 expanded 页签，
@@ -94,14 +113,17 @@ export function IslandTopBar({
       <div
         className={cn(
           "flex min-w-0 items-center gap-3",
+          vertical && "flex-1 flex-col justify-center",
           capsule && "flex-1 justify-center",
+          wrapTabs && "flex-wrap justify-center gap-x-1 gap-y-0.5",
         )}
       >
         {expanded ? (
           // 容器已展开到位（visualPhase === "expanded"）才渲染页签栏；
           // expanding 中不渲染——容器宽度动画进行中（240 → 700）时立即渲染会让
           // 页签在窄容器里换行成多行文字（截图所示「六排文字并列」）。
-          <div className="flex items-center gap-1">
+          // 短岛（wrapTabs）：父级 flex-wrap 让页签按宽度自然换行，不再硬挤单行。
+          <div className={cn("flex items-center gap-1", wrapTabs && "flex-wrap justify-center")}>
             {pages.map((p, i) => (
               <button
                 key={p.id}
@@ -176,8 +198,12 @@ export function IslandTopBar({
       {/* 右侧：稳定独立的悬停/操作命中区；胶囊稳定态整体不渲染（无展开钮、无悬停区）。 */}
       {!capsule && (
         <div
-          className="flex flex-1 items-center justify-end gap-1 self-stretch"
-          onMouseEnter={onRightZoneEnter}
+          className={cn(
+            "flex items-center justify-end gap-1",
+            vertical && "flex-col",
+            wrapTabs ? "w-full shrink-0" : "flex-1 self-stretch",
+          )}
+          onMouseEnter={dragging ? undefined : onRightZoneEnter}
         >
           {updateSnapshot.phase === "available" &&
             updateSnapshot.pendingAvailable &&

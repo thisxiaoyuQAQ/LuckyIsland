@@ -23,7 +23,7 @@ interface EventSubscription {
   pending: Deferred<() => void>;
 }
 
-const { settingsSubscriptions, eventSubscriptions, deferred } = vi.hoisted(() => {
+const { settingsSubscriptions, eventSubscriptions, deferred, settingsStore } = vi.hoisted(() => {
   function createDeferred<T>(): Deferred<T> {
     let resolve!: (value: T) => void;
     let reject!: (reason: unknown) => void;
@@ -38,6 +38,9 @@ const { settingsSubscriptions, eventSubscriptions, deferred } = vi.hoisted(() =>
     settingsSubscriptions: [] as SettingsSubscription[],
     eventSubscriptions: [] as EventSubscription[],
     deferred: createDeferred,
+    // 模块 14 T2：透明度改为「事件触发重读 KV」，测试用一个内存 KV 让事件载荷落库，
+    // settingGet 据此返回——贴合生产「写键→广播→岛窗口重读」的链路。
+    settingsStore: new Map<string, string | null>(),
   };
 });
 
@@ -75,9 +78,9 @@ vi.mock("motion/react", async () => {
   const React = await import("react");
   const MotionDiv = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement> & Record<string, unknown>>(
     (props, ref) => {
-      const style = props.style as React.CSSProperties | undefined;
+      const animate = props.animate as Record<string, unknown> | undefined;
       const {
-        animate,
+        animate: _animate,
         custom: _custom,
         exit: _exit,
         initial: _initial,
@@ -88,8 +91,9 @@ vi.mock("motion/react", async () => {
       return (
         <div
           ref={ref}
-          data-animate={JSON.stringify(animate)}
-          data-background-color={style?.backgroundColor}
+          data-animate={JSON.stringify(props.animate)}
+          // 模块 14 T2：背景透明度随 visualPhase 作为 animate 目标（不再在静态 style 上）。
+          data-background-color={animate?.backgroundColor as string | undefined}
           {...domProps}
         />
       );
@@ -112,11 +116,19 @@ vi.mock("@/lib/settings", async (importOriginal) => {
   return {
     ...actual,
     openSettings: vi.fn(async () => undefined),
-    settingGet: vi.fn(async () => null),
-    settingSetEmit: vi.fn(async () => undefined),
+    settingGet: vi.fn(async (key: string) => settingsStore.get(key) ?? null),
+    settingSetEmit: vi.fn(async (key: string, value: string | null) => {
+      settingsStore.set(key, value);
+    }),
     onSettingsChanged: vi.fn((callback: (key: string, value: string | null) => void) => {
       const pending = deferred<() => void>();
-      settingsSubscriptions.push({ callback, pending });
+      settingsSubscriptions.push({
+        callback: (key, value) => {
+          settingsStore.set(key, value);
+          callback(key, value);
+        },
+        pending,
+      });
       return pending.promise;
     }),
   };
@@ -173,7 +185,7 @@ vi.mock("@/lib/window-policy", async (importOriginal) => {
 });
 
 import App from "@/App";
-import { KEYS, modeKey } from "@/lib/settings";
+import { KEYS, phaseOpacityKey } from "@/lib/settings";
 
 function emit(name: string, payload: unknown) {
   const subscription = eventSubscriptions.find((entry) => entry.name === name);
@@ -182,7 +194,7 @@ function emit(name: string, payload: unknown) {
 }
 
 function islandContainer(): HTMLElement {
-  const container = document.querySelector("[data-tauri-drag-region]")?.parentElement;
+  const container = document.querySelector("[data-island-container]");
   if (!(container instanceof HTMLElement)) throw new Error("island container not found");
   return container;
 }
@@ -202,6 +214,7 @@ describe("App event subscriptions", () => {
   beforeEach(() => {
     settingsSubscriptions.length = 0;
     eventSubscriptions.length = 0;
+    settingsStore.clear();
     vi.clearAllMocks();
     Object.defineProperty(window, "matchMedia", {
       configurable: true,
@@ -243,9 +256,8 @@ describe("App event subscriptions", () => {
     await dispatch(() => {
       settingsSubscriptions[0].callback(KEYS.theme, "dark");
       settingsSubscriptions[0].callback(KEYS.blur, "false");
-      // 透明度按界面模式独立，裸键 window:opacity 不再驱动任何模式。
-      settingsSubscriptions[0].callback(KEYS.windowOpacity, "0.3");
-      settingsSubscriptions[0].callback(modeKey(KEYS.windowOpacity, "island"), "0.5");
+      // 模块 14 T2：透明度拆为展开/收起两相位键；紧凑相位默认相位即收起值。
+      settingsSubscriptions[0].callback(phaseOpacityKey("island", "compact"), "0.5");
     });
     expect(document.documentElement.dataset.theme).toBe("dark");
     expect(islandContainer().className).not.toContain("backdrop-blur-xl");
@@ -253,7 +265,7 @@ describe("App event subscriptions", () => {
 
     // 另一个模式的透明度不能影响当前（island）模式——「两模式共享」回归护栏。
     await dispatch(() => {
-      settingsSubscriptions[0].callback(modeKey(KEYS.windowOpacity, "classisland"), "0.9");
+      settingsSubscriptions[0].callback(phaseOpacityKey("classisland", "compact"), "0.9");
     });
     expect(islandContainer().dataset.backgroundColor).toContain("50%");
 

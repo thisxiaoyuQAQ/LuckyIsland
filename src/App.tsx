@@ -22,7 +22,6 @@ import {
   CAPSULE_WIDTH_PX,
   HOVER_ENTER_DELAY_MS,
   HOVER_LEAVE_DELAY_MS,
-  ISLAND_STRIP_WIDTH_PX,
   createHoverStageController,
   createIslandTransitionController,
   setIslandState as submitIslandState,
@@ -34,6 +33,10 @@ import {
 } from "@/lib/window-policy";
 import { useTheme } from "@/lib/theme";
 import { useUiMode } from "@/lib/ui-mode";
+import { useIslandWidth } from "@/lib/island-width";
+import { useIslandOpacity } from "@/lib/island-opacity";
+import { useDockEdge } from "@/lib/island-dock-edge";
+import { createIslandDragController } from "@/lib/island-drag-controller";
 import {
   scheduleAutoCheck,
   setUpdateFullscreenBlocked,
@@ -46,15 +49,18 @@ import { useIslandNavigation } from "@/pages/useIslandNavigation";
 
 function App() {
   const { resolvedTheme, setThemeMode } = useTheme();
-  // 界面模式（模块 13）：classisland 贴顶（去顶部间隙、只下圆角），island 保持悬浮。
   const uiMode = useUiMode();
   const docked = uiMode === "classisland";
+  const dockEdge = useDockEdge();
+  const isVerticalDock = dockEdge === "left" || dockEdge === "right";
+  const islandWidth = useIslandWidth();
+  const islandWidthRef = useRef(islandWidth);
+  islandWidthRef.current = islandWidth;
   const [policy, setPolicy] = useState<WindowPolicySnapshot | null>(null);
   const [visualPhase, setVisualPhase] = useState<IslandVisualPhase>("compact");
   const reducedMotion = useReducedMotion();
   const reducedMotionRef = useRef(reducedMotion);
   const [blur, setBlur] = useState(true);
-  const [opacity, setOpacity] = useState(0.7);
   const [autoCheckUpdates, setAutoCheckUpdates] = useState(true);
   const [pagesEnabled, setPagesEnabled] = useState(parsePagesEnabled(null));
   const [pagesOrder, setPagesOrder] = useState(parsePagesOrder(null));
@@ -64,13 +70,28 @@ function App() {
   const hoverControllerRef = useRef<ReturnType<typeof createHoverStageController> | null>(null);
   /** 待决悬停收起要恢复的视觉相位（stage 2→expanded、stage 1→compact）；null 表示无待决收起。 */
   const hoverCollapseRef = useRef<IslandVisualPhase | null>(null);
-  /** 收起动画进行中且终点是胶囊：让宽度与高度同帧动画，遮住终点处的原生收窄跳变。 */
   const [collapsingToCapsule, setCollapsingToCapsule] = useState(false);
+  const [dragging, setDragging] = useState(false);
+  const dragControllerRef = useRef<ReturnType<typeof createIslandDragController> | null>(null);
   const visualPhaseRef = useRef(visualPhase);
   const floatingBallRef = useRef(false);
+  const dockedRef = useRef(docked);
   reducedMotionRef.current = reducedMotion;
   visualPhaseRef.current = visualPhase;
   floatingBallRef.current = policy?.floatingBall ?? false;
+  dockedRef.current = docked;
+
+  if (dragControllerRef.current === null) {
+    dragControllerRef.current = createIslandDragController({
+      setDragging: (active) => {
+        if (active) {
+          hoverControllerRef.current?.suppressCurrentCycle();
+          hoverCollapseRef.current = null;
+        }
+        setDragging(active);
+      },
+    });
+  }
 
   if (transitionControllerRef.current === null) {
     transitionControllerRef.current = createIslandTransitionController({
@@ -103,10 +124,7 @@ function App() {
         const fail = (error: unknown) =>
           console.error("[window-policy] 提交悬停阶段失败:", error);
         if (stage === 2) {
-          // 胶囊/条状→完整面板：先把原生 resize 提交（等 policy 切到 expanded），
-          // 再进入 expanding 视觉相位。否则在胶囊 stable 态下，前端会先把容器 width
-          // 拉到 700px（页签栏换行成多行白色小字），原生窗口仍是 240px，超出裁切
-          // 后看到的就是「左侧一堆白色小文字」。
+          // 胶囊/条状→完整面板：先提交原生 resize，再进入 expanding 视觉相位。
           void (async () => {
             try {
               const snapshot = await windowHoverStageSet(2);
@@ -152,30 +170,14 @@ function App() {
   }, [pagesEnabled, pagesOrder]);
 
   const islandState = policy?.effectiveState ?? "compact";
-  // 顶部条/内容的「expanded 视觉」只在 expanding/expanded 相位成立；
-  // collapsing 相位按 compact 形态渲染（否则 7 个页签按钮会在收窄容器中换行成多行）。
-  // containerExpandedForPhase 仍保留 collapsing=true 用于其他场景（如 height 目标计算），
-  // 这里改用更严格的判定。
   const expanded = visualPhase === "expanding" || visualPhase === "expanded";
-  // 胶囊判定也要看视觉相位：expanding/expanded/collapsing 相位下，即使 policy 还没
-  // 更新（stage 2 提交后的 IPC await 中），也不能按胶囊渲染——否则 IslandTopBar 会在
-  // 「expanded=true + capsule=true」的混合态下把 7 个页签压进 240px 容器换行显示。
+  const islandOpacity = useIslandOpacity();
+  const backgroundOpacity = expanded ? islandOpacity.expanded : islandOpacity.compact;
   const capsule = islandState === "capsule" && visualPhase === "compact";
-  // height 目标：collapsing 相位时容器立即开始折叠（height 380→56），同时保留 expanded
-  // 内容挂载以便淡出动画衔接；expanding/expanded 时为 380；compact 为 56。
-  const heightTargetPx =
-    visualPhase === "expanding" || visualPhase === "expanded" ? 380 : 56;
-  // 胶囊进出过渡：宽度与高度同帧动画（展开/展开中立即放宽；收起到胶囊时随折叠收窄），
-  // 原生 resize 的瞬时宽度跳变因此被前端动画遮住。collapsingToCapsule 表示当前正从
-  // 条状/展开向胶囊过渡（宽度收窄中），供 IslandTopBar 同步渐出非时钟内容。
-  // collapsingToCapsule=true 时无论 visualPhase 是什么都保持胶囊宽——否则 collapsing
-  // 结束（visualPhase → "compact"）但 IPC 还没返回的瞬间会闪一下 700px。
-  const containerWidthPx =
-    collapsingToCapsule
-      ? CAPSULE_WIDTH_PX
-      : expanded || !capsule
-        ? ISLAND_STRIP_WIDTH_PX
-        : CAPSULE_WIDTH_PX;
+  const horizontalHeightTargetPx = expanded ? 380 : 56;
+  const horizontalWidthTargetPx = collapsingToCapsule || capsule ? CAPSULE_WIDTH_PX : islandWidth;
+  const containerWidthPx = isVerticalDock ? (expanded ? 400 : 80) : horizontalWidthTargetPx;
+  const heightTargetPx = isVerticalDock ? (collapsingToCapsule || capsule ? 240 : islandWidth) : horizontalHeightTargetPx;
   const effectiveTheme = resolvedTheme;
 
   const setState = useCallback((state: IslandState) => {
@@ -193,6 +195,7 @@ function App() {
 
   // 右侧命中区进入：撤销待决的悬停收起（原生仍是展开/条状，视觉相位同步恢复），再进入 hover 周期。
   const handleRightZoneEnter = useCallback(() => {
+    if (dragging) return;
     const restorePhase = hoverCollapseRef.current;
     if (restorePhase !== null) {
       hoverCollapseRef.current = null;
@@ -202,7 +205,7 @@ function App() {
       setVisualPhase(restorePhase);
     }
     hoverControllerRef.current?.enter();
-  }, []);
+  }, [dragging]);
 
   const { pageIndex, direction, setPage } = useIslandNavigation(
     pages,
@@ -218,7 +221,6 @@ function App() {
     setPagesOrder,
     setThemeMode,
     setBlur,
-    setOpacity,
     setAutoCheckUpdates,
   });
 
@@ -240,6 +242,7 @@ function App() {
     return () => {
       transitionControllerRef.current?.dispose();
       hoverControllerRef.current?.dispose();
+      dragControllerRef.current?.dispose();
     };
   }, []);
 
@@ -278,28 +281,36 @@ function App() {
     <div
       className={cn(
         "flex h-screen w-screen items-start justify-center",
-        // classisland：容器贴屏顶（无顶部间隙）；island：保留 12px 悬浮间隙。
-        docked ? "pt-0" : "pt-3",
+        isVerticalDock ? "items-center justify-start" : docked ? "pt-0" : "pt-3",
       )}
     >
       <motion.div
-        onMouseLeave={() => hoverControllerRef.current?.leave()}
+        data-island-container
+        data-dock-edge={dockEdge}
+        onMouseDown={(event) => dragControllerRef.current?.onMouseDown(event.nativeEvent)}
+        onMouseUp={() => dragControllerRef.current?.onMouseUp()}
+        onMouseLeave={() => {
+          if (!dragging) hoverControllerRef.current?.leave();
+        }}
         className={cn(
-          "flex w-full max-w-[700px] flex-col border border-border/60 px-4 shadow-2xl",
-          // classisland：只保留下方圆角、去掉顶边（贴屏顶的直边）；island：四角圆角。
-          docked ? "rounded-b-2xl rounded-t-none border-t-0" : "rounded-2xl",
+          "flex w-full border border-border/60 px-4 shadow-2xl",
+          isVerticalDock ? "flex-row" : "flex-col",
+          dockEdge === "top" && docked && "rounded-b-2xl rounded-t-none border-t-0",
+          dockEdge === "bottom" && "rounded-t-2xl rounded-b-none border-b-0",
+          dockEdge === "left" && "rounded-r-2xl rounded-l-none border-l-0",
+          dockEdge === "right" && "rounded-l-2xl rounded-r-none border-r-0",
+          !docked && dockEdge === "top" && "rounded-2xl",
           blur && "backdrop-blur-xl",
         )}
-        style={{
-          // 07a 窗口外观：背景透明度由 window:opacity 控制，不改窗口 transparent 标志、
-          // 不动 motion 的 opacity（那是 hidden 态淡出动画）。color-mix 在 oklch 通道上把
-          // var(--card) 与 transparent 混合，亮度/色度保留、只调 alpha，亮暗主题都生效。
-          backgroundColor: `color-mix(in oklch, var(--card) ${(opacity * 100).toFixed(0)}%, transparent)`,
-        }}
         animate={{
           width: containerWidthPx,
           height: heightTargetPx,
           opacity: islandState === "hidden" ? 0 : 1,
+          // 07a/模块14 T2 窗口外观：背景透明度由 window:opacity:<mode>:<phase> 控制，
+          // 不改窗口 transparent 标志、不动 motion 的 opacity（那是 hidden 态淡出动画）。
+          // color-mix 在 oklch 通道上把 var(--card) 与 transparent 混合，只调 alpha；
+          // 作为 animate 目标随 visualPhase 平滑过渡到 expanded/compact 各自的值。
+          backgroundColor: `color-mix(in oklch, var(--card) ${(backgroundOpacity * 100).toFixed(0)}%, transparent)`,
         }}
         transition={{
           // 收起路径：expanded 内容立即隐藏（无淡出），容器 width/height 同时开始收窄。
@@ -320,6 +331,13 @@ function App() {
             duration: reducedMotion ? 0 : ISLAND_DURATION_MS / 1000,
             ease: ISLAND_EASE,
           },
+          // 背景透明度跟随展开/收起节奏（与 width/height 同档），平滑过渡两相位值。
+          backgroundColor: reducedMotion
+            ? { duration: 0 }
+            : {
+                duration: ISLAND_EXPAND_DURATION_MS / 1000,
+                ease: ISLAND_LAYERED_EASE,
+              },
         }}
       >
         {/* 顶部条：11a.2 拆为左侧内容/wheel 区 + 右侧 hover/action 命中区；
@@ -334,6 +352,11 @@ function App() {
           direction={direction}
           currentPage={CurrentPage}
           wheelZoneRef={wheelZoneRef}
+          containerWidthPx={containerWidthPx}
+          islandWidthRef={islandWidthRef}
+          dockEdge={dockEdge}
+          vertical={isVerticalDock}
+          dragging={dragging}
           onRightZoneEnter={handleRightZoneEnter}
           onSetPage={setPage}
           onToggleExpanded={() => setState(expanded ? "compact" : "expanded")}
@@ -366,7 +389,7 @@ function App() {
                     ease: ISLAND_LAYERED_EASE,
                   }
             }
-            className="relative flex-1 overflow-hidden px-2 pb-1"
+          className="relative flex-1 overflow-hidden px-2 pb-1"
           >
             <AnimatePresence mode="popLayout" custom={direction} initial={false}>
               <motion.div

@@ -3,6 +3,7 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, Size, State};
 
+use crate::dock_edge::DockEdge;
 use crate::storage::Db;
 
 pub const CLICK_THROUGH_KEY: &str = "window:click_through";
@@ -10,22 +11,42 @@ pub const HOVER_EXPAND_KEY: &str = "window:hover_expand";
 pub const HIDE_IN_FULLSCREEN_KEY: &str = "window:hide_in_fullscreen";
 pub const FLOATING_BALL_KEY: &str = "window:floating_ball";
 
-/// 悬浮胶囊（浮球休眠投影）逻辑宽度；透明区域不拦截后方点击。
+/// 悬浮胶囊（浮球休眠投影）逻辑宽度；透明区域不拦截后方点击。固定 240，不可自定义（模块 14）。
 pub const CAPSULE_WIDTH_LOGICAL: f64 = 240.0;
-/// 条状（compact/expanded）逻辑宽度。
+/// 条状（compact/expanded）默认逻辑宽度；`window:width:<mode>` 缺键/非法时回退到它。
 pub const COMPACT_WIDTH_LOGICAL: f64 = 720.0;
+/// 岛长度下限（逻辑像素）：再小紧凑态内容（时钟 + 页签/组件条）会溢出。模块 14 冻结。
+pub const MIN_STRIP_WIDTH_LOGICAL: f64 = 420.0;
+/// 岛长度上限（逻辑像素）。模块 14 冻结；超出 4K 物理宽经 DPI 换算后仍居中。
+pub const MAX_STRIP_WIDTH_LOGICAL: f64 = 1600.0;
 const COMPACT_HEIGHT_LOGICAL: f64 = 80.0;
 const EXPANDED_HEIGHT_LOGICAL: f64 = 400.0;
 
+/// 解析 `window:width:<mode>` 的岛长度（逻辑像素，纯函数便于单测）。
+/// 缺键/非法/越界一律回退 `COMPACT_WIDTH_LOGICAL`（老用户无感）；合法值 clamp 到
+/// [`MIN_STRIP_WIDTH_LOGICAL`, `MAX_STRIP_WIDTH_LOGICAL`]。宽度只影响横向，高度不变。
+pub fn parse_island_width(value: Option<&str>) -> f64 {
+    value
+        .and_then(|raw| raw.trim().parse::<f64>().ok())
+        .filter(|width| width.is_finite())
+        .map(|width| width.clamp(MIN_STRIP_WIDTH_LOGICAL, MAX_STRIP_WIDTH_LOGICAL))
+        .unwrap_or(COMPACT_WIDTH_LOGICAL)
+}
+
 /// 各有效状态的窗口几何（逻辑宽 × 逻辑高），全局单一真源。
 /// Hidden 无可见几何，返回 compact 尺寸仅供 clamp 兜底。
-pub fn geometry_for(state: IslandState) -> (f64, f64) {
-    match state {
-        IslandState::Hidden | IslandState::Compact => {
-            (COMPACT_WIDTH_LOGICAL, COMPACT_HEIGHT_LOGICAL)
-        }
+/// 条状/展开宽度由 `width` 参数给出（来自 `window:width:<mode>`，模块 14）；
+/// 胶囊恒为 [`CAPSULE_WIDTH_LOGICAL`]，高度恒为 80/400。
+pub fn geometry_for(state: IslandState, width: f64, edge: DockEdge) -> (f64, f64) {
+    let horizontal = match state {
+        IslandState::Hidden | IslandState::Compact => (width, COMPACT_HEIGHT_LOGICAL),
         IslandState::Capsule => (CAPSULE_WIDTH_LOGICAL, COMPACT_HEIGHT_LOGICAL),
-        IslandState::Expanded => (COMPACT_WIDTH_LOGICAL, EXPANDED_HEIGHT_LOGICAL),
+        IslandState::Expanded => (width, EXPANDED_HEIGHT_LOGICAL),
+    };
+    if edge.is_vertical() {
+        (horizontal.1, horizontal.0)
+    } else {
+        horizontal
     }
 }
 
@@ -225,6 +246,12 @@ struct AppClickThroughContext<'a> {
     previous: Option<WindowDecision>,
 }
 
+/// 当前界面模式的岛长度（逻辑像素）：读 `window:width:<mode>`，缺键/非法回退默认 720。
+/// 供 resize/clamp/恢复统一取用，避免窗口尺寸与可视区计算各拿一份宽度。
+fn island_width(db: &Db) -> f64 {
+    parse_island_width(db.setting_get(&crate::monitor::width_key(db)).as_deref())
+}
+
 impl ClickThroughTransactionContext for AppClickThroughContext<'_> {
     fn inputs(&self) -> WindowPolicyInputs {
         self.inputs
@@ -245,7 +272,13 @@ impl ClickThroughTransactionContext for AppClickThroughContext<'_> {
             next.hover_stage = 0;
         }
         let decision = reduce(next, FocusIntent::Preserve);
-        if let Err(error) = apply_effects(&window, self.previous, decision) {
+        if let Err(error) = apply_effects(
+            &window,
+            self.previous,
+            decision,
+            island_width(self.db),
+            crate::monitor::current_dock_edge(self.db),
+        ) {
             let _ = window.set_ignore_cursor_events(self.inputs.click_through);
             return Err(error);
         }
@@ -343,8 +376,14 @@ fn restore_click_through_transaction(
 
 /// 调整窗口到目标状态几何。宽度变化时以「当前顶部中心」为锚点重设水平位置，
 /// 避免 240↔720 切换时横向跳动；读取旧几何失败时仅改尺寸、不移动。
-fn resize_window(window: &tauri::WebviewWindow, state: IslandState) -> Result<(), String> {
-    let (width, height) = geometry_for(state);
+/// 条状/展开宽度取 `width`（`window:width:<mode>`），胶囊恒 240。
+fn resize_window(
+    window: &tauri::WebviewWindow,
+    state: IslandState,
+    width: f64,
+    edge: DockEdge,
+) -> Result<(), String> {
+    let (new_width, new_height) = geometry_for(state, width, edge);
     let anchor = window
         .outer_size()
         .and_then(|size| window.outer_position().map(|position| (size, position)))
@@ -356,14 +395,28 @@ fn resize_window(window: &tauri::WebviewWindow, state: IslandState) -> Result<()
                 .map(|scale| (size, position, scale))
         });
     window
-        .set_size(Size::Logical(LogicalSize { width, height }))
+        .set_size(Size::Logical(LogicalSize {
+            width: new_width,
+            height: new_height,
+        }))
         .map_err(|error| format!("调整灵动岛窗口尺寸失败：{error}"))?;
     if let Some((old_size, old_position, scale)) = anchor {
-        let new_width_px = (width * scale).round().max(1.0) as i32;
-        let dx = (old_size.width as i32 - new_width_px) / 2;
-        if dx != 0 {
+        let old_width = old_size.width as i32;
+        let old_height = old_size.height as i32;
+        let next_width = (new_width * scale).round().max(1.0) as i32;
+        let next_height = (new_height * scale).round().max(1.0) as i32;
+        let (dx, dy) = match edge {
+            DockEdge::Top => ((old_width - next_width) / 2, 0),
+            DockEdge::Bottom => ((old_width - next_width) / 2, old_height - next_height),
+            DockEdge::Left => (0, (old_height - next_height) / 2),
+            DockEdge::Right => (old_width - next_width, (old_height - next_height) / 2),
+        };
+        if dx != 0 || dy != 0 {
             window
-                .set_position(PhysicalPosition::new(old_position.x + dx, old_position.y))
+                .set_position(PhysicalPosition::new(
+                    old_position.x + dx,
+                    old_position.y + dy,
+                ))
                 .map_err(|error| format!("重设灵动岛窗口位置失败：{error}"))?;
         }
     }
@@ -374,10 +427,12 @@ fn apply_effects(
     window: &tauri::WebviewWindow,
     previous: Option<WindowDecision>,
     decision: WindowDecision,
+    width: f64,
+    edge: DockEdge,
 ) -> Result<(), String> {
     for op in EffectPlan::between(previous, decision).ops {
         match op {
-            WindowOp::Resize(state) => resize_window(window, state)?,
+            WindowOp::Resize(state) => resize_window(window, state, width, edge)?,
             WindowOp::Show => window
                 .show()
                 .map_err(|error| format!("显示灵动岛窗口失败：{error}"))?,
@@ -427,7 +482,9 @@ fn update_and_apply(
         }
         return Err("找不到灵动岛窗口".to_string());
     };
-    if let Err(error) = apply_effects(&window, previous, decision) {
+    let width = island_width(app.state::<Db>().inner());
+    let edge = crate::monitor::current_dock_edge(app.state::<Db>().inner());
+    if let Err(error) = apply_effects(&window, previous, decision, width, edge) {
         let mut runtime = policy
             .0
             .lock()
@@ -821,13 +878,73 @@ pub fn window_policy_get(policy: State<'_, WindowPolicy>) -> Result<WindowPolicy
 }
 
 /// 当前有效状态的逻辑几何（宽 × 高），供 monitor 定位/clamp/恢复使用实际窗口尺寸。
+/// 宽度取当前界面模式的 `window:width:<mode>`；策略不可用（极早期启动）时回退默认 compact。
 pub fn current_geometry(app: &AppHandle) -> (f64, f64) {
+    let db = app.state::<Db>();
+    let width = island_width(db.inner());
     let policy = app.state::<WindowPolicy>();
     let Ok(runtime) = policy.0.lock() else {
-        return geometry_for(IslandState::Compact);
+        return geometry_for(IslandState::Compact, width, DockEdge::Top);
     };
     let decision = reduce(runtime.inputs, FocusIntent::Preserve);
-    geometry_for(decision.effective_state)
+    geometry_for(
+        decision.effective_state,
+        width,
+        crate::monitor::current_dock_edge(db.inner()),
+    )
+}
+
+/// 强制把窗口调整到当前有效状态的几何。
+///
+/// `reapply` 只在策略决策变化时生成 Resize；岛长度变化不改变 effective_state，因而不能靠
+/// `reapply` 触发 set_size。此函数专供改变几何参数但不改变状态的路径调用。
+fn resize_current_window(app: &AppHandle, db: &Db) -> Result<(), String> {
+    let state = {
+        let policy = app.state::<WindowPolicy>();
+        let runtime = policy.0.lock().map_err(|error| error.to_string())?;
+        reduce(runtime.inputs, FocusIntent::Preserve).effective_state
+    };
+    let window = app
+        .get_webview_window("island")
+        .ok_or_else(|| "找不到灵动岛窗口".to_string())?;
+    resize_window(
+        &window,
+        state,
+        island_width(db),
+        crate::monitor::current_dock_edge(db),
+    )
+}
+
+pub(crate) fn resize_current_for_dock(app: &AppHandle, db: &Db) -> Result<(), String> {
+    resize_current_window(app, db)
+}
+
+/// 模块 14：设置当前界面模式的岛长度（横向逻辑像素，`window:width:<mode>`）。
+///
+/// 值经 clamp 到 [420, 1600] 后落盘，随后重放窗口策略——`resize_window` 保 y、按中心重锚 x，
+/// 长度变化自动从中间向两侧伸缩。加宽超过屏内可居中范围时，横向 clamp 不再把窗口压回居中
+/// （旧的 offset_x 会原样保留），窗口右侧可能伸出屏外被裁；此时补一次 `restore_island_monitor`
+/// 按新宽度重新定位（clamp 偏移 + set_position），保证超宽也实时贴屏内居中。最后广播
+/// `settings://changed` 让岛窗口容器宽度与设置滑块即时回显。返回落盘后的实际宽度。
+#[tauri::command]
+pub fn window_width_set(app: AppHandle, db: State<'_, Db>, width: f64) -> Result<f64, String> {
+    let clamped = parse_island_width(Some(&width.to_string()));
+    let key = crate::monitor::width_key(db.inner());
+    let value = format!("{}", clamped as i64);
+    db.setting_set(&key, &value)?;
+    resize_current_window(&app, db.inner())?;
+    if let Err(error) = crate::monitor::restore_island_monitor(&app, db.inner()) {
+        tracing::warn!("[window-policy] 岛长度变更后重新定位失败：{error}");
+    }
+    app.emit(
+        "settings://changed",
+        crate::settings_window::SettingsChanged {
+            key,
+            value: Some(value),
+        },
+    )
+    .map_err(|error| format!("广播岛长度变更失败：{error}"))?;
+    Ok(clamped)
 }
 
 #[tauri::command]
@@ -948,9 +1065,68 @@ mod tests {
     #[test]
     fn capsule_state_parses_and_geometry_is_240_by_80() {
         assert_eq!(IslandState::parse("capsule").unwrap(), IslandState::Capsule);
-        assert_eq!(geometry_for(IslandState::Capsule), (240.0, 80.0));
-        assert_eq!(geometry_for(IslandState::Compact), (720.0, 80.0));
-        assert_eq!(geometry_for(IslandState::Expanded), (720.0, 400.0));
+        // 宽度参数化：条状/展开取参数宽度（模块 14 的 window:width:<mode>），胶囊恒 240。
+        assert_eq!(
+            geometry_for(IslandState::Capsule, 720.0, DockEdge::Top),
+            (240.0, 80.0)
+        );
+        assert_eq!(
+            geometry_for(IslandState::Compact, 720.0, DockEdge::Top),
+            (720.0, 80.0)
+        );
+        assert_eq!(
+            geometry_for(IslandState::Expanded, 720.0, DockEdge::Top),
+            (720.0, 400.0)
+        );
+        // 自定义长度：compact/expanded 共用同一宽度，高度保持 80/400 不变；胶囊仍 240。
+        assert_eq!(
+            geometry_for(IslandState::Compact, 500.0, DockEdge::Top),
+            (500.0, 80.0)
+        );
+        assert_eq!(
+            geometry_for(IslandState::Expanded, 500.0, DockEdge::Top),
+            (500.0, 400.0)
+        );
+        assert_eq!(
+            geometry_for(IslandState::Capsule, 500.0, DockEdge::Top),
+            (240.0, 80.0)
+        );
+        assert_eq!(
+            geometry_for(IslandState::Expanded, 1200.0, DockEdge::Top),
+            (1200.0, 400.0)
+        );
+        assert_eq!(
+            geometry_for(IslandState::Capsule, 720.0, DockEdge::Left),
+            (80.0, 240.0)
+        );
+        assert_eq!(
+            geometry_for(IslandState::Compact, 720.0, DockEdge::Right),
+            (80.0, 720.0)
+        );
+        assert_eq!(
+            geometry_for(IslandState::Expanded, 720.0, DockEdge::Left),
+            (400.0, 720.0)
+        );
+    }
+
+    #[test]
+    fn parse_island_width_falls_back_and_clamps() {
+        // 缺键/空/非法/非有限一律回退默认 720（老用户无感）。
+        assert_eq!(parse_island_width(None), COMPACT_WIDTH_LOGICAL);
+        assert_eq!(parse_island_width(Some("")), COMPACT_WIDTH_LOGICAL);
+        assert_eq!(parse_island_width(Some("   ")), COMPACT_WIDTH_LOGICAL);
+        assert_eq!(parse_island_width(Some("abc")), COMPACT_WIDTH_LOGICAL);
+        assert_eq!(parse_island_width(Some("NaN")), COMPACT_WIDTH_LOGICAL);
+        assert_eq!(parse_island_width(Some("inf")), COMPACT_WIDTH_LOGICAL);
+        // 合法值 clamp 到 [420, 1600]。
+        assert_eq!(parse_island_width(Some("0")), MIN_STRIP_WIDTH_LOGICAL);
+        assert_eq!(parse_island_width(Some("100")), MIN_STRIP_WIDTH_LOGICAL);
+        assert_eq!(parse_island_width(Some("420")), MIN_STRIP_WIDTH_LOGICAL);
+        assert_eq!(parse_island_width(Some("720")), 720.0);
+        assert_eq!(parse_island_width(Some(" 640 ")), 640.0);
+        assert_eq!(parse_island_width(Some("1600")), MAX_STRIP_WIDTH_LOGICAL);
+        assert_eq!(parse_island_width(Some("99999")), MAX_STRIP_WIDTH_LOGICAL);
+        assert_eq!(parse_island_width(Some("-50")), MIN_STRIP_WIDTH_LOGICAL);
     }
 
     #[test]

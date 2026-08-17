@@ -3,8 +3,9 @@ use std::time::Duration;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, LogicalSize, Manager, Monitor, PhysicalPosition, Size, State};
 
+use crate::dock_edge::DockEdge;
 use crate::storage::Db;
-use crate::window_policy::{self, geometry_for, IslandState};
+use crate::window_policy;
 
 pub const MONITOR_SETTING_KEY: &str = "window:monitor";
 pub const PRIMARY_SELECTION: &str = "primary";
@@ -16,6 +17,12 @@ pub const OFFSET_X_KEY: &str = "window:offset_x";
 pub const OFFSET_Y_KEY: &str = "window:offset_y";
 /// 背景透明度 KV key 前缀（07a）；取值在前端，Rust 侧只负责按模式命名与迁移。
 pub const OPACITY_KEY: &str = "window:opacity";
+/// 岛长度 KV key（模块 14）；横向逻辑像素整数，按界面模式独立（`window:width:<mode>`）。
+/// 缺键/非法回退 `window_policy::COMPACT_WIDTH_LOGICAL`（720）；胶囊固定 240 不受它影响。
+pub const WIDTH_KEY: &str = "window:width";
+/// 当前界面模式的停靠边键（模块 14）。
+pub const DOCK_EDGE_KEY: &str = "window:dock_edge";
+pub const SNAP_THRESHOLD_PHYSICAL: i32 = 48;
 /// 两种界面模式（模块 13）；值域真源是 `normalize_ui_mode`。
 #[cfg(test)]
 const UI_MODES: [&str; 2] = ["island", "classisland"];
@@ -25,11 +32,6 @@ const RUNTIME_WATCH_INTERVAL: Duration = Duration::from_secs(2);
 /// 当前有效状态的逻辑几何；策略不可用（如极早期启动）时回退 compact。
 fn current_logical_geometry(app: &AppHandle) -> (f64, f64) {
     window_policy::current_geometry(app)
-}
-
-/// 展开态物理高度：clamp 按最大高度保守计算，避免任何状态下窗口底部越界。
-fn expanded_physical_height(scale_factor: f64) -> u32 {
-    physical_window_height(geometry_for(IslandState::Expanded).1, scale_factor)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -158,16 +160,32 @@ fn physical_window_height(logical_height: f64, scale_factor: f64) -> u32 {
     (logical_height * scale_factor).round().max(1.0) as u32
 }
 
-fn top_center_position(
+fn docked_position(
     monitor: &MonitorInfo,
     window_width: u32,
-    top_gap: i32,
+    window_height: u32,
+    gap: i32,
+    edge: DockEdge,
     offset_x: i32,
     offset_y: i32,
 ) -> MonitorPoint {
+    let centered_x = monitor.position.x + (monitor.size.width as i32 - window_width as i32) / 2;
+    let centered_y = monitor.position.y + (monitor.size.height as i32 - window_height as i32) / 2;
+    let (x, y) = match edge {
+        DockEdge::Top => (centered_x, monitor.position.y + gap),
+        DockEdge::Bottom => (
+            centered_x,
+            monitor.position.y + monitor.size.height as i32 - gap - window_height as i32,
+        ),
+        DockEdge::Left => (monitor.position.x + gap, centered_y),
+        DockEdge::Right => (
+            monitor.position.x + monitor.size.width as i32 - gap - window_width as i32,
+            centered_y,
+        ),
+    };
     MonitorPoint {
-        x: monitor.position.x + (monitor.size.width as i32 - window_width as i32) / 2 + offset_x,
-        y: monitor.position.y + top_gap + offset_y,
+        x: x + offset_x,
+        y: y + offset_y,
     }
 }
 
@@ -278,6 +296,20 @@ pub fn mode_key(base: &str, mode: &str) -> String {
     format!("{base}:{mode}")
 }
 
+/// 当前界面模式的岛长度键（`window:width:<mode>`），模块 14。
+/// 与 offset/opacity 同套 `mode_key`，供 window_policy 几何与设置面板统一取用。
+pub fn width_key(db: &Db) -> String {
+    mode_key(WIDTH_KEY, current_ui_mode(db))
+}
+
+pub fn dock_edge_key(db: &Db) -> String {
+    mode_key(DOCK_EDGE_KEY, current_ui_mode(db))
+}
+
+pub fn current_dock_edge(db: &Db) -> DockEdge {
+    DockEdge::parse(db.setting_get(&dock_edge_key(db)).as_deref())
+}
+
 /// 一次性迁移：把旧的全局外观键复制给 `island`，贴顶模式留默认值。
 ///
 /// 幂等——只在目标键缺失且旧键存在时复制；旧键保留不动（老版本回滚仍可读）。
@@ -327,29 +359,135 @@ fn read_top_gap(db: &Db) -> i32 {
 /// 顶部不超出屏顶之上（可贴顶 offset_y 最负到 `-(屏顶-base_y)`）、
 /// 左右不超出屏左右（窗口至少留 1px 在屏内，避免完全消失到屏外）。
 /// 返回 clamp 后的 (offset_x, offset_y)。
+#[cfg(test)]
+fn top_center_position(
+    monitor: &MonitorInfo,
+    window_width: u32,
+    top_gap: i32,
+    offset_x: i32,
+    offset_y: i32,
+) -> MonitorPoint {
+    docked_position(
+        monitor,
+        window_width,
+        400,
+        top_gap,
+        DockEdge::Top,
+        offset_x,
+        offset_y,
+    )
+}
+
+fn clamp_offsets_for_edge(
+    monitor: &MonitorInfo,
+    window_width: u32,
+    window_height: u32,
+    gap: i32,
+    edge: DockEdge,
+    offset_x: i32,
+    offset_y: i32,
+) -> (i32, i32) {
+    let base = docked_position(monitor, window_width, window_height, gap, edge, 0, 0);
+    let min_x = monitor.position.x + 1 - base.x;
+    let max_x = monitor.position.x + monitor.size.width as i32 - 1 - window_width as i32 - base.x;
+    let min_y = monitor.position.y - base.y;
+    let max_y = monitor.position.y + monitor.size.height as i32 - window_height as i32 - base.y;
+    let clamp_axis = |value: i32, min: i32, max: i32| {
+        if min > max {
+            min
+        } else {
+            value.max(min).min(max)
+        }
+    };
+    (
+        clamp_axis(offset_x, min_x, max_x),
+        clamp_axis(offset_y, min_y, max_y),
+    )
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct WindowRect {
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+}
+
+fn edge_distances(rect: WindowRect, monitor: &MonitorInfo) -> [(DockEdge, i32); 4] {
+    let monitor_right = monitor.position.x + monitor.size.width as i32;
+    let monitor_bottom = monitor.position.y + monitor.size.height as i32;
+    [
+        (DockEdge::Top, (rect.y - monitor.position.y).abs()),
+        (
+            DockEdge::Bottom,
+            (monitor_bottom - (rect.y + rect.height as i32)).abs(),
+        ),
+        (DockEdge::Left, (rect.x - monitor.position.x).abs()),
+        (
+            DockEdge::Right,
+            (monitor_right - (rect.x + rect.width as i32)).abs(),
+        ),
+    ]
+}
+
+fn select_dock_edge(
+    rect: WindowRect,
+    monitor: &MonitorInfo,
+    current: DockEdge,
+) -> Option<DockEdge> {
+    let distances = edge_distances(rect, monitor);
+    let minimum = distances.iter().map(|(_, distance)| *distance).min()?;
+    if minimum > SNAP_THRESHOLD_PHYSICAL {
+        return None;
+    }
+    if distances
+        .iter()
+        .any(|(edge, distance)| *edge == current && *distance == minimum)
+    {
+        return Some(current);
+    }
+    distances
+        .into_iter()
+        .find_map(|(edge, distance)| (distance == minimum).then_some(edge))
+}
+
+fn top_offsets_for_position(
+    monitor: &MonitorInfo,
+    window_width: u32,
+    window_height: u32,
+    gap: i32,
+    position: MonitorPoint,
+) -> (i32, i32) {
+    let base = docked_position(
+        monitor,
+        window_width,
+        window_height,
+        gap,
+        DockEdge::Top,
+        0,
+        0,
+    );
+    (position.x - base.x, position.y - base.y)
+}
+
+#[cfg(test)]
 fn clamp_offsets(
     monitor: &MonitorInfo,
     window_width: u32,
     window_height: u32,
-    top_gap: i32,
+    gap: i32,
     offset_x: i32,
     offset_y: i32,
 ) -> (i32, i32) {
-    let base_x = monitor.position.x + (monitor.size.width as i32 - window_width as i32) / 2;
-    let base_y = monitor.position.y + top_gap;
-
-    // 横向：保证窗口左右各至少 1px 在屏内。
-    let min_x = monitor.position.x + 1 - base_x;
-    let max_x = monitor.position.x + monitor.size.width as i32 - 1 - window_width as i32 - base_x;
-    let cx = offset_x.max(min_x).min(max_x);
-
-    // 纵向：保证窗口顶部 ≥ 屏顶，底部 ≤ 屏底。window_height 由目标屏 scale_factor
-    // 把展开态逻辑高度换算成物理像素，避免高 DPI 屏上实际窗口底部越界。
-    let min_y = monitor.position.y - base_y;
-    let max_y = monitor.position.y + monitor.size.height as i32 - window_height as i32 - base_y;
-    let cy = offset_y.max(min_y).min(max_y);
-
-    (cx, cy)
+    clamp_offsets_for_edge(
+        monitor,
+        window_width,
+        window_height,
+        gap,
+        DockEdge::Top,
+        offset_x,
+        offset_y,
+    )
 }
 
 fn selection_state(set: &MonitorSet, selected: &str) -> Result<MonitorSelectionState, String> {
@@ -373,6 +511,7 @@ fn resolved_monitor<'a>(
 
 fn move_island_to_monitor(
     app: &AppHandle,
+    db: &Db,
     monitor: &RuntimeMonitor,
     top_gap: i32,
     offset_x: i32,
@@ -382,11 +521,20 @@ fn move_island_to_monitor(
         .get_webview_window("island")
         .ok_or_else(|| "找不到灵动岛窗口".to_string())?;
     let scale_factor = monitor.raw.scale_factor();
-    let (logical_width, _) = current_logical_geometry(app);
+    let edge = current_dock_edge(db);
+    let (logical_width, logical_height) = current_logical_geometry(app);
     let width = physical_window_width(logical_width, scale_factor);
-    let height = expanded_physical_height(scale_factor);
-    let (cx, cy) = clamp_offsets(&monitor.info, width, height, top_gap, offset_x, offset_y);
-    let position = top_center_position(&monitor.info, width, top_gap, cx, cy);
+    let height = physical_window_height(logical_height, scale_factor);
+    let (cx, cy) = clamp_offsets_for_edge(
+        &monitor.info,
+        width,
+        height,
+        top_gap,
+        edge,
+        offset_x,
+        offset_y,
+    );
+    let position = docked_position(&monitor.info, width, height, top_gap, edge, cx, cy);
     window
         .set_position(PhysicalPosition::new(position.x, position.y))
         .map_err(|error| format!("移动灵动岛窗口失败：{error}"))
@@ -399,6 +547,7 @@ fn move_island_to_monitor(
 /// 解除最小化，再 `set_position`。最终可见性和焦点由窗口策略重放，不在恢复路径直接裁决。
 fn recover_island_to_monitor(
     app: &AppHandle,
+    db: &Db,
     monitor: &RuntimeMonitor,
     top_gap: i32,
     offset_x: i32,
@@ -408,11 +557,20 @@ fn recover_island_to_monitor(
         .get_webview_window("island")
         .ok_or_else(|| "找不到灵动岛窗口".to_string())?;
     let scale_factor = monitor.raw.scale_factor();
+    let edge = current_dock_edge(db);
     let (logical_width, logical_height) = current_logical_geometry(app);
     let width = physical_window_width(logical_width, scale_factor);
-    let height = expanded_physical_height(scale_factor);
-    let (cx, cy) = clamp_offsets(&monitor.info, width, height, top_gap, offset_x, offset_y);
-    let position = top_center_position(&monitor.info, width, top_gap, cx, cy);
+    let height = physical_window_height(logical_height, scale_factor);
+    let (cx, cy) = clamp_offsets_for_edge(
+        &monitor.info,
+        width,
+        height,
+        top_gap,
+        edge,
+        offset_x,
+        offset_y,
+    );
+    let position = docked_position(&monitor.info, width, height, top_gap, edge, cx, cy);
     window
         .set_size(Size::Logical(LogicalSize {
             width: logical_width,
@@ -470,7 +628,7 @@ pub fn monitor_select(
 
     let (offset_x, offset_y) = read_offsets(db.inner());
     let top_gap = read_top_gap(db.inner());
-    move_island_to_monitor(&app, target, top_gap, offset_x, offset_y)?;
+    move_island_to_monitor(&app, db.inner(), target, top_gap, offset_x, offset_y)?;
     if let Err(error) = db.setting_set(MONITOR_SETTING_KEY, &selection) {
         let _ = window.set_position(previous_position);
         return Err(format!("保存显示器选择失败：{error}"));
@@ -484,7 +642,7 @@ pub fn restore_island_monitor(app: &AppHandle, db: &Db) -> Result<MonitorSelecti
     let target = resolved_monitor(&set, &state)?;
     let (offset_x, offset_y) = read_offsets(db);
     let top_gap = read_top_gap(db);
-    move_island_to_monitor(app, target, top_gap, offset_x, offset_y)?;
+    move_island_to_monitor(app, db, target, top_gap, offset_x, offset_y)?;
     Ok(state)
 }
 
@@ -503,10 +661,19 @@ pub fn window_offset_apply(
     let target = resolved_monitor(&set, &state)?;
     let scale_factor = target.raw.scale_factor();
     let top_gap = read_top_gap(db.inner());
-    let (logical_width, _) = current_logical_geometry(&app);
+    let edge = current_dock_edge(db.inner());
+    let (logical_width, logical_height) = current_logical_geometry(&app);
     let width = physical_window_width(logical_width, scale_factor);
-    let height = expanded_physical_height(scale_factor);
-    let (cx, cy) = clamp_offsets(&target.info, width, height, top_gap, offset_x, offset_y);
+    let height = physical_window_height(logical_height, scale_factor);
+    let (cx, cy) = clamp_offsets_for_edge(
+        &target.info,
+        width,
+        height,
+        top_gap,
+        edge,
+        offset_x,
+        offset_y,
+    );
     // 先落盘 clamp 后的值，再上屏——即使上屏失败也不会留下跑出屏的持久化值。
     let mode = current_ui_mode(db.inner());
     let x_key = mode_key(OFFSET_X_KEY, mode);
@@ -522,7 +689,7 @@ pub fn window_offset_apply(
     } else {
         db.setting_delete(&y_key)?;
     }
-    let position = top_center_position(&target.info, width, top_gap, cx, cy);
+    let position = docked_position(&target.info, width, height, top_gap, edge, cx, cy);
     let window = app
         .get_webview_window("island")
         .ok_or_else(|| "找不到灵动岛窗口".to_string())?;
@@ -530,6 +697,177 @@ pub fn window_offset_apply(
         .set_position(PhysicalPosition::new(position.x, position.y))
         .map_err(|error| format!("应用偏移失败：{error}"))?;
     Ok((cx, cy))
+}
+
+fn restore_setting(db: &Db, key: &str, value: Option<&str>) -> Result<(), String> {
+    match value {
+        Some(value) => db.setting_set(key, value),
+        None => db.setting_delete(key),
+    }
+}
+
+fn restore_dock_settings(
+    db: &Db,
+    edge_key: &str,
+    x_key: &str,
+    y_key: &str,
+    previous_edge: Option<&str>,
+    previous_x: Option<&str>,
+    previous_y: Option<&str>,
+) {
+    if let Err(error) = restore_setting(db, edge_key, previous_edge) {
+        tracing::warn!("[monitor] 回滚停靠边失败：{error}");
+    }
+    if let Err(error) = restore_setting(db, x_key, previous_x) {
+        tracing::warn!("[monitor] 回滚横向偏移失败：{error}");
+    }
+    if let Err(error) = restore_setting(db, y_key, previous_y) {
+        tracing::warn!("[monitor] 回滚纵向偏移失败：{error}");
+    }
+}
+
+#[tauri::command]
+pub fn window_dock_edge_set(
+    app: AppHandle,
+    db: State<'_, Db>,
+    edge: String,
+) -> Result<String, String> {
+    let edge = DockEdge::parse(Some(&edge));
+    let mode = current_ui_mode(db.inner());
+    let edge_key = mode_key(DOCK_EDGE_KEY, mode);
+    let previous_edge = db.setting_get(&edge_key);
+    let x_key = mode_key(OFFSET_X_KEY, mode);
+    let y_key = mode_key(OFFSET_Y_KEY, mode);
+    let previous_x = db.setting_get(&x_key);
+    let previous_y = db.setting_get(&y_key);
+    db.setting_set(&edge_key, edge.as_str())?;
+    db.setting_delete(&x_key)?;
+    db.setting_delete(&y_key)?;
+    if let Err(error) = crate::window_policy::resize_current_for_dock(&app, db.inner())
+        .and_then(|_| restore_island_monitor(&app, db.inner()))
+    {
+        restore_dock_settings(
+            db.inner(),
+            &edge_key,
+            &x_key,
+            &y_key,
+            previous_edge.as_deref(),
+            previous_x.as_deref(),
+            previous_y.as_deref(),
+        );
+        return Err(error);
+    }
+    if let Err(error) = app.emit(
+        "settings://changed",
+        crate::settings_window::SettingsChanged {
+            key: edge_key.clone(),
+            value: Some(edge.as_str().to_string()),
+        },
+    ) {
+        restore_dock_settings(
+            db.inner(),
+            &edge_key,
+            &x_key,
+            &y_key,
+            previous_edge.as_deref(),
+            previous_x.as_deref(),
+            previous_y.as_deref(),
+        );
+        let _ = crate::window_policy::resize_current_for_dock(&app, db.inner());
+        let _ = restore_island_monitor(&app, db.inner());
+        return Err(format!("广播停靠边变更失败：{error}"));
+    }
+    Ok(edge.as_str().to_string())
+}
+
+#[tauri::command]
+pub fn window_drag_drop_settle(app: AppHandle, db: State<'_, Db>) -> Result<String, String> {
+    let window = app
+        .get_webview_window("island")
+        .ok_or_else(|| "找不到灵动岛窗口".to_string())?;
+    let position = window
+        .outer_position()
+        .map_err(|error| format!("读取拖动落点失败：{error}"))?;
+    let size = window
+        .outer_size()
+        .map_err(|error| format!("读取拖动窗口尺寸失败：{error}"))?;
+    let monitor = window
+        .current_monitor()
+        .map_err(|error| format!("读取拖动目标显示器失败：{error}"))?
+        .ok_or_else(|| "无法识别拖动目标显示器".to_string())?;
+    let info = MonitorInfo {
+        id: monitor_id(&monitor),
+        label: String::new(),
+        is_primary: false,
+        position: monitor_point(&monitor),
+        size: monitor_size(&monitor),
+    };
+    let current = current_dock_edge(db.inner());
+    let rect = WindowRect {
+        x: position.x,
+        y: position.y,
+        width: size.width,
+        height: size.height,
+    };
+    let mode = current_ui_mode(db.inner());
+    let edge_key = mode_key(DOCK_EDGE_KEY, mode);
+    let x_key = mode_key(OFFSET_X_KEY, mode);
+    let y_key = mode_key(OFFSET_Y_KEY, mode);
+    let previous_edge = db.setting_get(&edge_key);
+    let previous_x = db.setting_get(&x_key);
+    let previous_y = db.setting_get(&y_key);
+    let result = (|| -> Result<DockEdge, String> {
+        let selected = select_dock_edge(rect, &info, current);
+        let edge = if let Some(edge) = selected {
+            db.setting_set(&edge_key, edge.as_str())?;
+            db.setting_delete(&x_key)?;
+            db.setting_delete(&y_key)?;
+            crate::window_policy::resize_current_for_dock(&app, db.inner())?;
+            restore_island_monitor(&app, db.inner())?;
+            edge
+        } else {
+            let gap = read_top_gap(db.inner());
+            let (offset_x, offset_y) = top_offsets_for_position(
+                &info,
+                size.width,
+                size.height,
+                gap,
+                MonitorPoint {
+                    x: position.x,
+                    y: position.y,
+                },
+            );
+            db.setting_set(&edge_key, DockEdge::Top.as_str())?;
+            window_offset_apply(app.clone(), db.clone(), offset_x, offset_y)?;
+            DockEdge::Top
+        };
+        app.emit(
+            "settings://changed",
+            crate::settings_window::SettingsChanged {
+                key: edge_key.clone(),
+                value: Some(edge.as_str().to_string()),
+            },
+        )
+        .map_err(|error| format!("广播拖动落点失败：{error}"))?;
+        Ok(edge)
+    })();
+    match result {
+        Ok(edge) => Ok(edge.as_str().to_string()),
+        Err(error) => {
+            restore_dock_settings(
+                db.inner(),
+                &edge_key,
+                &x_key,
+                &y_key,
+                previous_edge.as_deref(),
+                previous_x.as_deref(),
+                previous_y.as_deref(),
+            );
+            let _ = crate::window_policy::resize_current_for_dock(&app, db.inner());
+            let _ = restore_island_monitor(&app, db.inner());
+            Err(error)
+        }
+    }
 }
 
 /// 模块 13：切换界面模式（island 悬浮 | classisland 贴顶）。
@@ -599,7 +937,15 @@ pub fn start_runtime_watch(app: AppHandle) {
                     let db = app.state::<Db>();
                     let (offset_x, offset_y) = read_offsets(db.inner());
                     let top_gap = read_top_gap(db.inner());
-                    if recover_island_to_monitor(&app, target, top_gap, offset_x, offset_y).is_ok()
+                    if recover_island_to_monitor(
+                        &app,
+                        db.inner(),
+                        target,
+                        top_gap,
+                        offset_x,
+                        offset_y,
+                    )
+                    .is_ok()
                     {
                         fell_back = false;
                         let _ = app.emit(
@@ -620,7 +966,15 @@ pub fn start_runtime_watch(app: AppHandle) {
                     let db = app.state::<Db>();
                     let (offset_x, offset_y) = read_offsets(db.inner());
                     let top_gap = read_top_gap(db.inner());
-                    if recover_island_to_monitor(&app, primary, top_gap, offset_x, offset_y).is_ok()
+                    if recover_island_to_monitor(
+                        &app,
+                        db.inner(),
+                        primary,
+                        top_gap,
+                        offset_x,
+                        offset_y,
+                    )
+                    .is_ok()
                     {
                         fell_back = true;
                         let _ = app.emit(
@@ -821,6 +1175,44 @@ mod tests {
             // 可迁移设置白名单按 `window:` 前缀放行。
             assert!(mode_key(OPACITY_KEY, mode).starts_with("window:"));
         }
+    }
+
+    #[test]
+    fn width_key_is_namespaced_per_ui_mode() {
+        // 模块 14：岛长度与 offset/opacity 同套按模式命名。
+        assert_eq!(mode_key(WIDTH_KEY, "island"), "window:width:island");
+        assert_eq!(
+            mode_key(WIDTH_KEY, "classisland"),
+            "window:width:classisland"
+        );
+        // 两种模式的宽度键互不相同（「共享同一份长度」的回归护栏）。
+        assert_ne!(
+            mode_key(WIDTH_KEY, "island"),
+            mode_key(WIDTH_KEY, "classisland")
+        );
+        // 命中 `window:` 前缀白名单，随配置导入导出迁移。
+        assert!(mode_key(WIDTH_KEY, "island").starts_with("window:"));
+    }
+
+    #[test]
+    fn clamp_offsets_uses_actual_window_width_for_horizontal_bounds() {
+        let monitor = info("MAIN", 0, 0, 1920, 1080, true);
+        // 自定义长度（模块 14）后 clamp 按实际窗口物理宽计算横向边界：
+        // 宽 1000 时 base_x=(1920-1000)/2=460，右极限 460+offset_x+1000 ≤ 1919 → offset_x ≤ 459。
+        assert_eq!(
+            clamp_offsets(&monitor, 1000, 400, TOP_GAP_PHYSICAL, 9999, 9999),
+            (459, 664)
+        );
+        // 窄条 420：base_x=(1920-420)/2=750，右极限 offset_x ≤ 1919-750-420 = 749。
+        assert_eq!(
+            clamp_offsets(&monitor, 420, 400, TOP_GAP_PHYSICAL, 9999, 9999),
+            (749, 664)
+        );
+        // 区间内原值保留。
+        assert_eq!(
+            clamp_offsets(&monitor, 1000, 400, TOP_GAP_PHYSICAL, 50, -8),
+            (50, -8)
+        );
     }
 
     #[test]

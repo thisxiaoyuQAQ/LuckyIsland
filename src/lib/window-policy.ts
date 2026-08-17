@@ -60,6 +60,31 @@ export function containerExpandedForPhase(phase: IslandVisualPhase): boolean {
   return phase !== "compact";
 }
 
+/**
+ * 展开页签栏在该容器宽度下是否需要换行（模块 14：岛长度可变）。
+ * 页签需约 90px/个，外加紧凑时钟与内边距。容器过窄时所有页签挤成一行会溢出/被裁，
+ * 此时返回 true——IslandTopBar 改把页签换行显示，避免短岛展开时页签挤爆。
+ */
+export function expandedTabsWrap(containerWidthPx: number, pageCount: number): boolean {
+  if (pageCount <= 0) return false;
+  const tabsNeeded = pageCount * 90;
+  const overhead = 200; // 紧凑时钟 + 容器内边距 + 右侧操作钮留白
+  return tabsNeeded + overhead > containerWidthPx;
+}
+
+/**
+ * 展开页签栏是否处于「换行显示」状态（供 App/TopBar 一致判定）。
+ * 换行只在 expanded 相位、非胶囊、且容器过窄时发生。
+ */
+export function shouldWrapExpandedTabs(
+  visualPhase: IslandVisualPhase,
+  capsule: boolean,
+  containerWidthPx: number,
+  pageCount: number,
+): boolean {
+  return visualPhase === "expanded" && !capsule && expandedTabsWrap(containerWidthPx, pageCount);
+}
+
 export function shouldSyncExternalVisualPhase(phase: IslandVisualPhase): boolean {
   return phase === "compact" || phase === "expanded";
 }
@@ -116,10 +141,19 @@ export function windowHideInFullscreenSet(
   return invoke<WindowPolicySnapshot>("window_hide_in_fullscreen_set", { enabled });
 }
 
-/** 胶囊逻辑宽度（与 src-tauri window_policy.rs CAPSULE_WIDTH_LOGICAL 对齐）。 */
+/** 模块 14 岛长度（横向逻辑像素）默认/边界，与后端 window_policy 常量对齐。 */
+export const ISLAND_WIDTH_DEFAULT_PX = 720;
+export const ISLAND_WIDTH_MIN_PX = 420;
+export const ISLAND_WIDTH_MAX_PX = 1600;
+
+/** 模块 14：设置当前界面模式的岛长度；后端 clamp + 落盘 + 重放窗口策略（从中间两侧伸缩）
+ *  + 广播 settings://changed。返回落盘后的实际宽度。 */
+export function windowWidthSet(width: number): Promise<number> {
+  return invoke<number>("window_width_set", { width });
+}
+
+/** 胶囊逻辑宽度（与 src-tauri window_policy.rs CAPSULE_WIDTH_LOGICAL 对齐）。固定 240。 */
 export const CAPSULE_WIDTH_PX = 240;
-/** 条状/展开内容宽度（App 容器 max-w-[700px]；窗口逻辑宽 720 留边）。 */
-export const ISLAND_STRIP_WIDTH_PX = 700;
 
 /** 右侧悬停阶段：0=无，1=悬停到条状（胶囊→compact），2=悬停到完整面板（→expanded）。 */
 export type HoverStage = 0 | 1 | 2;

@@ -25,8 +25,17 @@ export const KEYS = {
   windowOffsetX: "window:offset_x",
   /** 07a 窗口外观：纵向物理像素偏移（负=上移，正=下移）。按界面模式独立。 */
   windowOffsetY: "window:offset_y",
-  /** 整个灵动岛忽略鼠标事件，默认关闭。 */
-  windowClickThrough: "window:click_through",
+  /** 模块 14 T2：展开态背景透明度（0.10~1.00）。实际键为
+   *  `phaseOpacityKey(mode, "expanded")` = `window:opacity:<mode>:expanded`。 */
+  windowOpacityExpanded: "window:opacity:expanded",
+  /** 模块 14 T2：收起态背景透明度。实际键为
+   *  `phaseOpacityKey(mode, "compact")` = `window:opacity:<mode>:compact`。 */
+  windowOpacityCompact: "window:opacity:compact",
+  /** 模块 14 岛长度：横向逻辑像素（默认 720）。按界面模式独立，实际键为
+   *  `modeKey(windowWidth, mode)`；胶囊固定 240 不受它影响。 */
+  windowWidth: "window:width",
+  /** 模块 14 T4：当前模式的停靠边，实际键为 `window:dock_edge:<mode>`。 */
+  windowDockEdge: "window:dock_edge",
   /** 紧凑态悬停自动展开，默认关闭。 */
   windowHoverExpand: "window:hover_expand",
   /** 悬浮胶囊（浮球）：开启后收起态为 240×80 胶囊，默认关闭。 */
@@ -66,8 +75,12 @@ export const DEFAULTS = {
   terminalShortcuts: "",
   /** 07a 窗口外观默认值：透明度 0.7（对齐原 bg-card/70 视觉）、偏移 0/0（默认顶部居中）。 */
   windowOpacity: "0.7",
+  windowOpacityExpanded: "0.7",
+  windowOpacityCompact: "0.7",
   windowOffsetX: "0",
   windowOffsetY: "0",
+  windowWidth: "720",
+  windowDockEdge: "top",
   windowClickThrough: "false",
   windowHoverExpand: "false",
   windowFloatingBall: "false",
@@ -198,6 +211,23 @@ export function parseVisualStyle(v: string | null | undefined): VisualStyle {
   return v === "legacy" ? "legacy" : "new";
 }
 
+export type DockEdge = "top" | "bottom" | "left" | "right";
+export const DOCK_EDGES: DockEdge[] = ["top", "bottom", "left", "right"];
+export const DOCK_EDGE_LABELS: Record<DockEdge, string> = {
+  top: "顶部",
+  bottom: "底部",
+  left: "左侧",
+  right: "右侧",
+};
+
+export function parseDockEdge(value: string | null | undefined): DockEdge {
+  return DOCK_EDGES.includes(value as DockEdge) ? (value as DockEdge) : "top";
+}
+
+export function dockEdgeKey(mode: UiMode): string {
+  return modeKey(KEYS.windowDockEdge, mode);
+}
+
 /** 界面模式（模块 13）：island（悬浮灵动岛，默认）| classisland（贴顶新 UI）。 */
 export type UiMode = "island" | "classisland";
 
@@ -260,11 +290,46 @@ export function parseOpacity(v: string | null | undefined): number {
   return Math.min(1, Math.max(0.1, n));
 }
 
+/** 模块 14 T2：展开/收起两个相位。 */
+export type OpacityPhase = "expanded" | "compact";
+
+/**
+ * 相位透明度的实际存储键 —— `window:opacity:<mode>:<phase>`。
+ * 与 `modeKey` 同套「按界面模式独立」约定，末尾再挂相位后缀。
+ */
+export function phaseOpacityKey(mode: UiMode, phase: OpacityPhase): string {
+  return `${KEYS.windowOpacity}:${mode}:${phase}`;
+}
+
+/**
+ * 模块 14 T2 相位透明度解析（三级回退，保证旧配置无感升级）：
+ *   相位专属键 `window:opacity:<mode>:<phase>`
+ *   → 该模式旧裸键 `window:opacity:<mode>`（旧版本/07a 写入的单值）
+ *   → 全局默认 0.7。
+ * 相位键缺失或非法时才看裸键；两者都缺才落到 0.7。返回值已 clamp 到 0.1~1.0。
+ */
+export function resolvePhaseOpacity(
+  phaseValue: string | null | undefined,
+  modeValue: string | null | undefined,
+): number {
+  if (phaseValue != null && phaseValue !== "") return parseOpacity(phaseValue);
+  if (modeValue != null && modeValue !== "") return parseOpacity(modeValue);
+  return parseOpacity(null);
+}
+
 /** 07a 偏移值（整数像素，可为负）：无效回退 0。 */
 export function parseOffset(v: string | null | undefined): number {
   const n = v == null ? 0 : parseInt(v, 10);
   if (Number.isNaN(n)) return 0;
   return n;
+}
+
+/** 模块 14 岛长度（横向逻辑像素）：无效回退 720（原窗口宽），clamp 到 420~1600。
+ *  下限保证紧凑态内容（时钟 + 页签/组件条）不溢出；与后端 window_policy::parse_island_width 对齐。 */
+export function parseIslandWidth(v: string | null | undefined): number {
+  const n = v == null ? 720 : parseInt(v, 10);
+  if (Number.isNaN(n)) return 720;
+  return Math.min(1600, Math.max(420, n));
 }
 
 /** 终端快捷命令 */
@@ -356,6 +421,14 @@ export async function windowOffsetApply(
  * settings://changed。返回后端落盘后的规范模式串。 */
 export async function windowUiModeSet(mode: UiMode): Promise<UiMode> {
   return parseUiMode(await invoke<string>("window_ui_mode_set", { mode }));
+}
+
+export async function windowDockEdgeSet(edge: DockEdge): Promise<DockEdge> {
+  return parseDockEdge(await invoke<string>("window_dock_edge_set", { edge }));
+}
+
+export async function windowDragDropSettle(): Promise<DockEdge> {
+  return parseDockEdge(await invoke<string>("window_drag_drop_settle"));
 }
 
 /** 07a 配置导入结果摘要（与后端 ImportSummary 对齐，camelCase）。 */
