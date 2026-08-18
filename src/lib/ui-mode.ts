@@ -5,7 +5,7 @@ import { parseUiMode, type UiMode } from "@/lib/settings";
  * 界面模式模块级 store（岛窗口内单例，模块 13）。
  * 由 useIslandSettings 的初始读取与 settings://changed 驱动（applyUiModeSetting），
  * 组件经 useUiMode 消费；未读取完成前保持契约默认值 "island"（悬浮灵动岛）。
- * 设置窗口是独立 JS 上下文，不共享本 store（AppearancePanel 自行读键+订阅）。
+ * taskbar 仅在正式 taskbar 集成接线后改变窗口策略；本 store 只承载已正规化的模式值。
  */
 let current: UiMode = "island";
 const listeners = new Set<() => void>();

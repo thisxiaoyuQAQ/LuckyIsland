@@ -637,10 +637,18 @@ pub fn monitor_select(
     Ok(state)
 }
 
+/// 恢复 island 的显示器定位；taskbar 模式下面板位置由任务栏矩形驱动，不走顶部/贴边定位。
 pub fn restore_island_monitor(app: &AppHandle, db: &Db) -> Result<MonitorSelectionState, String> {
     let set = capture_monitors(app)?;
     let state = selection_state(&set, &current_selection(db))?;
     let target = resolved_monitor(&set, &state)?;
+    if current_ui_mode(db) == "taskbar" {
+        let manager = app.state::<crate::taskbar::TaskbarManager>();
+        let width =
+            crate::window_policy::parse_island_width(db.setting_get(&width_key(db)).as_deref());
+        crate::taskbar::apply_taskbar_panel_geometry(app, manager.inner(), width, 400.0)?;
+        return Ok(state);
+    }
     let (offset_x, offset_y) = read_offsets(db);
     let top_gap = read_top_gap(db);
     move_island_to_monitor(app, db, target, top_gap, offset_x, offset_y)?;
@@ -918,6 +926,20 @@ pub fn window_ui_mode_set(
         .map_err(|error| format!("读取灵动岛窗口尺寸失败：{error}"))?;
 
     let result = (|| -> Result<(), String> {
+        // 先切换到目标模式的窗口形态，再落盘 ui_mode；失败时下面整体回滚。
+        let manager = app.state::<crate::taskbar::TaskbarManager>();
+        if normalized == "taskbar" {
+            if let Err(error) = crate::window_policy::set_desired_state(
+                &app,
+                crate::window_policy::IslandState::Compact,
+                crate::window_policy::FocusIntent::Preserve,
+            ) {
+                tracing::warn!("[monitor] 切 taskbar 前收起 island 失败：{error}");
+            }
+            crate::taskbar::enter_taskbar_mode(&app, manager.inner(), db.inner())?;
+        } else if previous_mode.as_deref() == Some("taskbar") {
+            crate::taskbar::leave_taskbar_mode(&app, manager.inner())?;
+        }
         db.setting_set(UI_MODE_KEY, normalized)?;
         crate::window_policy::resize_current_for_dock(&app, db.inner())?;
         restore_island_monitor(&app, db.inner())?;
@@ -936,6 +958,17 @@ pub fn window_ui_mode_set(
             restore_setting(db.inner(), UI_MODE_KEY, previous_mode.as_deref())
         {
             tracing::warn!("[monitor] 回滚界面模式失败：{rollback_error}");
+        }
+        // 窗口形态回滚：若原本在 taskbar，重新嵌入；否则确保 strip 已脱离并隐藏。
+        let manager = app.state::<crate::taskbar::TaskbarManager>();
+        if previous_mode.as_deref() == Some("taskbar") {
+            if let Err(reenter) =
+                crate::taskbar::enter_taskbar_mode(&app, manager.inner(), db.inner())
+            {
+                tracing::warn!("[monitor] 回滚到 taskbar 失败：{reenter}");
+            }
+        } else if let Err(leave) = crate::taskbar::leave_taskbar_mode(&app, manager.inner()) {
+            tracing::warn!("[monitor] 回滚离开 taskbar 失败：{leave}");
         }
         let _ = crate::window_policy::resize_current_for_dock(&app, db.inner());
         let _ = restore_island_monitor(&app, db.inner());
@@ -966,6 +999,26 @@ pub fn start_runtime_watch(app: AppHandle) {
                 let db = app.state::<Db>();
                 current_selection(db.inner())
             };
+
+            // taskbar 模式：显示器/Explorer/任务栏矩形变化后重新挂载 strip 并重定位面板。
+            // 持久化的 ui_mode 保持 taskbar；任务栏不可用时只记录日志，等待下一轮恢复。
+            {
+                let db = app.state::<Db>();
+                if current_ui_mode(db.inner()) == "taskbar" {
+                    let manager = app.state::<crate::taskbar::TaskbarManager>();
+                    if crate::taskbar::taskbar_needs_reattach(manager.inner()) {
+                        match crate::taskbar::taskbar_reapply(&app, manager.inner(), db.inner()) {
+                            Ok(snapshot) => {
+                                let _ = app.emit("window://taskbar-state-changed", snapshot);
+                            }
+                            Err(error) => {
+                                tracing::warn!("[taskbar] 运行时重挂任务栏失败：{error}");
+                            }
+                        }
+                    }
+                    continue;
+                }
+            }
 
             // 选中主显示器：无需运行时回退，复位标志即可。
             if saved == PRIMARY_SELECTION {

@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import type { VisualStyle } from "@/lib/settings";
 
 export type IslandState = "hidden" | "capsule" | "compact" | "expanded";
@@ -96,6 +97,10 @@ export interface WindowPolicySnapshot {
   clickThrough: boolean;
   hoverExpand: boolean;
   floatingBall: boolean;
+  taskbarMode?: boolean;
+  taskbarAvailable?: boolean;
+  taskbarExpanded?: boolean;
+  taskbarReason?: string | null;
   /** 右侧悬停阶段：0=无，1=悬停到条状，2=持续悬停到完整面板。 */
   hoverStage: number;
   hideInFullscreen: boolean;
@@ -103,6 +108,42 @@ export interface WindowPolicySnapshot {
   fullscreenBlock: boolean;
   priorityOverrideActive: boolean;
   priorityOverrideGeneration: number;
+}
+
+export interface TaskbarSnapshot {
+  available: boolean;
+  expanded: boolean;
+  reason: string | null;
+  taskbar: { left: number; top: number; right: number; bottom: number } | null;
+  client: { left: number; top: number; right: number; bottom: number } | null;
+  workArea: { left: number; top: number; right: number; bottom: number } | null;
+  strip: { left: number; top: number; right: number; bottom: number } | null;
+  dpi: number;
+  explorerPid: number | null;
+}
+
+export function taskbarAvailability(): Promise<{ available: boolean; reason: string | null; explorerPid: number | null }> {
+  return invoke("taskbar_availability");
+}
+
+export function taskbarEnter(): Promise<TaskbarSnapshot> {
+  return invoke("taskbar_enter_command");
+}
+
+export function taskbarLeave(): Promise<void> {
+  return invoke("taskbar_leave_command");
+}
+
+export function taskbarReapply(): Promise<TaskbarSnapshot> {
+  return invoke("taskbar_reapply_command");
+}
+
+export function taskbarStripToggle(): Promise<boolean> {
+  return invoke("taskbar_strip_toggle_command");
+}
+
+export function taskbarStateChanged(onState: (snapshot: TaskbarSnapshot) => void): Promise<() => void> {
+  return listen<TaskbarSnapshot>("window://taskbar-state-changed", (event) => onState(event.payload));
 }
 
 export function windowPolicyGet(): Promise<WindowPolicySnapshot> {
@@ -141,7 +182,8 @@ export function windowHideInFullscreenSet(
   return invoke<WindowPolicySnapshot>("window_hide_in_fullscreen_set", { enabled });
 }
 
-/** 模块 14 岛长度（横向逻辑像素）默认/边界，与后端 window_policy 常量对齐。 */
+/** 模块 14 岛长度（横向逻辑像素）默认/边界，与后端 window_policy 常量对齐。
+ * 各 UiMode（含 taskbar）通过独立 `window:width:<mode>` 键读取；缺键统一回退默认值。 */
 export const ISLAND_WIDTH_DEFAULT_PX = 720;
 export const ISLAND_WIDTH_MIN_PX = 420;
 export const ISLAND_WIDTH_MAX_PX = 1600;
@@ -239,6 +281,13 @@ export function createHoverStageController({
     suppressed = true;
   };
 
+  const resetAfterDrag = () => {
+    generation += 1;
+    clearTimer();
+    activeStage = 0;
+    suppressed = false;
+  };
+
   /** 悬停展开开关；下一 hover 周期生效（不中途改变已持有的 stage）。 */
   const setPromotionEnabled = (enabled_: boolean) => {
     promotionEnabled = enabled_;
@@ -273,6 +322,7 @@ export function createHoverStageController({
     enter,
     leave,
     suppressCurrentCycle,
+    resetAfterDrag,
     setPromotionEnabled,
     setStageOneEnabled,
     enable,

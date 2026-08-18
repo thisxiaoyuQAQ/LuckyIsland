@@ -322,15 +322,16 @@ export function AppearancePanel() {
 
       <Row
         label="界面模式"
-        desc="老 UI 为悬浮灵动岛；新 UI 贴屏幕顶部、只保留下方圆角（ClassIsland 风），紧凑态并排显示时间/日期/天气/待办"
+        desc="悬浮灵动岛；贴顶（ClassIsland 风）；任务栏嵌入条——条在开始按钮旁，点击在屏幕左下角展开面板"
       >
         <select
           className="rounded-md border border-input bg-background px-2 py-1 text-sm outline-none focus:border-ring focus:ring-[3px] focus:ring-ring/50"
           value={uiMode}
           onChange={(e) => void changeUiMode(e.target.value as UiMode)}
         >
-          <option value="island">老 UI（悬浮灵动岛）</option>
-          <option value="classisland">新 UI（贴顶）</option>
+          <option value="island">悬浮灵动岛</option>
+          <option value="classisland">贴顶</option>
+          <option value="taskbar">任务栏嵌入条</option>
         </select>
       </Row>
 
@@ -338,7 +339,7 @@ export function AppearancePanel() {
         以下五项按界面模式各自独立保存，当前调整的是「{UI_MODE_LABELS[uiMode]}」。
       </p>
 
-      <Row label="停靠边" desc="拖动吸附或手动选择窗口贴靠的屏幕边缘">
+      <Row label="停靠边" desc="拖动吸附或手动选择窗口贴靠的屏幕边缘（任务栏模式下由任务栏位置驱动，此项不生效）">
         <select
           className="rounded-md border border-input bg-background px-2 py-1 text-sm outline-none focus:border-ring focus:ring-[3px] focus:ring-ring/50"
           value={dockEdge}

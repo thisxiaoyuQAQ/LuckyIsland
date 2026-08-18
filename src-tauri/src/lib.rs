@@ -10,6 +10,7 @@ mod notify;
 mod settings;
 mod settings_window;
 mod storage;
+mod taskbar;
 mod terminal;
 mod voice;
 mod window_policy;
@@ -254,6 +255,11 @@ pub fn run() {
             term_snapshot,
             term_kill,
             term_open_wt,
+            taskbar::taskbar_availability,
+            taskbar::taskbar_enter_command,
+            taskbar::taskbar_leave_command,
+            taskbar::taskbar_reapply_command,
+            taskbar::taskbar_strip_toggle_command,
             voice_model_ready,
             voice_asr_model_ready,
             voice_download_model,
@@ -354,6 +360,7 @@ pub fn run() {
             app.manage(window_policy::WindowPolicy::new(
                 window_policy::WindowPolicyInputs::new(default_state),
             ));
+            app.manage(taskbar::TaskbarManager::new());
             let fullscreen_controller = fullscreen::FullscreenController::default();
             app.manage(fullscreen_controller.clone());
             fullscreen::start(app.handle().clone(), fullscreen_controller);
@@ -413,6 +420,21 @@ pub fn run() {
             // 必须在恢复位置之前跑——否则本次启动会用默认值把窗口放到别处。
             monitor::migrate_appearance_keys(app.state::<storage::Db>().inner());
 
+            // taskbar 持久化模式：先嵌入任务栏再按策略恢复窗口；失败时回退 island 模式 KV。
+            if monitor::current_ui_mode(app.state::<storage::Db>().inner()) == "taskbar" {
+                let manager = app.state::<taskbar::TaskbarManager>();
+                if let Err(error) = taskbar::enter_taskbar_mode(
+                    app.handle(),
+                    manager.inner(),
+                    app.state::<storage::Db>().inner(),
+                ) {
+                    eprintln!("[taskbar] 启动嵌入任务栏失败，回退 island：{error}");
+                    let _ = app
+                        .state::<storage::Db>()
+                        .setting_set(monitor::UI_MODE_KEY, "island");
+                }
+            }
+
             // 恢复所选显示器位置，再按设置面板的启动默认态显示。
             // 已保存的具体显示器缺失时只临时回退主屏，不覆盖用户选择。
             if let Err(error) =
@@ -462,6 +484,12 @@ pub fn run() {
             // 结束也无妨（OS 会在进程退出时回收所有句柄）。
             if let tauri::RunEvent::Exit = event {
                 tracing::info!("LuckyIsland 退出，开始清理运行时资源");
+                // taskbar 模式退出前先脱离 Shell_TrayWnd 父子关系，避免把 WS_CHILD 孤窗留给 Explorer。
+                if let Some(manager) = app_handle.try_state::<taskbar::TaskbarManager>() {
+                    if let Err(error) = taskbar::leave_taskbar_mode(app_handle, manager.inner()) {
+                        tracing::warn!("[taskbar] 退出脱离任务栏失败：{error}");
+                    }
+                }
                 if let Some(controller) = app_handle.try_state::<fullscreen::FullscreenController>()
                 {
                     controller.shutdown();

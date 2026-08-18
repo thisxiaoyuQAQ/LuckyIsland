@@ -41,6 +41,23 @@
         "dragDropEnabled": false
       },
       {
+        "label": "taskbar-strip",
+        "title": "LuckyIsland 任务栏",
+        "url": "taskbar-strip.html",
+        "width": 140,
+        "height": 40,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "shadow": false,
+        "visible": false,
+        "hiddenTitle": true,
+        "focus": false,
+        "dragDropEnabled": false
+      },
+      {
         "label": "ai-palette",
         "title": "LuckyIsland AI",
         "url": "ai.html",

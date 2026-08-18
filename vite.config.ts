@@ -37,13 +37,14 @@ export default defineConfig(async () => ({
     },
   },
 
-  // 多页入口：island（index.html）+ 设置面板（settings.html）
+  // 多页入口：island、设置、AI 与独立 taskbar-strip
   build: {
     rollupOptions: {
       input: {
         main: fileURLToPath(new URL("./index.html", import.meta.url)),
         settings: fileURLToPath(new URL("./settings.html", import.meta.url)),
         ai: fileURLToPath(new URL("./ai.html", import.meta.url)),
+        taskbarStrip: fileURLToPath(new URL("./taskbar-strip.html", import.meta.url)),
       },
     },
   },

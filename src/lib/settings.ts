@@ -42,7 +42,7 @@ export const KEYS = {
   windowFloatingBall: "window:floating_ball",
   /** 灵动岛视觉样式：legacy | new，缺键/非法值回退 new。 */
   windowVisualStyle: "window:visual_style",
-  /** 界面模式（模块 13）：island（悬浮，默认）| classisland（贴顶新 UI）。 */
+  /** 界面模式（模块 13/14 T5）：island（悬浮，默认）| classisland（贴顶）| taskbar（任务栏）。 */
   windowUiMode: "window:ui_mode",
   /** 岛所在显示器出现真正全屏窗口时自动隐藏，默认关闭。 */
   windowHideInFullscreen: "window:hide_in_fullscreen",
@@ -228,20 +228,22 @@ export function dockEdgeKey(mode: UiMode): string {
   return modeKey(KEYS.windowDockEdge, mode);
 }
 
-/** 界面模式（模块 13）：island（悬浮灵动岛，默认）| classisland（贴顶新 UI）。 */
-export type UiMode = "island" | "classisland";
+/** 界面模式（模块 13/14 T5）：island（悬浮灵动岛，默认）| classisland（贴顶新 UI）| taskbar（任务栏嵌入条）。 */
+export type UiMode = "island" | "classisland" | "taskbar";
 
-/** 严格解析 window:ui_mode：仅 "classisland" 为新 UI，缺键与一切非法值回退 "island"。 */
+/** 严格解析 window:ui_mode：仅三个正式值有效，缺键/非法值（含 legacy corner）回退 island。 */
 export function parseUiMode(v: string | null | undefined): UiMode {
-  return v === "classisland" ? "classisland" : "island";
+  if (v === "classisland" || v === "taskbar") return v;
+  return "island";
 }
 
-export const UI_MODES: UiMode[] = ["island", "classisland"];
+export const UI_MODES: UiMode[] = ["island", "classisland", "taskbar"];
 
-/** 两种界面模式的中文名（设置面板与提示文案共用）。 */
+/** 三种界面模式的中文名（设置面板与提示文案共用）。 */
 export const UI_MODE_LABELS: Record<UiMode, string> = {
   island: "悬浮灵动岛",
   classisland: "贴顶",
+  taskbar: "任务栏",
 };
 
 /**

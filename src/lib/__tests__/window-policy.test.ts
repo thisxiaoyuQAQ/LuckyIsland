@@ -234,6 +234,20 @@ describe("hover stage controller", () => {
     ]);
   });
 
+  it("drag reset clears suppression so the next enter starts a fresh hover cycle", () => {
+    vi.useFakeTimers();
+    const submit = vi.fn();
+    const controller = stageController(submit);
+    controller.setPromotionEnabled(true);
+
+    controller.suppressCurrentCycle();
+    controller.resetAfterDrag();
+    controller.enter();
+    vi.advanceTimersByTime(ENTER);
+
+    expect(submit.mock.calls).toEqual([[2, 0]]);
+  });
+
   it("disabled controller ignores pointer events until re-enabled", () => {
     vi.useFakeTimers();
     const submit = vi.fn();

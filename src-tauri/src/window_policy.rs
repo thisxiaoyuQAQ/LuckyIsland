@@ -213,6 +213,11 @@ pub struct WindowPolicySnapshot {
     pub click_through: bool,
     pub hover_expand: bool,
     pub floating_ball: bool,
+    pub taskbar_mode: bool,
+    pub taskbar_available: bool,
+    pub taskbar_expanded: bool,
+    pub taskbar_reason: Option<String>,
+    /** 右侧悬停阶段：0=无，1=悬停到条状，2=持续悬停到完整面板。 */
     pub hover_stage: u8,
     pub hide_in_fullscreen: bool,
     pub fullscreen_supported: bool,
@@ -246,8 +251,8 @@ struct AppClickThroughContext<'a> {
     previous: Option<WindowDecision>,
 }
 
-/// 当前界面模式的岛长度（逻辑像素）：读 `window:width:<mode>`，缺键/非法回退默认 720。
-/// 供 resize/clamp/恢复统一取用，避免窗口尺寸与可视区计算各拿一份宽度。
+/// 当前界面模式对应的岛长度（逻辑像素）由 monitor::width_key 按模式读取。
+/// taskbar 的独立宽度键缺失时仍回退默认值；本模块不把 taskbar 视为 island/classisland 的别名。
 fn island_width(db: &Db) -> f64 {
     parse_island_width(db.setting_get(&crate::monitor::width_key(db)).as_deref())
 }
@@ -307,7 +312,30 @@ impl ClickThroughTransactionContext for AppClickThroughContext<'_> {
     }
 }
 
-fn snapshot(inputs: WindowPolicyInputs, decision: WindowDecision) -> WindowPolicySnapshot {
+fn taskbar_snapshot(app: &AppHandle) -> (bool, crate::taskbar::TaskbarSnapshot) {
+    let taskbar_mode = crate::monitor::current_ui_mode(app.state::<Db>().inner()) == "taskbar";
+    let snapshot = app
+        .try_state::<crate::taskbar::TaskbarManager>()
+        .map(|manager| crate::taskbar::taskbar_snapshot(manager.inner()))
+        .unwrap_or_default();
+    (taskbar_mode, snapshot)
+}
+
+fn snapshot_for_app(
+    app: &AppHandle,
+    inputs: WindowPolicyInputs,
+    decision: WindowDecision,
+) -> WindowPolicySnapshot {
+    let (taskbar_mode, taskbar) = taskbar_snapshot(app);
+    snapshot(inputs, decision, taskbar_mode, taskbar)
+}
+
+fn snapshot(
+    inputs: WindowPolicyInputs,
+    decision: WindowDecision,
+    taskbar_mode: bool,
+    taskbar: crate::taskbar::TaskbarSnapshot,
+) -> WindowPolicySnapshot {
     WindowPolicySnapshot {
         desired_state: inputs.desired_state,
         effective_state: decision.effective_state,
@@ -315,6 +343,10 @@ fn snapshot(inputs: WindowPolicyInputs, decision: WindowDecision) -> WindowPolic
         click_through: inputs.click_through,
         hover_expand: inputs.hover_expand,
         floating_ball: inputs.floating_ball,
+        taskbar_mode,
+        taskbar_available: taskbar.available,
+        taskbar_expanded: taskbar_mode && taskbar.expanded,
+        taskbar_reason: taskbar.reason,
         hover_stage: inputs.hover_stage,
         hide_in_fullscreen: inputs.hide_in_fullscreen,
         fullscreen_supported: cfg!(windows),
@@ -325,6 +357,9 @@ fn snapshot(inputs: WindowPolicyInputs, decision: WindowDecision) -> WindowPolic
 }
 
 trait ClickThroughTransactionContext {
+    fn app(&self) -> Option<&AppHandle> {
+        None
+    }
     fn inputs(&self) -> WindowPolicyInputs;
     fn set_ignore_cursor_events(&mut self, enabled: bool) -> Result<(), String>;
     fn persist(&mut self, enabled: bool) -> Result<(), String>;
@@ -350,7 +385,15 @@ fn apply_click_through_transaction(
     }
 
     context.commit(next);
-    let snapshot = snapshot(next, reduce(next, FocusIntent::Preserve));
+    let snapshot = match context.app() {
+        Some(app) => snapshot_for_app(app, next, reduce(next, FocusIntent::Preserve)),
+        None => snapshot(
+            next,
+            reduce(next, FocusIntent::Preserve),
+            false,
+            Default::default(),
+        ),
+    };
     context.publish(snapshot.clone())?;
     Ok(snapshot)
 }
@@ -366,7 +409,17 @@ fn restore_click_through_transaction(
             fallback.click_through = false;
             context.persist(false)?;
             context.commit(fallback);
-            let snapshot = snapshot(fallback, reduce(fallback, FocusIntent::Preserve));
+            let snapshot = match context.app() {
+                Some(app) => {
+                    snapshot_for_app(app, fallback, reduce(fallback, FocusIntent::Preserve))
+                }
+                None => snapshot(
+                    fallback,
+                    reduce(fallback, FocusIntent::Preserve),
+                    false,
+                    Default::default(),
+                ),
+            };
             context.publish(snapshot.clone())?;
             Ok(snapshot)
         }
@@ -482,17 +535,42 @@ fn update_and_apply(
         }
         return Err("找不到灵动岛窗口".to_string());
     };
-    let width = island_width(app.state::<Db>().inner());
-    let edge = crate::monitor::current_dock_edge(app.state::<Db>().inner());
-    if let Err(error) = apply_effects(&window, previous, decision, width, edge) {
-        let mut runtime = policy
-            .0
-            .lock()
-            .map_err(|lock_error| lock_error.to_string())?;
-        if runtime.operation_generation == generation {
-            runtime.inputs = previous_inputs;
+    let db = app.state::<Db>();
+    let taskbar_mode = crate::monitor::current_ui_mode(db.inner()) == "taskbar";
+    if taskbar_mode {
+        // taskbar：expanded → 面板按任务栏几何定位后显示；其余（compact/capsule/hidden）→ 隐藏 island。
+        let manager = app.state::<crate::taskbar::TaskbarManager>();
+        match decision.effective_state {
+            IslandState::Expanded => {
+                crate::taskbar::apply_taskbar_panel_geometry(
+                    app,
+                    manager.inner(),
+                    island_width(db.inner()),
+                    EXPANDED_HEIGHT_LOGICAL,
+                )?;
+                window
+                    .show()
+                    .map_err(|error| format!("显示任务栏面板失败：{error}"))?;
+            }
+            _ => {
+                window
+                    .hide()
+                    .map_err(|error| format!("隐藏任务栏面板失败：{error}"))?;
+            }
         }
-        return Err(error);
+    } else {
+        let width = island_width(db.inner());
+        let edge = crate::monitor::current_dock_edge(db.inner());
+        if let Err(error) = apply_effects(&window, previous, decision, width, edge) {
+            let mut runtime = policy
+                .0
+                .lock()
+                .map_err(|lock_error| lock_error.to_string())?;
+            if runtime.operation_generation == generation {
+                runtime.inputs = previous_inputs;
+            }
+            return Err(error);
+        }
     }
 
     let current = {
@@ -506,7 +584,7 @@ fn update_and_apply(
                 effective_state: decision.effective_state,
                 focus: FocusIntent::Preserve,
             });
-            Some(snapshot(runtime.inputs, decision))
+            Some(snapshot_for_app(app, runtime.inputs, decision))
         }
     };
 
@@ -701,7 +779,7 @@ fn window_policy_snapshot(app: &AppHandle) -> Result<WindowPolicySnapshot, Strin
     let policy = app.state::<WindowPolicy>();
     let runtime = policy.0.lock().map_err(|error| error.to_string())?;
     let decision = reduce(runtime.inputs, FocusIntent::Preserve);
-    Ok(snapshot(runtime.inputs, decision))
+    Ok(snapshot_for_app(app, runtime.inputs, decision))
 }
 
 pub fn restore_click_through(app: &AppHandle, db: &Db) -> Result<WindowPolicySnapshot, String> {
@@ -871,10 +949,13 @@ pub fn window_hover_expand_set(
 }
 
 #[tauri::command]
-pub fn window_policy_get(policy: State<'_, WindowPolicy>) -> Result<WindowPolicySnapshot, String> {
+pub fn window_policy_get(
+    app: AppHandle,
+    policy: State<'_, WindowPolicy>,
+) -> Result<WindowPolicySnapshot, String> {
     let runtime = policy.0.lock().map_err(|error| error.to_string())?;
     let decision = reduce(runtime.inputs, FocusIntent::Preserve);
-    Ok(snapshot(runtime.inputs, decision))
+    Ok(snapshot_for_app(&app, runtime.inputs, decision))
 }
 
 /// 当前有效状态的逻辑几何（宽 × 高），供 monitor 定位/clamp/恢复使用实际窗口尺寸。
@@ -916,6 +997,16 @@ fn resize_current_window(app: &AppHandle, db: &Db) -> Result<(), String> {
 }
 
 pub(crate) fn resize_current_for_dock(app: &AppHandle, db: &Db) -> Result<(), String> {
+    if crate::monitor::current_ui_mode(db) == "taskbar" {
+        let manager = app.state::<crate::taskbar::TaskbarManager>();
+        crate::taskbar::apply_taskbar_panel_geometry(
+            app,
+            manager.inner(),
+            island_width(db),
+            EXPANDED_HEIGHT_LOGICAL,
+        )?;
+        return Ok(());
+    }
     resize_current_window(app, db)
 }
 
@@ -1059,6 +1150,47 @@ mod tests {
         assert_eq!(
             IslandState::parse("floating").unwrap_err(),
             "未知灵动岛状态：floating"
+        );
+    }
+
+    #[test]
+    fn taskbar_snapshot_fields_roundtrip() {
+        let decision = reduce(
+            WindowPolicyInputs::new(IslandState::Expanded),
+            FocusIntent::Preserve,
+        );
+        let inputs = WindowPolicyInputs::new(IslandState::Expanded);
+        let policy_snapshot = snapshot(
+            inputs,
+            decision,
+            true,
+            crate::taskbar::TaskbarSnapshot {
+                available: true,
+                expanded: true,
+                reason: None,
+                ..Default::default()
+            },
+        );
+        assert!(policy_snapshot.taskbar_mode);
+        assert!(policy_snapshot.taskbar_available);
+        assert!(policy_snapshot.taskbar_expanded);
+        assert_eq!(policy_snapshot.taskbar_reason, None);
+
+        let fallback = snapshot(
+            inputs,
+            decision,
+            true,
+            crate::taskbar::TaskbarSnapshot {
+                available: false,
+                reason: Some("未找到 Windows 任务栏".to_string()),
+                ..Default::default()
+            },
+        );
+        assert!(!fallback.taskbar_available);
+        assert!(!fallback.taskbar_expanded);
+        assert_eq!(
+            fallback.taskbar_reason.as_deref(),
+            Some("未找到 Windows 任务栏")
         );
     }
 
