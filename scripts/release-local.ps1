@@ -61,8 +61,14 @@ try {
     if (-not (Test-Path $bundleDir)) {
         $bundleDir = Join-Path $repoRoot 'src-tauri/target/release/bundle/nsis'
     }
-    $installer = Get-ChildItem $bundleDir -File -Filter '*.exe' | Select-Object -First 1
-    if (-not $installer) { throw 'Built NSIS installer was not found.' }
+    # Pick this version's installer only: the bundle dir keeps older installers
+    # (0.5.0 sorts before 0.5.1), so taking the first *.exe ships the wrong version.
+    $installerName = "LuckyIsland_${version}_x64-setup.exe"
+    $installerPath = Join-Path $bundleDir $installerName
+    if (-not (Test-Path $installerPath -PathType Leaf)) {
+        throw "Built NSIS installer $installerName was not found in $bundleDir."
+    }
+    $installer = Get-Item $installerPath
     $signaturePath = "$($installer.FullName).sig"
     if (-not (Test-Path $signaturePath)) { throw 'Built updater signature was not found.' }
 
