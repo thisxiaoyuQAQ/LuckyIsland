@@ -1,14 +1,20 @@
 # LuckyIsland
 
-> Windows 灵动岛式桌面助手 · 常驻屏幕顶部，一眼看清时间、天气、待办、行情，顺手敲木鱼、查历史、问 AI。
+> Windows 灵动岛式桌面助手 · 悬浮在屏幕边缘或嵌进任务栏，一眼看清时间、天气、待办、行情，顺手敲木鱼、查历史、问 AI。
 
-LuckyIsland 把 macOS 灵动岛的形态搬到了 Windows：一个常驻屏幕顶部中央的透明小条，平时只占一行高度显示时钟；鼠标悬停或热键展开成一块「单页画布」，在时间 / 日历 / 天气 / 股票 / 待办 / 终端 / 通知之间秒切。还能通过本地 HTTP 端点接收 Claude / Codex 的完成通知，用 Windows toast 弹给你。
+LuckyIsland 把 macOS 灵动岛的形态搬到了 Windows：默认是一个常驻屏幕顶部中央的透明小条，平时只占一行高度显示时钟；也可以紧贴屏幕顶边、按住 Alt 拖到屏幕任意一边吸附，或者直接嵌进任务栏的开始按钮旁。鼠标悬停、点击或热键把它展开成一块「单页画布」，在时间 / 日历 / 天气 / 股票 / 待办 / 终端 / 通知之间秒切。还能通过本地 HTTP 端点接收 Claude / Codex 的完成通知，用 Windows toast 弹给你。
 
 ## 它能做什么
 
 **灵动岛外壳**
-- 三态窗口：隐藏 / 紧凑（720×80 单行）/ 展开（720×400 画布），260ms 缓动过渡
-- 透明窗 + 毛玻璃，跟随系统深浅色
+- 三态窗口：隐藏 / 紧凑（单行）/ 展开（画布），260ms 缓动过渡；岛长度可在 420～1600 之间调整（默认 720）
+- 三种界面模式：
+  - **悬浮灵动岛**：默认形态，悬浮在屏幕顶部中央
+  - **贴顶**：紧贴屏幕顶边，紧凑态并排显示时间 · 日期 · 天气 · 待办
+  - **任务栏嵌入条**：嵌在开始按钮旁，点击在屏幕左下角展开面板；资源管理器重启后自动重新挂回
+- 按住 `Alt` + 左键拖到任意位置，靠近屏幕上下左右边缘自动吸附；贴左右边时改为竖向图标导航
+- 可选悬浮胶囊：收起后缩成小胶囊，悬停或点击再展开
+- 透明窗 + 毛玻璃，展开 / 收起透明度分别可调，跟随系统深浅色
 - 多屏选择 + 位置持久化：副屏断开自动回退主屏，重连后由应用主动移回原副屏
 - 可配置整窗鼠标穿透、悬停展开和岛所在显示器真正全屏时自动隐藏（Windows 10/11）
 - 托盘菜单、开机自启、单实例
@@ -30,17 +36,19 @@ LuckyIsland 把 macOS 灵动岛的形态搬到了 Windows：一个常驻屏幕�
 - 独立面板，三选一 Provider：Claude CLI / Codex CLI / 自定义 Chat API
 - 联网搜索、流式问答、请求可取消（取消/晚到响应由 reducer 状态机保证一致）、对话历史
 - `Alt+Space` 随时唤起
+- 用不上可以在设置里卸载（连带卸载语音），入口与热键随之移除；对话历史和 API Key 保留，随时重新安装
 
 **语音**
 - sherpa-onnx 唤醒词 + 流式 ASR + Windows SAPI5 TTS 应答
 - 唤醒时懒加载模型，闲置 ~110MB
+- 可单独卸载并删除已下载的语音模型，问答照常可用
 
 **设置**
 - 独立设置窗口：总体 / 外观 / 页面管理 / 通知 / 终端 / 天气 / 股票 / AI / 语音 / 快捷键 / 时间组件 / 时间外观 / 关于
 - 关于页提供脱敏诊断、stable 更新检查、安全下载/安装和 GitHub Release 备用入口
 - 文本/数字字段统一草稿 + debounce/blur 提交 + 保存错误回显
 - 配置导入导出（安全白名单，密钥 / token / 缓存 / 运行数据不外泄）
-- 窗口透明度、双轴偏移实时预览
+- 外观：界面模式、停靠边、岛长度、展开 / 收起透明度、双轴偏移，按界面模式分别保存并实时预览
 
 ## 快捷键
 
@@ -49,6 +57,7 @@ LuckyIsland 把 macOS 灵动岛的形态搬到了 Windows：一个常驻屏幕�
 | 显示 / 隐藏灵动岛 | `Alt+X` |
 | 唤起 AI 助手 | `Alt+Space` |
 | 切换鼠标穿透 | 默认未绑定，可在设置中自定义 |
+| 拖动 / 吸附灵动岛 | 按住 `Alt` + 左键拖动 |
 | 切换页面 | `Alt+1~9` / `Alt+←` / `Alt+->` / 滚轮 |
 | 托盘左键 | 显示 / 隐藏 |
 
@@ -64,7 +73,7 @@ LuckyIsland 把 macOS 灵动岛的形态搬到了 Windows：一个常驻屏幕�
 
 ## 工程质量
 
-- **统一验证门禁**：`pnpm verify` 串行执行 TypeScript、前端 Vitest、三入口 Vite build、Rust fmt、严格 Clippy (`-D warnings`)、Rust lib、cargo check
+- **统一验证门禁**：`pnpm verify` 串行执行 TypeScript、前端 Vitest、四入口 Vite build、Rust fmt、严格 Clippy (`-D warnings`)、Rust lib、cargo check
 - **IPC 边界 unknown 校验**：手写轻量守卫（不引 zod），AI / 通知 / 天气 / 股票 12 个 invoke 与事件 payload 统一 `invoke<unknown> + assertIpc`，畸形响应无法渗入组件
 - **Tauri 事件订阅统一**：`useTauriEvent` / `useAsyncSubscription` 共享 hook，卸载前/后 resolve 与 StrictMode 双挂载都有真实 React 回归证据
 - **SQLite 版本化 migration**：`PRAGMA user_version` + 每版事务 + 失败回滚 + 拒绝降级；空库 / 旧库 / 幂等 / 失败回滚 7/7 通过
@@ -84,7 +93,7 @@ pnpm tauri dev       # 桌面应用开发（需 Rust + MSVC 工具链）
 pnpm tauri build     # 打包 NSIS 安装包
 pnpm typecheck       # TypeScript 类型检查
 pnpm test:frontend   # Vitest：Node 纯逻辑 + happy-dom React 生命周期
-pnpm build:frontend  # 构建 index/settings/ai 三个 HTML 入口
+pnpm build:frontend  # 构建 index/settings/ai/taskbar-strip 四个 HTML 入口
 pnpm fmt:rust        # 检查 Rust 格式，不改写文件
 pnpm clippy:rust     # 全 targets Clippy，warnings 视为失败
 pnpm test:rust       # Rust lib 单元测试
