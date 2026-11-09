@@ -23,7 +23,7 @@ interface EventSubscription {
   pending: Deferred<() => void>;
 }
 
-const { settingsSubscriptions, eventSubscriptions, deferred, settingsStore } = vi.hoisted(() => {
+const { settingsSubscriptions, eventSubscriptions, deferred, settingsStore, dragController, hoverController } = vi.hoisted(() => {
   function createDeferred<T>(): Deferred<T> {
     let resolve!: (value: T) => void;
     let reject!: (reason: unknown) => void;
@@ -41,6 +41,15 @@ const { settingsSubscriptions, eventSubscriptions, deferred, settingsStore } = v
     // 模块 14 T2：透明度改为「事件触发重读 KV」，测试用一个内存 KV 让事件载荷落库，
     // settingGet 据此返回——贴合生产「写键→广播→岛窗口重读」的链路。
     settingsStore: new Map<string, string | null>(),
+    dragController: {
+      setDragging: undefined as ((active: boolean) => void) | undefined,
+      onMouseDown: vi.fn(),
+      onSettled: vi.fn(),
+      dispose: vi.fn(),
+    },
+    hoverController: {
+      resetAfterDrag: vi.fn(),
+    },
   };
 });
 
@@ -159,6 +168,17 @@ const capsuleSnapshot = {
   floatingBall: true,
 } satisfies WindowPolicySnapshot;
 
+vi.mock("@/lib/island-drag-controller", () => ({
+    createIslandDragController: vi.fn((options: {
+      setDragging: (active: boolean) => void;
+      recoverAfterSettleFailure?: () => void | Promise<void>;
+    }) => {
+      dragController.setDragging = options.setDragging;
+      Object.assign(dragController, { recoverAfterSettleFailure: options.recoverAfterSettleFailure });
+      return dragController;
+    }),
+}));
+
 vi.mock("@/lib/window-policy", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/window-policy")>();
   return {
@@ -170,11 +190,14 @@ vi.mock("@/lib/window-policy", async (importOriginal) => {
       enter: vi.fn(),
       leave: vi.fn(),
       suppressCurrentCycle: vi.fn(),
+      cancelPendingLeave: vi.fn(),
+      resumeStage: vi.fn(),
       setPromotionEnabled: vi.fn(),
       setStageOneEnabled: vi.fn(),
       enable: vi.fn(),
       disable: vi.fn(),
       dispose: vi.fn(),
+      resetAfterDrag: hoverController.resetAfterDrag,
     })),
     createIslandTransitionController: vi.fn(() => ({
       request: vi.fn(async () => undefined),
@@ -277,6 +300,42 @@ describe("App event subscriptions", () => {
 
     await dispatch(() => emit("window://state-changed", expandedSnapshot));
     expect(document.querySelector('[data-testid="page-time"][data-compact="false"]')).not.toBeNull();
+    await tree.unmount();
+  });
+
+  it("replaces expanded content with the independent drag capsule", async () => {
+    const tree = await mountReactTree(<App />);
+    dragController.setDragging?.(true);
+    await flushReactWork();
+    const container = islandContainer();
+    expect(container.dataset.presentation).toBe("dragging");
+    expect(container.querySelector("[data-drag-presentation]")?.textContent).toContain("拖动调整位置");
+    expect(container.querySelector('[data-testid="page-time"]')).toBeNull();
+    expect(container.querySelector('button[aria-label="展开/收起"]')).toBeNull();
+    await tree.unmount();
+  });
+
+  it("forwards well-formed drag-settled events to the drag controller", async () => {
+    const tree = await mountReactTree(<App />);
+    allSubscriptions().forEach((entry) => entry.pending.resolve(vi.fn()));
+    await flushReactWork();
+
+    const settled = { id: 3, ok: true, edge: "left", error: null };
+    await dispatch(() => emit("window://drag-settled", settled));
+    await dispatch(() => emit("window://drag-settled", { id: "bad" }));
+
+    expect(dragController.onSettled).toHaveBeenCalledTimes(1);
+    expect(dragController.onSettled).toHaveBeenCalledWith(settled);
+    await tree.unmount();
+  });
+
+  it("resets hover presentation after drag completion", async () => {
+    const tree = await mountReactTree(<App />);
+    await dispatch(() => {
+      dragController.setDragging?.(true);
+      dragController.setDragging?.(false);
+    });
+    expect(hoverController.resetAfterDrag).toHaveBeenCalledTimes(1);
     await tree.unmount();
   });
 

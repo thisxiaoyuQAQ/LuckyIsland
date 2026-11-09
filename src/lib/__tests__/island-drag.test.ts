@@ -2,17 +2,16 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { offsetFromWindowPosition } from "@/lib/island-drag";
 
 const mocks = vi.hoisted(() => ({
-  startDragging: vi.fn<() => Promise<void>>(),
-  windowDragDropSettle: vi.fn<() => Promise<string>>(),
+  windowDragBegin: vi.fn<() => Promise<number | null>>(),
+  windowDragCancel: vi.fn<() => Promise<void>>(),
 }));
 
-vi.mock("@tauri-apps/api/window", () => ({
-  getCurrentWindow: () => ({ startDragging: mocks.startDragging }),
+vi.mock("@/lib/settings", () => ({
+  windowDragBegin: mocks.windowDragBegin,
+  windowDragCancel: mocks.windowDragCancel,
 }));
 
-vi.mock("@/lib/settings", () => ({ windowDragDropSettle: mocks.windowDragDropSettle }));
-
-import { createIslandDragController } from "@/lib/island-drag-controller";
+import { DRAG_SAFETY_TIMEOUT_MS, createIslandDragController } from "@/lib/island-drag-controller";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -33,153 +32,193 @@ function altMouseDown() {
   } as unknown as MouseEvent;
 }
 
+function controller(options: Partial<Parameters<typeof createIslandDragController>[0]> = {}) {
+  const states: boolean[] = [];
+  const recover = vi.fn(async () => undefined);
+  const instance = createIslandDragController({
+    setDragging: (value) => states.push(value),
+    recoverAfterSettleFailure: recover,
+    ...options,
+  });
+  return { instance, states, recover };
+}
+
 beforeEach(() => {
   vi.stubGlobal("Element", class {});
   vi.useFakeTimers();
   vi.clearAllMocks();
+  mocks.windowDragBegin.mockResolvedValue(7);
+  mocks.windowDragCancel.mockResolvedValue(undefined);
 });
 
+// 2026-11-09 真机反馈：Windows 上 startDragging 立即返回、网页收不到松手 mouseup，
+// 前端按 mouseup/超时结算会落在系统拖动循环中途。改为 Rust 判定结束并广播 drag-settled。
 describe("createIslandDragController", () => {
-  it("does not finish merely because the window pauses during native dragging", async () => {
-    const nativeDrag = deferred<void>();
-    mocks.startDragging.mockReturnValue(nativeDrag.promise);
-    mocks.windowDragDropSettle.mockResolvedValue("top");
-    const states: boolean[] = [];
-    const controller = createIslandDragController({ setDragging: (value) => states.push(value) });
+  it("enters the drag presentation and asks Rust to start the native drag", async () => {
+    const { instance, states } = controller();
 
-    controller.onMouseDown(altMouseDown());
-    await vi.advanceTimersByTimeAsync(180);
+    instance.onMouseDown(altMouseDown());
+    await vi.advanceTimersByTimeAsync(0);
 
-    expect(mocks.windowDragDropSettle).not.toHaveBeenCalled();
     expect(states).toEqual([true]);
-    controller.dispose();
+    expect(mocks.windowDragBegin).toHaveBeenCalledTimes(1);
+    instance.dispose();
   });
 
-  it("does not settle on an early mouseup while native dragging is pending", async () => {
-    const nativeDrag = deferred<void>();
-    mocks.startDragging.mockReturnValue(nativeDrag.promise);
-    mocks.windowDragDropSettle.mockResolvedValue("top");
-    const states: boolean[] = [];
-    const controller = createIslandDragController({ setDragging: (value) => states.push(value) });
+  it("stays in drag mode however long the drag takes until Rust reports the settle", async () => {
+    const { instance, states } = controller();
 
-    controller.onMouseDown(altMouseDown());
-    controller.onMouseUp();
-    await Promise.resolve();
-
-    expect(mocks.windowDragDropSettle).not.toHaveBeenCalled();
+    instance.onMouseDown(altMouseDown());
+    await vi.advanceTimersByTimeAsync(10_000);
     expect(states).toEqual([true]);
-  });
 
-  it("settles after native dragging resolves following an early mouseup", async () => {
-    const nativeDrag = deferred<void>();
-    const settle = deferred<string>();
-    mocks.startDragging.mockReturnValue(nativeDrag.promise);
-    mocks.windowDragDropSettle.mockReturnValue(settle.promise);
-    const states: boolean[] = [];
-    const controller = createIslandDragController({ setDragging: (value) => states.push(value) });
-
-    controller.onMouseDown(altMouseDown());
-    controller.onMouseUp();
-    nativeDrag.resolve();
-    await Promise.resolve();
-
-    expect(mocks.windowDragDropSettle).toHaveBeenCalledTimes(1);
-    expect(states).toEqual([true]);
-    settle.resolve("top");
-    await Promise.resolve();
-    await Promise.resolve();
+    instance.onSettled({ id: 7, ok: true, edge: "top", error: null });
     expect(states).toEqual([true, false]);
+    instance.dispose();
   });
 
-  it("settles exactly once when native completion and the timeout both signal completion", async () => {
-    const nativeDrag = deferred<void>();
-    const settle = deferred<string>();
-    mocks.startDragging.mockReturnValue(nativeDrag.promise);
-    mocks.windowDragDropSettle.mockReturnValue(settle.promise);
-    const states: boolean[] = [];
-    const controller = createIslandDragController({ setDragging: (value) => states.push(value) });
+  it("ignores settle events for other drags", async () => {
+    const { instance, states } = controller();
 
-    controller.onMouseDown(altMouseDown());
-    controller.onMouseUp();
-    nativeDrag.resolve();
-    await Promise.resolve();
-    await vi.advanceTimersByTimeAsync(3000);
+    instance.onMouseDown(altMouseDown());
+    await vi.advanceTimersByTimeAsync(0);
+    instance.onSettled({ id: 6, ok: true, edge: "top", error: null });
 
-    expect(mocks.windowDragDropSettle).toHaveBeenCalledTimes(1);
     expect(states).toEqual([true]);
-    settle.resolve("top");
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(states).toEqual([true, false]);
+    instance.dispose();
   });
 
-  it("releases dragging after settle failure", async () => {
-    mocks.startDragging.mockResolvedValue();
-    mocks.windowDragDropSettle.mockRejectedValue(new Error("settle failed"));
-    const states: boolean[] = [];
-    const controller = createIslandDragController({ setDragging: (value) => states.push(value) });
+  it("accepts a settle that arrives before the begin reply", async () => {
+    const begin = deferred<number | null>();
+    mocks.windowDragBegin.mockReturnValue(begin.promise);
+    const { instance, states } = controller();
 
-    controller.onMouseDown(altMouseDown());
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
+    instance.onMouseDown(altMouseDown());
+    instance.onSettled({ id: 7, ok: true, edge: "left", error: null });
+    expect(states).toEqual([true]);
+
+    begin.resolve(7);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(states).toEqual([true, false]);
+    instance.dispose();
+  });
+
+  it("recovers frontend state when Rust reports a failed settle", async () => {
+    const { instance, states, recover } = controller();
+
+    instance.onMouseDown(altMouseDown());
+    await vi.advanceTimersByTimeAsync(0);
+    instance.onSettled({ id: 7, ok: false, edge: null, error: "读取拖动落点失败" });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(recover).toHaveBeenCalledTimes(1);
+    expect(states).toEqual([true, false]);
+    instance.dispose();
+  });
+
+  it("leaves drag mode when the drag did not start (taskbar mode)", async () => {
+    mocks.windowDragBegin.mockResolvedValue(null);
+    const { instance, states } = controller();
+
+    instance.onMouseDown(altMouseDown());
+    await vi.advanceTimersByTimeAsync(0);
 
     expect(states).toEqual([true, false]);
+    expect(mocks.windowDragCancel).not.toHaveBeenCalled();
+    instance.dispose();
   });
 
-  it("releases dragging when native drag startup fails", async () => {
-    mocks.startDragging.mockRejectedValue(new Error("start failed"));
-    const states: boolean[] = [];
-    const controller = createIslandDragController({ setDragging: (value) => states.push(value) });
+  it("leaves drag mode and recovers when starting the drag fails", async () => {
+    mocks.windowDragBegin.mockRejectedValue(new Error("开始拖动失败"));
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const { instance, states, recover } = controller();
 
-    controller.onMouseDown(altMouseDown());
-    await Promise.resolve();
-    await Promise.resolve();
+    instance.onMouseDown(altMouseDown());
+    await vi.advanceTimersByTimeAsync(0);
 
-    expect(mocks.windowDragDropSettle).not.toHaveBeenCalled();
     expect(states).toEqual([true, false]);
+    expect(recover).toHaveBeenCalledTimes(1);
+    error.mockRestore();
+    instance.dispose();
   });
 
-  it("does not enter dragging for a normal left click", () => {
-    const states: boolean[] = [];
-    const controller = createIslandDragController({ setDragging: (value) => states.push(value) });
+  it("cancels through Rust if no settle ever arrives", async () => {
+    const { instance, states, recover } = controller();
+
+    instance.onMouseDown(altMouseDown());
+    await vi.advanceTimersByTimeAsync(DRAG_SAFETY_TIMEOUT_MS - 1);
+    expect(mocks.windowDragCancel).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(mocks.windowDragCancel).toHaveBeenCalledTimes(1);
+    expect(states).toEqual([true, false]);
+    // 先等 Rust 取消完成再恢复界面状态。
+    await vi.advanceTimersByTimeAsync(0);
+    expect(recover).toHaveBeenCalledTimes(1);
+    instance.dispose();
+  });
+
+  it("ignores a second Alt+press while a drag is in progress", async () => {
+    const { instance } = controller();
+
+    instance.onMouseDown(altMouseDown());
+    instance.onMouseDown(altMouseDown());
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(mocks.windowDragBegin).toHaveBeenCalledTimes(1);
+    instance.dispose();
+  });
+
+  it("does not enter dragging for a normal left click, when disabled, or on a button", () => {
+    const { instance, states } = controller({ canDrag: () => false });
+    instance.onMouseDown(altMouseDown());
+
+    const plain = controller();
     const event = altMouseDown();
     Object.assign(event, { altKey: false });
+    plain.instance.onMouseDown(event);
 
-    controller.onMouseDown(event);
+    const onButton = controller();
+    class FakeElement {
+      closest() {
+        return {};
+      }
+    }
+    vi.stubGlobal("Element", FakeElement);
+    const buttonEvent = altMouseDown();
+    Object.assign(buttonEvent, { target: new FakeElement() });
+    onButton.instance.onMouseDown(buttonEvent);
 
-    expect(mocks.startDragging).not.toHaveBeenCalled();
+    expect(mocks.windowDragBegin).not.toHaveBeenCalled();
     expect(states).toEqual([]);
+    expect(plain.states).toEqual([]);
+    expect(onButton.states).toEqual([]);
   });
 
-  it("releases dragging on dispose and ignores stale native completion", async () => {
-    const nativeDrag = deferred<void>();
-    mocks.startDragging.mockReturnValue(nativeDrag.promise);
-    mocks.windowDragDropSettle.mockResolvedValue("top");
-    const states: boolean[] = [];
-    const controller = createIslandDragController({ setDragging: (value) => states.push(value) });
+  it("cancels an in-progress drag on dispose and ignores its late settle", async () => {
+    const { instance, states } = controller();
 
-    controller.onMouseDown(altMouseDown());
-    controller.dispose();
-    nativeDrag.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
+    instance.onMouseDown(altMouseDown());
+    await vi.advanceTimersByTimeAsync(0);
+    instance.dispose();
+    instance.onSettled({ id: 7, ok: true, edge: "top", error: null });
 
-    expect(mocks.windowDragDropSettle).not.toHaveBeenCalled();
+    expect(mocks.windowDragCancel).toHaveBeenCalledTimes(1);
     expect(states).toEqual([true, false]);
   });
 
-  it("uses timeout only as a fallback and releases dragging", async () => {
-    mocks.startDragging.mockReturnValue(new Promise<void>(() => undefined));
-    mocks.windowDragDropSettle.mockResolvedValue("top");
-    const states: boolean[] = [];
-    const controller = createIslandDragController({ setDragging: (value) => states.push(value) });
+  it("cancels a drag whose begin reply arrives after dispose", async () => {
+    const begin = deferred<number | null>();
+    mocks.windowDragBegin.mockReturnValue(begin.promise);
+    const { instance } = controller();
 
-    controller.onMouseDown(altMouseDown());
-    await vi.advanceTimersByTimeAsync(3000);
+    instance.onMouseDown(altMouseDown());
+    instance.dispose();
+    begin.resolve(7);
+    await vi.advanceTimersByTimeAsync(0);
 
-    expect(mocks.windowDragDropSettle).toHaveBeenCalledTimes(1);
-    expect(states).toEqual([true, false]);
+    // dispose 时已取消一次；晚到的 begin 不再重复进入拖动态。
+    expect(mocks.windowDragCancel).toHaveBeenCalledTimes(1);
   });
 });
 

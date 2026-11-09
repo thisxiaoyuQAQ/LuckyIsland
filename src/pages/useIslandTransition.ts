@@ -5,6 +5,7 @@ import {
   HOVER_LEAVE_DELAY_MS,
   createHoverStageController,
   createIslandTransitionController,
+  planHoverSubmit,
   setIslandState as submitIslandState,
   windowHoverStageSet,
   windowPolicyGet,
@@ -28,6 +29,8 @@ export interface IslandTransitionSet {
   setVisualPhase: (phase: IslandVisualPhase) => void;
   setState: (state: IslandState) => void;
   handleRightZoneEnter: () => void;
+  /** 指针进入岛容器任意位置：撤销待决/延迟中的悬停收起，不触发展开（BUG-20261108-01 #3）。 */
+  handleContainerEnter: () => void;
 }
 
 export function useIslandTransition(options: {
@@ -36,9 +39,17 @@ export function useIslandTransition(options: {
   floatingBallRef: React.RefObject<boolean>;
   draggingRef: React.RefObject<boolean>;
   islandStateChangedRef: React.RefObject<boolean>;
+  /** 悬停视角的 desiredState：手动/通知展开或优先级通知覆盖时为 expanded，悬停不得收起它。 */
+  desiredStateRef: React.RefObject<IslandState>;
 }): IslandTransitionSet {
-  const { reducedMotionRef, setPolicy, floatingBallRef, draggingRef, islandStateChangedRef } =
-    options;
+  const {
+    reducedMotionRef,
+    setPolicy,
+    floatingBallRef,
+    draggingRef,
+    islandStateChangedRef,
+    desiredStateRef,
+  } = options;
   const [visualPhase, setVisualPhaseState] = useState<IslandVisualPhase>("compact");
   const [collapsingToCapsule, setCollapsingToCapsule] = useState(false);
   const visualPhaseRef = useRef(visualPhase);
@@ -83,7 +94,9 @@ export function useIslandTransition(options: {
               hoverCollapseRef.current = null;
             });
         };
-        if (stage === 2) {
+        const plan = planHoverSubmit(stage, previous, desiredStateRef.current ?? "compact");
+        if (plan === "ignore") return;
+        if (plan === "expand") {
           // 胶囊/条状→完整面板：先把原生 resize 提交（等 policy 切到 expanded），
           // 再进入 expanding 视觉相位，避免前端先把容器拉宽而原生窗口仍窄导致内容裁切。
           void (async () => {
@@ -95,13 +108,15 @@ export function useIslandTransition(options: {
               fail(error);
             }
           })();
-        } else if (stage === 0 && previous === 2) {
+        } else if (plan === "collapse-expanded") {
           if (floatingBallRef.current) setCollapsingToCapsule(true);
           collapse("expanded");
-        } else if (stage === 0 && previous === 1) {
+        } else if (plan === "collapse-strip") {
           setCollapsingToCapsule(true);
           collapse("compact");
         } else {
+          // report：上报阶段 1 等无视觉编排的阶段；sync：手动/通知展开时只归零后端阶段，
+          // 不播收起动画（否则先缩再被 expanded 快照弹回，BUG-20261108-01 #2）。
           void windowHoverStageSet(stage).then(setPolicy).catch(fail);
         }
       },
@@ -120,18 +135,33 @@ export function useIslandTransition(options: {
     [floatingBallRef, islandStateChangedRef],
   );
 
-  // 右侧命中区进入：撤销待决的悬停收起（原生仍是展开/条状，视觉相位同步恢复），再进入 hover 周期。
+  /**
+   * 撤销仍在折叠延迟内的悬停收起：原生窗口尚未收起，视觉相位与悬停阶段一起恢复。
+   * 收起已提交原生 resize 时不回滚（否则视觉展开而窗口已收，形成异常边界），返回 false。
+   */
+  const restorePendingCollapse = useCallback((): boolean => {
+    const restorePhase = hoverCollapseRef.current;
+    if (restorePhase === null) return false;
+    if (!(transitionRef.current?.cancel() ?? false)) return false;
+    hoverCollapseRef.current = null;
+    setCollapsingToCapsule(false);
+    setVisualPhase(restorePhase);
+    hoverRef.current?.resumeStage(restorePhase === "expanded" ? 2 : 1);
+    return true;
+  }, [setVisualPhase]);
+
+  // 右侧命中区进入：先撤销待决的悬停收起；没有可撤销的收起时进入新的 hover 周期。
   const handleRightZoneEnter = useCallback(() => {
     if (draggingRef.current) return;
-    const restorePhase = hoverCollapseRef.current;
-    if (restorePhase !== null) {
-      hoverCollapseRef.current = null;
-      transitionRef.current?.cancel();
-      setCollapsingToCapsule(false);
-      setVisualPhase(restorePhase);
-    }
+    if (restorePendingCollapse()) return;
     hoverRef.current?.enter();
-  }, [draggingRef, setVisualPhase]);
+  }, [draggingRef, restorePendingCollapse]);
+
+  const handleContainerEnter = useCallback(() => {
+    if (draggingRef.current) return;
+    if (restorePendingCollapse()) return;
+    hoverRef.current?.cancelPendingLeave();
+  }, [draggingRef, restorePendingCollapse]);
 
   return {
     transitionRef,
@@ -144,5 +174,6 @@ export function useIslandTransition(options: {
     setVisualPhase,
     setState,
     handleRightZoneEnter,
+    handleContainerEnter,
   };
 }

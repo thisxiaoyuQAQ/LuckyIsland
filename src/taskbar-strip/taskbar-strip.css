@@ -3,33 +3,39 @@ body,
 #root {
   width: 140px;
   min-width: 140px;
-  height: 40px;
+  height: 100%;
+  background: transparent;
 }
 
+/* 任务栏内嵌观感：无独立卡片底色/边框/圆角，文字直接落在任务栏底色上。 */
 .taskbar-strip {
   box-sizing: border-box;
-  width: 140px;
-  height: 40px;
+  width: 100%;
+  height: 100%;
   display: flex;
   align-items: center;
   gap: 7px;
-  padding: 5px 7px;
-  border: 1px solid color-mix(in oklch, var(--border) 65%, transparent);
-  border-radius: 8px;
-  background: color-mix(in oklch, var(--card) 92%, transparent);
-  color: var(--card-foreground);
+  padding: 0 10px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--foreground);
   cursor: pointer;
   text-align: left;
   overflow: hidden;
 }
 
+.taskbar-strip:hover {
+  background: color-mix(in oklch, currentColor 6%, transparent);
+}
+
 .taskbar-strip[aria-pressed="true"] {
-  border-color: var(--primary);
+  background: color-mix(in oklch, currentColor 10%, transparent);
 }
 
 .taskbar-strip__status {
-  width: 7px;
-  height: 7px;
+  width: 6px;
+  height: 6px;
   flex: 0 0 auto;
   border-radius: 999px;
   background: #36c275;

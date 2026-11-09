@@ -4,6 +4,7 @@ mod data;
 mod dock_edge;
 mod fullscreen;
 mod hotkeys;
+mod island_drag;
 mod logging;
 mod monitor;
 mod notify;
@@ -11,6 +12,7 @@ mod settings;
 mod settings_window;
 mod storage;
 mod taskbar;
+mod taskbar_click;
 mod terminal;
 mod voice;
 mod window_policy;
@@ -44,8 +46,7 @@ use hotkeys::{
 };
 use monitor::{
     monitor_get_selection, monitor_list, monitor_select, restore_island_monitor,
-    start_runtime_watch, window_dock_edge_set, window_drag_drop_settle, window_offset_apply,
-    window_ui_mode_set,
+    start_runtime_watch, window_dock_edge_set, window_offset_apply, window_ui_mode_set,
 };
 use notify::{notify_clear, notify_create, notify_get_token, notify_list, notify_mark_read};
 use settings::{setting_get, setting_set};
@@ -199,7 +200,8 @@ pub fn run() {
             monitor_select,
             window_offset_apply,
             window_dock_edge_set,
-            window_drag_drop_settle,
+            window_policy::window_drag_begin,
+            window_policy::window_drag_cancel,
             window_ui_mode_set,
             window_policy::window_width_set,
             config_export,
@@ -275,6 +277,8 @@ pub fn run() {
             hotkeys_reload
         ])
         .setup(|app| {
+            // setup 运行在主线程：登记后，非主线程触发的窗口策略效果统一投递回主线程执行。
+            window_policy::mark_main_thread();
             // B4 日志：最早初始化，保证后续启动日志都能落盘（轮转 + 脱敏）。
             // guard 存为 resource，进程退出 resource 清理时 drop 冲刷最后日志。
             match logging::init_logging(app.handle()) {

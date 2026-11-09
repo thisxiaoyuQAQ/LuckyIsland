@@ -36,7 +36,7 @@ function formatTime(now: Date): string {
 
 export function TaskbarStrip({
   snapshot: providedSnapshot,
-  now = new Date(),
+  now,
   weatherSummary = "天气—",
   todoSummary = "待办—",
   onToggle = taskbarStripToggle,
@@ -45,6 +45,14 @@ export function TaskbarStrip({
     providedSnapshot ?? { available: true, expanded: false, reason: null },
   );
   const [error, setError] = useState<string | null>(null);
+  const [liveNow, setLiveNow] = useState(() => new Date());
+
+  // 时钟每 30s 自走；测试注入 now 时以注入值为准且不启动计时器。
+  useEffect(() => {
+    if (now) return;
+    const timer = window.setInterval(() => setLiveNow(new Date()), 30_000);
+    return () => window.clearInterval(timer);
+  }, [now]);
 
   useEffect(() => {
     if (providedSnapshot) {
@@ -98,7 +106,7 @@ export function TaskbarStrip({
     }
   }, [onToggle]);
 
-  const time = useMemo(() => formatTime(now), [now]);
+  const time = useMemo(() => formatTime(now ?? liveNow), [now, liveNow]);
   const compactError = error ?? (!snapshot.available ? snapshot.reason : null);
 
   return (

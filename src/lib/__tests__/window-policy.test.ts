@@ -6,6 +6,7 @@ import {
   createIslandTransitionController,
   containerExpandedForPhase,
   islandStyleRecipe,
+  planHoverSubmit,
   scrollIndicatorGeometry,
   shouldSyncExternalVisualPhase,
   type HoverStage,
@@ -311,6 +312,86 @@ describe("hover stage controller", () => {
 
     expect(submit.mock.calls).toEqual([[2, 0]]);
   });
+
+  // BUG-20261108-01 #3：移出后在 300ms 内回到岛的任意位置（不只是右侧区）都要取消收起。
+  it("container re-entry cancels a pending leave without promoting", () => {
+    vi.useFakeTimers();
+    const submit = vi.fn();
+    const controller = stageController(submit);
+    controller.setPromotionEnabled(true);
+
+    controller.enter();
+    vi.advanceTimersByTime(ENTER);
+    controller.leave();
+    vi.advanceTimersByTime(LEAVE - 10);
+    controller.cancelPendingLeave();
+    vi.advanceTimersByTime(LEAVE * 2);
+    expect(submit.mock.calls).toEqual([[2, 0]]);
+
+    controller.leave();
+    vi.advanceTimersByTime(LEAVE);
+    expect(submit.mock.calls).toEqual([
+      [2, 0],
+      [0, 2],
+    ]);
+  });
+
+  it("container re-entry leaves a pending right-zone enter untouched", () => {
+    vi.useFakeTimers();
+    const submit = vi.fn();
+    const controller = stageController(submit);
+    controller.setPromotionEnabled(true);
+
+    controller.enter();
+    controller.cancelPendingLeave();
+    vi.advanceTimersByTime(ENTER);
+
+    expect(submit.mock.calls).toEqual([[2, 0]]);
+  });
+
+  // BUG-20261108-01 #3：收起延迟内撤销后恢复原阶段，下一次离开仍能正常收起（不再依赖新的 enter 周期）。
+  it("resumeStage restores the owned stage so the next leave collapses again", () => {
+    vi.useFakeTimers();
+    const submit = vi.fn();
+    const controller = stageController(submit);
+    controller.setPromotionEnabled(true);
+
+    controller.enter();
+    vi.advanceTimersByTime(ENTER);
+    controller.leave();
+    vi.advanceTimersByTime(LEAVE);
+    expect(submit.mock.calls).toEqual([
+      [2, 0],
+      [0, 2],
+    ]);
+
+    controller.resumeStage(2);
+    controller.enter();
+    vi.advanceTimersByTime(ENTER * 2);
+    controller.leave();
+    vi.advanceTimersByTime(LEAVE);
+
+    expect(submit.mock.calls).toEqual([
+      [2, 0],
+      [0, 2],
+      [0, 2],
+    ]);
+  });
+});
+
+// BUG-20261108-01 #2：手动或通知展开（desiredState=expanded）时，悬停离开不得播放收起动画。
+describe("hover submit plan", () => {
+  it("routes hover stages by the backend desired state", () => {
+    expect(planHoverSubmit(2, 0, "compact")).toBe("expand");
+    expect(planHoverSubmit(1, 0, "compact")).toBe("report");
+    expect(planHoverSubmit(0, 2, "compact")).toBe("collapse-expanded");
+    expect(planHoverSubmit(0, 1, "compact")).toBe("collapse-strip");
+    expect(planHoverSubmit(0, 2, "expanded")).toBe("sync");
+    expect(planHoverSubmit(0, 1, "expanded")).toBe("sync");
+    expect(planHoverSubmit(2, 0, "expanded")).toBe("ignore");
+    expect(planHoverSubmit(1, 0, "expanded")).toBe("ignore");
+    expect(planHoverSubmit(0, 0, "compact")).toBe("report");
+  });
 });
 
 
@@ -455,6 +536,41 @@ describe("island transition controller", () => {
     await vi.runAllTimersAsync();
 
     expect(submit.mock.calls.map(([state]) => state)).toEqual(["expanded"]);
+  });
+
+  it("cancel reports whether the collapse was still waiting to submit", async () => {
+    vi.useFakeTimers();
+    let release!: () => void;
+    const submit = vi.fn(
+      (state: string) =>
+        new Promise<WindowPolicySnapshot>((resolve) => {
+          release = () => resolve(snapshot(state as WindowPolicySnapshot["effectiveState"]));
+        }),
+    );
+    const acceptSnapshot = vi.fn();
+    const controller = createIslandTransitionController({
+      collapseDelay: 120,
+      reducedMotion: () => false,
+      setVisualPhase: vi.fn(),
+      submit,
+      acceptSnapshot,
+      recover: vi.fn(),
+    });
+
+    void controller.request("compact");
+    expect(controller.cancel()).toBe(true);
+    await vi.runAllTimersAsync();
+    expect(submit).not.toHaveBeenCalled();
+
+    void controller.request("compact");
+    await vi.advanceTimersByTimeAsync(120);
+    expect(submit).toHaveBeenCalledTimes(1);
+    // 已提交原生收起：撤销不能再恢复展开视觉，调用方据此不回滚相位；
+    // 在途提交仍须由其快照收尾，否则视觉相位停在收起中途。
+    expect(controller.cancel()).toBe(false);
+    release();
+    await vi.runAllTimersAsync();
+    expect(acceptSnapshot).toHaveBeenCalledTimes(1);
   });
 
   it("reduced motion submits compact without waiting", async () => {

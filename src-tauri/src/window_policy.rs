@@ -1,7 +1,8 @@
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
+use std::thread::ThreadId;
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, Size, State};
+use tauri::{AppHandle, Emitter, LogicalSize, Manager, Size, State};
 
 use crate::dock_edge::DockEdge;
 use crate::storage::Db;
@@ -89,6 +90,8 @@ pub struct WindowPolicyInputs {
     pub fullscreen_block: bool,
     pub priority_override_generation: u64,
     pub priority_override_active: bool,
+    /// Alt+拖动进行中：原生窗口固定为 240×80 拖动胶囊，状态几何的 Resize 暂缓到落点结算。
+    pub dragging: bool,
 }
 
 impl WindowPolicyInputs {
@@ -103,6 +106,7 @@ impl WindowPolicyInputs {
             fullscreen_block: false,
             priority_override_generation: 0,
             priority_override_active: false,
+            dragging: false,
         }
     }
 }
@@ -190,6 +194,17 @@ impl EffectPlan {
             };
         }
         Self::for_transition(next)
+    }
+
+    /// 拖动期间原生几何由拖动胶囊接管：保留显示/隐藏/聚焦，去掉状态 Resize。
+    fn without_resize(self) -> Self {
+        Self {
+            ops: self
+                .ops
+                .into_iter()
+                .filter(|op| !matches!(op, WindowOp::Resize(_)))
+                .collect(),
+        }
     }
 
     fn for_transition(next: WindowDecision) -> Self {
@@ -283,6 +298,7 @@ impl ClickThroughTransactionContext for AppClickThroughContext<'_> {
             decision,
             island_width(self.db),
             crate::monitor::current_dock_edge(self.db),
+            next.dragging,
         ) {
             let _ = window.set_ignore_cursor_events(self.inputs.click_through);
             return Err(error);
@@ -299,7 +315,10 @@ impl ClickThroughTransactionContext for AppClickThroughContext<'_> {
         self.inputs = inputs;
         let decision = reduce(inputs, FocusIntent::Preserve);
         if let Ok(mut runtime) = self.app.state::<WindowPolicy>().0.lock() {
-            runtime.inputs = inputs;
+            // 平台效果按事务快照执行；事务期间其它线程写入的输入（如全屏阻断）保留下来，
+            // 由它们投递的主线程重放补齐（审查 #3）。
+            runtime.inputs = merge_click_through(runtime.inputs, inputs.click_through);
+            runtime.operation_generation = runtime.operation_generation.wrapping_add(1);
             runtime.last_applied = Some(WindowDecision {
                 effective_state: decision.effective_state,
                 focus: FocusIntent::Preserve,
@@ -367,6 +386,32 @@ trait ClickThroughTransactionContext {
     fn publish(&mut self, snapshot: WindowPolicySnapshot) -> Result<(), String>;
 }
 
+/// 穿透事务提交：只改穿透与悬停阶段，其余输入取当前值（审查 #3）。
+fn merge_click_through(mut current: WindowPolicyInputs, enabled: bool) -> WindowPolicyInputs {
+    current.click_through = enabled;
+    if enabled {
+        current.hover_stage = 0;
+    }
+    current
+}
+
+/// 穿透事务直接调用平台 API，必须在主线程执行（BUG-20261108-01 #9 / 审查 #3）：
+/// 非主线程（如配置导入的 tokio worker）调用时投递到主线程，立即返回当前快照。
+fn post_click_through(
+    app: &AppHandle,
+    run: impl FnOnce(&AppHandle, &Db) -> Result<WindowPolicySnapshot, String> + Send + 'static,
+) -> Result<WindowPolicySnapshot, String> {
+    let handle = app.clone();
+    app.run_on_main_thread(move || {
+        let db = handle.state::<Db>();
+        if let Err(error) = run(&handle, db.inner()) {
+            tracing::warn!("[window-policy] 主线程执行鼠标穿透事务失败：{error}");
+        }
+    })
+    .map_err(|error| format!("投递鼠标穿透事务失败：{error}"))?;
+    window_policy_snapshot(app)
+}
+
 fn apply_click_through_transaction(
     context: &mut impl ClickThroughTransactionContext,
     enabled: bool,
@@ -427,9 +472,130 @@ fn restore_click_through_transaction(
     }
 }
 
-/// 调整窗口到目标状态几何。宽度变化时以「当前顶部中心」为锚点重设水平位置，
-/// 避免 240↔720 切换时横向跳动；读取旧几何失败时仅改尺寸、不移动。
-/// 条状/展开宽度取 `width`（`window:width:<mode>`），胶囊恒 240。
+/// 物理像素窗口矩形（左上角 + 尺寸）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PhysicalBounds {
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+}
+
+/// 尺寸变化时保持停靠边不动的新矩形：top/bottom 水平居中并固定顶/底边，
+/// left/right 垂直居中并固定左/右边（纯函数，BUG-20261108-01 #4/#5 的原生侧真源）。
+fn anchored_bounds(
+    old: PhysicalBounds,
+    next_width: i32,
+    next_height: i32,
+    edge: DockEdge,
+) -> PhysicalBounds {
+    let (dx, dy) = match edge {
+        DockEdge::Top => ((old.width - next_width) / 2, 0),
+        DockEdge::Bottom => ((old.width - next_width) / 2, old.height - next_height),
+        DockEdge::Left => (0, (old.height - next_height) / 2),
+        DockEdge::Right => (old.width - next_width, (old.height - next_height) / 2),
+    };
+    PhysicalBounds {
+        x: old.x + dx,
+        y: old.y + dy,
+        width: next_width,
+        height: next_height,
+    }
+}
+
+fn logical_to_physical(value: f64, scale: f64) -> i32 {
+    (value * scale).round().max(1.0) as i32
+}
+
+/// 拖动胶囊：横向 240×80，以光标为中心（BUG-20261108-01 #6；T4 真机修复规格：不随停靠边旋转）。
+fn drag_bounds_at(cursor_x: i32, cursor_y: i32, scale: f64) -> PhysicalBounds {
+    let width = logical_to_physical(CAPSULE_WIDTH_LOGICAL, scale);
+    let height = logical_to_physical(COMPACT_HEIGHT_LOGICAL, scale);
+    PhysicalBounds {
+        x: cursor_x - width / 2,
+        y: cursor_y - height / 2,
+        width,
+        height,
+    }
+}
+
+/// 策略输入下的窗口逻辑几何：拖动中恒为拖动胶囊，否则为有效状态几何。
+fn geometry_for_inputs(inputs: WindowPolicyInputs, width: f64, edge: DockEdge) -> (f64, f64) {
+    if inputs.dragging {
+        return (CAPSULE_WIDTH_LOGICAL, COMPACT_HEIGHT_LOGICAL);
+    }
+    geometry_for(
+        reduce(inputs, FocusIntent::Preserve).effective_state,
+        width,
+        edge,
+    )
+}
+
+fn current_bounds(window: &tauri::WebviewWindow) -> Option<(PhysicalBounds, f64)> {
+    let size = window.outer_size().ok()?;
+    let position = window.outer_position().ok()?;
+    let scale = window.scale_factor().ok()?;
+    Some((
+        PhysicalBounds {
+            x: position.x,
+            y: position.y,
+            width: size.width as i32,
+            height: size.height as i32,
+        },
+        scale,
+    ))
+}
+
+/// 一次系统调用同时设置位置与尺寸，避免「先改尺寸、再移位置」之间闪一帧（BUG-20261108-01 #8）。
+#[cfg(windows)]
+fn set_window_bounds(window: &tauri::WebviewWindow, bounds: PhysicalBounds) -> Result<(), String> {
+    use windows::Win32::UI::WindowsAndMessaging::{SetWindowPos, SWP_NOACTIVATE, SWP_NOZORDER};
+    let hwnd = window
+        .hwnd()
+        .map_err(|error| format!("读取灵动岛窗口句柄失败：{error}"))?;
+    unsafe {
+        SetWindowPos(
+            hwnd,
+            None,
+            bounds.x,
+            bounds.y,
+            bounds.width,
+            bounds.height,
+            SWP_NOZORDER | SWP_NOACTIVATE,
+        )
+    }
+    .map_err(|error| format!("调整灵动岛窗口几何失败：{error}"))
+}
+
+#[cfg(not(windows))]
+fn set_window_bounds(window: &tauri::WebviewWindow, bounds: PhysicalBounds) -> Result<(), String> {
+    window
+        .set_size(Size::Physical(tauri::PhysicalSize::new(
+            bounds.width.max(1) as u32,
+            bounds.height.max(1) as u32,
+        )))
+        .map_err(|error| format!("调整灵动岛窗口尺寸失败：{error}"))?;
+    window
+        .set_position(tauri::PhysicalPosition::new(bounds.x, bounds.y))
+        .map_err(|error| format!("重设灵动岛窗口位置失败：{error}"))
+}
+
+#[cfg(windows)]
+fn cursor_position() -> Option<(i32, i32)> {
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+    let mut point = POINT::default();
+    unsafe { GetCursorPos(&mut point) }.ok()?;
+    Some((point.x, point.y))
+}
+
+#[cfg(not(windows))]
+fn cursor_position() -> Option<(i32, i32)> {
+    None
+}
+
+/// 调整窗口到目标状态几何，停靠边保持不动（见 [`anchored_bounds`]），位置与尺寸一次提交。
+/// 读取旧几何失败时仅改尺寸、不移动。条状/展开宽度取 `width`（`window:width:<mode>`），胶囊恒 240。
 fn resize_window(
     window: &tauri::WebviewWindow,
     state: IslandState,
@@ -437,43 +603,24 @@ fn resize_window(
     edge: DockEdge,
 ) -> Result<(), String> {
     let (new_width, new_height) = geometry_for(state, width, edge);
-    let anchor = window
-        .outer_size()
-        .and_then(|size| window.outer_position().map(|position| (size, position)))
-        .ok()
-        .and_then(|(size, position)| {
-            window
-                .scale_factor()
-                .ok()
-                .map(|scale| (size, position, scale))
-        });
-    window
-        .set_size(Size::Logical(LogicalSize {
-            width: new_width,
-            height: new_height,
-        }))
-        .map_err(|error| format!("调整灵动岛窗口尺寸失败：{error}"))?;
-    if let Some((old_size, old_position, scale)) = anchor {
-        let old_width = old_size.width as i32;
-        let old_height = old_size.height as i32;
-        let next_width = (new_width * scale).round().max(1.0) as i32;
-        let next_height = (new_height * scale).round().max(1.0) as i32;
-        let (dx, dy) = match edge {
-            DockEdge::Top => ((old_width - next_width) / 2, 0),
-            DockEdge::Bottom => ((old_width - next_width) / 2, old_height - next_height),
-            DockEdge::Left => (0, (old_height - next_height) / 2),
-            DockEdge::Right => (old_width - next_width, (old_height - next_height) / 2),
-        };
-        if dx != 0 || dy != 0 {
-            window
-                .set_position(PhysicalPosition::new(
-                    old_position.x + dx,
-                    old_position.y + dy,
-                ))
-                .map_err(|error| format!("重设灵动岛窗口位置失败：{error}"))?;
-        }
+    let Some((old, scale)) = current_bounds(window) else {
+        return window
+            .set_size(Size::Logical(LogicalSize {
+                width: new_width,
+                height: new_height,
+            }))
+            .map_err(|error| format!("调整灵动岛窗口尺寸失败：{error}"));
+    };
+    let next = anchored_bounds(
+        old,
+        logical_to_physical(new_width, scale),
+        logical_to_physical(new_height, scale),
+        edge,
+    );
+    if next == old {
+        return Ok(());
     }
-    Ok(())
+    set_window_bounds(window, next)
 }
 
 fn apply_effects(
@@ -482,8 +629,15 @@ fn apply_effects(
     decision: WindowDecision,
     width: f64,
     edge: DockEdge,
+    dragging: bool,
 ) -> Result<(), String> {
-    for op in EffectPlan::between(previous, decision).ops {
+    let plan = EffectPlan::between(previous, decision);
+    let plan = if dragging {
+        plan.without_resize()
+    } else {
+        plan
+    };
+    for op in plan.ops {
         match op {
             WindowOp::Resize(state) => resize_window(window, state, width, edge)?,
             WindowOp::Show => window
@@ -500,6 +654,53 @@ fn apply_effects(
     Ok(())
 }
 
+/// taskbar 模式：expanded → 面板按任务栏几何定位后显示；其余（compact/capsule/hidden）→ 隐藏 island。
+/// 嵌入条的展开标记随有效状态同步（Esc、通知、全屏等任何来源的收起/展开都一致，
+/// BUG-20261109-01 #3），变化时广播给嵌入条窗口刷新「展开/收起」。
+fn apply_taskbar_effects(
+    app: &AppHandle,
+    window: &tauri::WebviewWindow,
+    db: &Db,
+    decision: WindowDecision,
+) -> Result<(), String> {
+    let manager = app.state::<crate::taskbar::TaskbarManager>();
+    let expanded = decision.effective_state == IslandState::Expanded;
+    if expanded {
+        crate::taskbar::apply_taskbar_panel_geometry(
+            app,
+            manager.inner(),
+            island_width(db),
+            EXPANDED_HEIGHT_LOGICAL,
+        )?;
+        window
+            .show()
+            .map_err(|error| format!("显示任务栏面板失败：{error}"))?;
+    } else {
+        window
+            .hide()
+            .map_err(|error| format!("隐藏任务栏面板失败：{error}"))?;
+    }
+    if crate::taskbar::set_strip_expanded(manager.inner(), expanded) {
+        if let Err(error) = app.emit(
+            "window://taskbar-state-changed",
+            crate::taskbar::taskbar_snapshot(manager.inner()),
+        ) {
+            tracing::warn!("[window-policy] 广播任务栏状态失败：{error}");
+        }
+    }
+    Ok(())
+}
+
+/// 任务栏嵌入条点击：以策略的有效状态为准在展开与收起之间切换。
+pub fn toggle_taskbar_panel(app: &AppHandle) -> Result<WindowPolicySnapshot, String> {
+    let current = window_policy_snapshot(app)?.effective_state;
+    set_desired_state(
+        app,
+        crate::taskbar::strip_toggle_target(current),
+        FocusIntent::Preserve,
+    )
+}
+
 fn emit_snapshot(app: &AppHandle, snapshot: &WindowPolicySnapshot) -> Result<(), String> {
     app.emit("window://state-changed", snapshot)
         .map_err(|error| format!("广播灵动岛状态失败：{error}"))?;
@@ -507,11 +708,64 @@ fn emit_snapshot(app: &AppHandle, snapshot: &WindowPolicySnapshot) -> Result<(),
         .map_err(|error| format!("广播窗口策略失败：{error}"))
 }
 
+static MAIN_THREAD: OnceLock<ThreadId> = OnceLock::new();
+
+/// 在 Tauri setup（运行于主线程）中调用一次，登记主线程。
+pub fn mark_main_thread() {
+    let _ = MAIN_THREAD.set(std::thread::current().id());
+}
+
+/// 未登记（单测、极早期启动）时按主线程处理，保持内联执行。
+fn on_main_thread() -> bool {
+    MAIN_THREAD
+        .get()
+        .is_none_or(|id| *id == std::thread::current().id())
+}
+
+/// 非主线程（全屏轮询、通知服务、优先级到期计时器等）只更新策略输入，平台调用投递到主线程
+/// 统一执行：非主线程的 `set_size` 异步排队，可能晚于主线程的同步调用落地，使原生几何与
+/// `last_applied` 分叉（BUG-20261108-01 #9）。返回值是按新输入推导的快照；实际效果与广播由
+/// 主线程上的重放完成。投递时不持有策略锁，避免与主线程互等。
+fn update_and_defer(
+    app: &AppHandle,
+    mutate: impl FnOnce(&mut WindowPolicyInputs),
+    focus: FocusIntent,
+) -> Result<WindowPolicySnapshot, String> {
+    let policy = app.state::<WindowPolicy>();
+    let (inputs, decision) = {
+        let mut runtime = policy.0.lock().map_err(|error| error.to_string())?;
+        mutate(&mut runtime.inputs);
+        runtime.operation_generation = runtime.operation_generation.wrapping_add(1);
+        (runtime.inputs, reduce(runtime.inputs, focus))
+    };
+    let handle = app.clone();
+    app.run_on_main_thread(move || {
+        if let Err(error) = replay_on_main_thread(&handle, focus) {
+            tracing::warn!("[window-policy] 主线程重放窗口策略失败：{error}");
+        }
+    })
+    .map_err(|error| format!("投递窗口策略到主线程失败：{error}"))?;
+    Ok(snapshot_for_app(app, inputs, decision))
+}
+
+fn keep_inputs(_: &mut WindowPolicyInputs) {}
+
+/// 主线程上按最新输入重放平台效果。非泛型入口，避免 update_and_apply 经投递闭包无限单态化。
+fn replay_on_main_thread(
+    app: &AppHandle,
+    focus: FocusIntent,
+) -> Result<WindowPolicySnapshot, String> {
+    update_and_apply(app, keep_inputs, focus)
+}
+
 fn update_and_apply(
     app: &AppHandle,
     mutate: impl FnOnce(&mut WindowPolicyInputs),
     focus: FocusIntent,
 ) -> Result<WindowPolicySnapshot, String> {
+    if !on_main_thread() {
+        return update_and_defer(app, mutate, focus);
+    }
     let policy = app.state::<WindowPolicy>();
     let (previous, previous_inputs, inputs, generation) = {
         let mut runtime = policy.0.lock().map_err(|error| error.to_string())?;
@@ -537,40 +791,22 @@ fn update_and_apply(
     };
     let db = app.state::<Db>();
     let taskbar_mode = crate::monitor::current_ui_mode(db.inner()) == "taskbar";
-    if taskbar_mode {
-        // taskbar：expanded → 面板按任务栏几何定位后显示；其余（compact/capsule/hidden）→ 隐藏 island。
-        let manager = app.state::<crate::taskbar::TaskbarManager>();
-        match decision.effective_state {
-            IslandState::Expanded => {
-                crate::taskbar::apply_taskbar_panel_geometry(
-                    app,
-                    manager.inner(),
-                    island_width(db.inner()),
-                    EXPANDED_HEIGHT_LOGICAL,
-                )?;
-                window
-                    .show()
-                    .map_err(|error| format!("显示任务栏面板失败：{error}"))?;
-            }
-            _ => {
-                window
-                    .hide()
-                    .map_err(|error| format!("隐藏任务栏面板失败：{error}"))?;
-            }
-        }
+    let applied = if taskbar_mode {
+        apply_taskbar_effects(app, &window, db.inner(), decision)
     } else {
         let width = island_width(db.inner());
         let edge = crate::monitor::current_dock_edge(db.inner());
-        if let Err(error) = apply_effects(&window, previous, decision, width, edge) {
-            let mut runtime = policy
-                .0
-                .lock()
-                .map_err(|lock_error| lock_error.to_string())?;
-            if runtime.operation_generation == generation {
-                runtime.inputs = previous_inputs;
-            }
-            return Err(error);
+        apply_effects(&window, previous, decision, width, edge, inputs.dragging)
+    };
+    if let Err(error) = applied {
+        let mut runtime = policy
+            .0
+            .lock()
+            .map_err(|lock_error| lock_error.to_string())?;
+        if runtime.operation_generation == generation {
+            runtime.inputs = previous_inputs;
         }
+        return Err(error);
     }
 
     let current = {
@@ -754,6 +990,9 @@ pub fn set_click_through(
     db: &Db,
     enabled: bool,
 ) -> Result<WindowPolicySnapshot, String> {
+    if !on_main_thread() {
+        return post_click_through(app, move |app, db| set_click_through(app, db, enabled));
+    }
     let (inputs, previous) = {
         let policy = app.state::<WindowPolicy>();
         let runtime = policy.0.lock().map_err(|error| error.to_string())?;
@@ -771,6 +1010,9 @@ pub fn set_click_through(
 }
 
 pub fn toggle_click_through(app: &AppHandle, db: &Db) -> Result<WindowPolicySnapshot, String> {
+    if !on_main_thread() {
+        return post_click_through(app, toggle_click_through);
+    }
     let enabled = !window_policy_snapshot(app)?.click_through;
     set_click_through(app, db, enabled)
 }
@@ -783,6 +1025,9 @@ fn window_policy_snapshot(app: &AppHandle) -> Result<WindowPolicySnapshot, Strin
 }
 
 pub fn restore_click_through(app: &AppHandle, db: &Db) -> Result<WindowPolicySnapshot, String> {
+    if !on_main_thread() {
+        return post_click_through(app, restore_click_through);
+    }
     let stored_enabled = db
         .setting_get(CLICK_THROUGH_KEY)
         .map(|value| value == "true")
@@ -967,9 +1212,8 @@ pub fn current_geometry(app: &AppHandle) -> (f64, f64) {
     let Ok(runtime) = policy.0.lock() else {
         return geometry_for(IslandState::Compact, width, DockEdge::Top);
     };
-    let decision = reduce(runtime.inputs, FocusIntent::Preserve);
-    geometry_for(
-        decision.effective_state,
+    geometry_for_inputs(
+        runtime.inputs,
         width,
         crate::monitor::current_dock_edge(db.inner()),
     )
@@ -983,6 +1227,10 @@ fn resize_current_window(app: &AppHandle, db: &Db) -> Result<(), String> {
     let state = {
         let policy = app.state::<WindowPolicy>();
         let runtime = policy.0.lock().map_err(|error| error.to_string())?;
+        if runtime.inputs.dragging {
+            // 拖动胶囊期间不改几何；落点结算会按最新长度/停靠边恢复。
+            return Ok(());
+        }
         reduce(runtime.inputs, FocusIntent::Preserve).effective_state
     };
     let window = app
@@ -1036,6 +1284,84 @@ pub fn window_width_set(app: AppHandle, db: State<'_, Db>, width: f64) -> Result
     )
     .map_err(|error| format!("广播岛长度变更失败：{error}"))?;
     Ok(clamped)
+}
+
+/// 拖动胶囊是否离开了起点；起点未知时按已移动处理（保持结算原有行为）。
+pub fn drag_moved(origin: Option<(i32, i32)>, now: (i32, i32)) -> bool {
+    origin != Some(now)
+}
+
+/// 进入拖动态：清除悬停阶段（拖动结束后不再残留悬停展开/条状，BUG-20261108-01 #1）。
+fn begin_drag(inputs: &mut WindowPolicyInputs) {
+    inputs.dragging = true;
+    inputs.hover_stage = 0;
+}
+
+/// 结束拖动态并返回此前是否在拖动。只改输入，不做平台调用；调用方随后恢复几何与位置。
+pub fn end_drag(app: &AppHandle) -> Result<bool, String> {
+    let policy = app.state::<WindowPolicy>();
+    let mut runtime = policy.0.lock().map_err(|error| error.to_string())?;
+    let was_dragging = runtime.inputs.dragging;
+    if was_dragging {
+        runtime.inputs.dragging = false;
+        runtime.operation_generation = runtime.operation_generation.wrapping_add(1);
+    }
+    Ok(was_dragging)
+}
+
+/// 退出拖动态并按已保存的停靠边/偏移恢复几何与位置（拖动未能开始或被取消时使用）。
+fn abandon_drag(app: &AppHandle) {
+    let db = app.state::<Db>();
+    let _ = end_drag(app);
+    if let Err(error) = resize_current_for_dock(app, db.inner()) {
+        tracing::warn!("[window-policy] 退出拖动后恢复尺寸失败：{error}");
+    }
+    if let Err(error) = crate::monitor::restore_island_monitor(app, db.inner()) {
+        tracing::warn!("[window-policy] 退出拖动后恢复位置失败：{error}");
+    }
+}
+
+/// Alt+拖动开始：原生窗口改为以光标为中心的 240×80 拖动胶囊（吸附按可见胶囊判定），随后
+/// 由 Rust 启动系统拖动并观测其结束，结算后广播 `window://drag-settled`（BUG-20261108-01
+/// #1/#6 与 2026-11-09 真机反馈）。返回拖动 id；taskbar 模式面板几何由任务栏决定，不拖动，返回 None。
+#[tauri::command]
+pub fn window_drag_begin(app: AppHandle) -> Result<Option<u64>, String> {
+    if crate::monitor::current_ui_mode(app.state::<Db>().inner()) == "taskbar" {
+        return Ok(None);
+    }
+    update_and_apply(&app, begin_drag, FocusIntent::Preserve)?;
+    let window = app
+        .get_webview_window("island")
+        .ok_or_else(|| "找不到灵动岛窗口".to_string())?;
+    let bounds = match (current_bounds(&window), cursor_position()) {
+        (Some((_, scale)), Some((x, y))) => Ok(drag_bounds_at(x, y, scale)),
+        (Some((old, scale)), None) => Ok(anchored_bounds(
+            old,
+            logical_to_physical(CAPSULE_WIDTH_LOGICAL, scale),
+            logical_to_physical(COMPACT_HEIGHT_LOGICAL, scale),
+            DockEdge::Top,
+        )),
+        (None, _) => Err("读取灵动岛窗口几何失败".to_string()),
+    };
+    let started = bounds
+        .and_then(|bounds| set_window_bounds(&window, bounds).map(|()| bounds))
+        .and_then(|bounds| crate::island_drag::start(&app, &window, (bounds.x, bounds.y)));
+    match started {
+        Ok(id) => Ok(Some(id)),
+        Err(error) => {
+            abandon_drag(&app);
+            let _ = reapply(&app);
+            Err(error)
+        }
+    }
+}
+
+/// 取消当前拖动（前端兜底超时或卸载时调用）：不结算落点，回到拖动前的停靠位置。
+#[tauri::command]
+pub fn window_drag_cancel(app: AppHandle) -> Result<WindowPolicySnapshot, String> {
+    crate::island_drag::cancel();
+    abandon_drag(&app);
+    reapply(&app)
 }
 
 #[tauri::command]
@@ -1664,5 +1990,128 @@ mod tests {
                 focus: FocusIntent::Focus,
             }
         );
+    }
+
+    // ---- BUG-20261108-01 ----
+
+    fn bounds(x: i32, y: i32, width: i32, height: i32) -> PhysicalBounds {
+        PhysicalBounds {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    #[test]
+    fn anchored_bounds_keep_the_dock_edge_fixed_in_one_rect() {
+        let old = bounds(100, 0, 900, 100);
+        // top：水平居中、顶边不动。
+        assert_eq!(
+            anchored_bounds(old, 300, 100, DockEdge::Top),
+            bounds(400, 0, 300, 100)
+        );
+        // bottom：水平居中、底边不动（向上展开）。
+        assert_eq!(
+            anchored_bounds(old, 900, 500, DockEdge::Bottom),
+            bounds(100, -400, 900, 500)
+        );
+        let vertical = bounds(0, 100, 100, 900);
+        // left：垂直居中、左边不动。
+        assert_eq!(
+            anchored_bounds(vertical, 500, 900, DockEdge::Left),
+            bounds(0, 100, 500, 900)
+        );
+        // right：垂直居中、右边不动（向屏内展开）。
+        assert_eq!(
+            anchored_bounds(vertical, 500, 300, DockEdge::Right),
+            bounds(-400, 400, 500, 300)
+        );
+    }
+
+    #[test]
+    fn drag_capsule_is_240_by_80_centered_on_the_cursor() {
+        assert_eq!(drag_bounds_at(1000, 500, 1.0), bounds(880, 460, 240, 80));
+        assert_eq!(drag_bounds_at(1000, 500, 1.5), bounds(820, 440, 360, 120));
+    }
+
+    #[test]
+    fn begin_drag_clears_hover_stage_so_the_island_cannot_stay_hover_expanded() {
+        let mut policy_inputs = inputs(IslandState::Compact, false, false);
+        policy_inputs.floating_ball = true;
+        policy_inputs.hover_expand = true;
+        policy_inputs.hover_stage = 2;
+        assert_eq!(
+            reduce(policy_inputs, FocusIntent::Preserve).effective_state,
+            IslandState::Expanded
+        );
+
+        begin_drag(&mut policy_inputs);
+
+        assert!(policy_inputs.dragging);
+        assert_eq!(policy_inputs.hover_stage, 0);
+        assert_eq!(
+            reduce(policy_inputs, FocusIntent::Preserve).effective_state,
+            IslandState::Capsule
+        );
+    }
+
+    #[test]
+    fn dragging_keeps_show_hide_focus_but_skips_state_resizes() {
+        let plan = EffectPlan::between(
+            Some(decision(IslandState::Expanded)),
+            decision(IslandState::Capsule),
+        );
+        assert_eq!(
+            plan.ops,
+            vec![WindowOp::Resize(IslandState::Capsule), WindowOp::Show]
+        );
+        assert_eq!(plan.without_resize().ops, vec![WindowOp::Show]);
+    }
+
+    #[test]
+    fn drag_geometry_overrides_state_geometry_while_dragging() {
+        let mut policy_inputs = inputs(IslandState::Expanded, false, false);
+        assert_eq!(
+            geometry_for_inputs(policy_inputs, 720.0, DockEdge::Left),
+            (400.0, 720.0)
+        );
+        policy_inputs.dragging = true;
+        assert_eq!(
+            geometry_for_inputs(policy_inputs, 720.0, DockEdge::Left),
+            (240.0, 80.0)
+        );
+    }
+
+    /// 审查 #3：穿透事务提交时只合并穿透相关字段，不能抹掉其它线程期间写入的输入。
+    #[test]
+    fn click_through_commit_keeps_concurrent_inputs() {
+        let mut current = inputs(IslandState::Compact, true, false);
+        current.hide_in_fullscreen = true;
+        current.hover_stage = 1;
+        let merged = merge_click_through(current, true);
+        assert!(merged.click_through);
+        assert_eq!(merged.hover_stage, 0);
+        assert!(merged.fullscreen_block);
+        assert!(merged.hide_in_fullscreen);
+
+        let restored = merge_click_through(current, false);
+        assert!(!restored.click_through);
+        assert_eq!(restored.hover_stage, 1);
+        assert!(restored.fullscreen_block);
+    }
+
+    /// 审查 #6：原地 Alt+点击（拖动胶囊没动）不应改变岛的位置；起点未知时按已移动处理。
+    #[test]
+    fn drag_moved_requires_a_known_origin_that_differs() {
+        assert!(!drag_moved(Some((10, 20)), (10, 20)));
+        assert!(drag_moved(Some((10, 20)), (11, 20)));
+        assert!(drag_moved(None, (10, 20)));
+    }
+
+    #[test]
+    fn main_thread_marker_defaults_to_inline_execution() {
+        // 未登记主线程（单测/极早期启动）时一律按主线程内联执行，不投递。
+        assert!(on_main_thread());
     }
 }

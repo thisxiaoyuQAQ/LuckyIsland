@@ -231,10 +231,13 @@ export function createHoverStageController({
   let promotionEnabled = false;
   let suppressed = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  /** 当前待决 timer 的种类：右侧区 enter 的晋升，或整岛 leave 的收起。 */
+  let pending: "enter" | "leave" | null = null;
 
   const clearTimer = () => {
     if (timer !== undefined) clearTimeout(timer);
     timer = undefined;
+    pending = null;
   };
 
   const enter = () => {
@@ -242,8 +245,10 @@ export function createHoverStageController({
     const currentGeneration = ++generation;
     clearTimer();
     if (activeStage !== 0) return; // 已有阶段：仅取消待决的 stage 0。
+    pending = "enter";
     timer = setTimeout(() => {
       timer = undefined;
+      pending = null;
       if (currentGeneration !== generation) return;
       if (activeStage !== 0) return;
       if (promotionEnabled) {
@@ -264,8 +269,10 @@ export function createHoverStageController({
     const currentGeneration = ++generation;
     clearTimer();
     if (!enabled) return;
+    pending = "leave";
     timer = setTimeout(() => {
       timer = undefined;
+      pending = null;
       if (currentGeneration !== generation) return;
       if (activeStage === 0) return;
       const previous = activeStage;
@@ -279,6 +286,27 @@ export function createHoverStageController({
     clearTimer();
     activeStage = 0;
     suppressed = true;
+  };
+
+  /**
+   * 指针回到岛内任意位置（不限右侧区）：只取消待决的收起，不触发晋升——
+   * 左侧悬停绝不展开的冻结决策不变（BUG-20261108-01 #3）。
+   */
+  const cancelPendingLeave = () => {
+    if (pending !== "leave") return;
+    generation += 1;
+    clearTimer();
+  };
+
+  /**
+   * 收起提交前被撤销时恢复本周期持有的阶段（原生窗口仍处于该阶段），
+   * 使下一次 leave 仍能收起，而不必等新的 enter 周期重新晋升。
+   */
+  const resumeStage = (stage: HoverStage) => {
+    generation += 1;
+    clearTimer();
+    activeStage = stage;
+    suppressed = false;
   };
 
   const resetAfterDrag = () => {
@@ -322,6 +350,8 @@ export function createHoverStageController({
     enter,
     leave,
     suppressCurrentCycle,
+    cancelPendingLeave,
+    resumeStage,
     resetAfterDrag,
     setPromotionEnabled,
     setStageOneEnabled,
@@ -329,6 +359,32 @@ export function createHoverStageController({
     disable,
     dispose,
   };
+}
+
+/** 悬停阶段提交的处理方式（BUG-20261108-01 #2）。 */
+export type HoverSubmitPlan =
+  | "expand"
+  | "collapse-expanded"
+  | "collapse-strip"
+  | "sync"
+  | "report"
+  | "ignore";
+
+/**
+ * 按后端 desiredState 决定悬停提交怎么落地。手动或通知展开（desired=expanded）时
+ * Rust 不响应悬停阶段（reduce 只在 desired=compact 时投影悬停），前端若照常播收起动画，
+ * 会先缩再被快照弹回；此时 stage 0 只同步后端阶段，stage 1/2 不提交。
+ */
+export function planHoverSubmit(
+  stage: HoverStage,
+  previous: HoverStage,
+  desiredState: IslandState,
+): HoverSubmitPlan {
+  if (desiredState === "expanded") return stage === 0 ? "sync" : "ignore";
+  if (stage === 2) return "expand";
+  if (stage === 0 && previous === 2) return "collapse-expanded";
+  if (stage === 0 && previous === 1) return "collapse-strip";
+  return "report";
 }
 
 interface IslandTransitionControllerOptions {
@@ -406,9 +462,13 @@ export function createIslandTransitionController({
    * 撤销未到达平台提交的待决请求（如悬停收起的折叠延迟内指针回到右侧）。
    * 调用方负责把视觉相位恢复到与原生窗口一致的状态。
    */
-  const cancel = () => {
+  const cancel = (): boolean => {
+    // 只撤销仍在折叠延迟内的请求：已提交原生 resize 的请求保持有效，
+    // 由其快照收尾（否则快照被丢弃，视觉相位停在收起中途）。
+    if (timer === undefined) return false;
     generation += 1;
     clearPendingDelay();
+    return true;
   };
 
   const dispose = () => {

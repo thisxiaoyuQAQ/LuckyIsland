@@ -523,6 +523,18 @@ mod portable_tests {
     }
 
     #[test]
+    fn taskbar_mode_settings_are_portable_but_sensitive_settings_are_not() {
+        assert!(Db::is_portable_setting("window:ui_mode"));
+        assert!(Db::is_portable_setting("window:width:taskbar"));
+        assert!(Db::is_portable_setting("window:opacity:taskbar:expanded"));
+        assert!(Db::is_portable_setting("window:offset_x:taskbar"));
+        assert!(Db::is_portable_setting("window:dock_edge:taskbar"));
+        assert!(!Db::is_portable_setting("notify:http_token"));
+        assert!(!Db::is_portable_setting("ai:chat_api_key"));
+        assert!(!Db::is_portable_setting("weather:last"));
+    }
+
+    #[test]
     fn hotkeys_settings_portable() {
         // 自定义热键随配置导出/导入；密钥/运行时数据仍被排除。
         assert!(Db::is_portable_setting("hotkeys:toggle_island"));

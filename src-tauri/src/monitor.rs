@@ -452,6 +452,20 @@ fn select_dock_edge(
         .find_map(|(edge, distance)| (distance == minimum).then_some(edge))
 }
 
+/// 退出拖动胶囊后按已保存的停靠边/偏移恢复几何与位置，并广播最新策略快照。
+fn restore_after_drag(app: &AppHandle, db: &Db) -> Result<(), String> {
+    crate::window_policy::resize_current_for_dock(app, db)?;
+    restore_island_monitor(app, db)?;
+    crate::window_policy::reapply(app)?;
+    Ok(())
+}
+
+/// 自由落点：以落点窗口（拖动胶囊）的水平中心对齐状态几何的水平中心，顶边不变。
+/// 非拖动态下两者宽度相同，结果等于原落点 x。
+fn free_drop_anchor_x(drop_x: i32, drop_width: u32, window_width: u32) -> i32 {
+    drop_x + drop_width as i32 / 2 - window_width as i32 / 2
+}
+
 fn top_offsets_for_position(
     monitor: &MonitorInfo,
     window_width: u32,
@@ -798,21 +812,46 @@ pub fn window_dock_edge_set(
     Ok(edge.as_str().to_string())
 }
 
-#[tauri::command]
-pub fn window_drag_drop_settle(app: AppHandle, db: State<'_, Db>) -> Result<String, String> {
-    let window = app
-        .get_webview_window("island")
-        .ok_or_else(|| "找不到灵动岛窗口".to_string())?;
-    let position = window
-        .outer_position()
-        .map_err(|error| format!("读取拖动落点失败：{error}"))?;
-    let size = window
-        .outer_size()
-        .map_err(|error| format!("读取拖动窗口尺寸失败：{error}"))?;
-    let monitor = window
-        .current_monitor()
-        .map_err(|error| format!("读取拖动目标显示器失败：{error}"))?
-        .ok_or_else(|| "无法识别拖动目标显示器".to_string())?;
+/// 拖动落点结算：由 `island_drag` 在系统拖动循环结束后于主线程调用（2026-11-09 真机反馈），
+/// 返回最终停靠边。`drag_origin` 为拖动胶囊起点，未移动时不改任何设置。
+pub(crate) fn settle_drag(
+    app: AppHandle,
+    drag_origin: Option<(i32, i32)>,
+) -> Result<String, String> {
+    let db = app.state::<Db>();
+    // 先退出拖动态：后续任一步失败都不能让窗口停在 240×80 拖动胶囊、状态 Resize 一直被丢弃
+    // （BUG-20261108-01 #1/#6，审查 #1）。吸附判定仍使用下方读到的胶囊矩形。
+    let was_dragging = crate::window_policy::end_drag(&app)?;
+    let read = (|| {
+        let window = app
+            .get_webview_window("island")
+            .ok_or_else(|| "找不到灵动岛窗口".to_string())?;
+        let position = window
+            .outer_position()
+            .map_err(|error| format!("读取拖动落点失败：{error}"))?;
+        let size = window
+            .outer_size()
+            .map_err(|error| format!("读取拖动窗口尺寸失败：{error}"))?;
+        let monitor = window
+            .current_monitor()
+            .map_err(|error| format!("读取拖动目标显示器失败：{error}"))?
+            .ok_or_else(|| "无法识别拖动目标显示器".to_string())?;
+        Ok::<_, String>((window, position, size, monitor))
+    })();
+    let (window, position, size, monitor) = match read {
+        Ok(read) => read,
+        Err(error) => {
+            if was_dragging {
+                let _ = restore_after_drag(&app, db.inner());
+            }
+            return Err(error);
+        }
+    };
+    // 原地 Alt+点击：拖动胶囊没动过，不改任何设置，回到拖动前的停靠位置（审查 #6）。
+    if was_dragging && !crate::window_policy::drag_moved(drag_origin, (position.x, position.y)) {
+        restore_after_drag(&app, db.inner())?;
+        return Ok(current_dock_edge(db.inner()).as_str().to_string());
+    }
     let info = MonitorInfo {
         id: monitor_id(&monitor),
         label: String::new(),
@@ -820,6 +859,7 @@ pub fn window_drag_drop_settle(app: AppHandle, db: State<'_, Db>) -> Result<Stri
         position: monitor_point(&monitor),
         size: monitor_size(&monitor),
     };
+    let scale_factor = monitor.scale_factor();
     let previous_monitor = db.setting_get(MONITOR_SETTING_KEY);
     let current = current_dock_edge(db.inner());
     let rect = WindowRect {
@@ -846,18 +886,22 @@ pub fn window_drag_drop_settle(app: AppHandle, db: State<'_, Db>) -> Result<Stri
             restore_island_monitor(&app, db.inner())?;
             edge
         } else {
+            db.setting_set(&edge_key, DockEdge::Top.as_str())?;
             let gap = read_top_gap(db.inner());
+            let (logical_width, logical_height) = current_logical_geometry(&app);
+            let width = physical_window_width(logical_width, scale_factor);
+            let height = physical_window_height(logical_height, scale_factor);
             let (offset_x, offset_y) = top_offsets_for_position(
                 &info,
-                size.width,
-                size.height,
+                width,
+                height,
                 gap,
                 MonitorPoint {
-                    x: position.x,
+                    x: free_drop_anchor_x(position.x, size.width, width),
                     y: position.y,
                 },
             );
-            db.setting_set(&edge_key, DockEdge::Top.as_str())?;
+            crate::window_policy::resize_current_for_dock(&app, db.inner())?;
             window_offset_apply(app.clone(), db.clone(), offset_x, offset_y)?;
             DockEdge::Top
         };
@@ -876,6 +920,10 @@ pub fn window_drag_drop_settle(app: AppHandle, db: State<'_, Db>) -> Result<Stri
         };
         app.emit("monitor://changed", state)
             .map_err(|error| format!("广播显示器变更失败：{error}"))?;
+        // 拖动期间可能有晚到的悬停快照：结算后重发一次真实策略快照，前端据此对齐视觉相位（审查 #7）。
+        if let Err(error) = crate::window_policy::reapply(&app) {
+            tracing::warn!("[monitor] 拖动结算后重放窗口策略失败：{error}");
+        }
         Ok(edge)
     })();
     match result {
@@ -897,7 +945,10 @@ pub fn window_drag_drop_settle(app: AppHandle, db: State<'_, Db>) -> Result<Stri
             );
             let _ = crate::window_policy::resize_current_for_dock(&app, db.inner());
             let _ = restore_island_monitor(&app, db.inner());
-            restore_window_rect(&window, position, size);
+            // 拖动胶囊的矩形不是任何状态几何，失败时由上面的恢复按原停靠边/偏移回到原位。
+            if !was_dragging {
+                restore_window_rect(&window, position, size);
+            }
             Err(error)
         }
     }
@@ -1002,18 +1053,22 @@ pub fn start_runtime_watch(app: AppHandle) {
 
             // taskbar 模式：显示器/Explorer/任务栏矩形变化后重新挂载 strip 并重定位面板。
             // 持久化的 ui_mode 保持 taskbar；任务栏不可用时只记录日志，等待下一轮恢复。
+            // 嵌入条窗口随资源管理器重启被销毁时在这里（后台任务）按配置重建；任务栏模式下
+            // 随后的重挂会把新嵌入条挂回任务栏（BUG-20261109-02）。
+            if let Err(error) = crate::taskbar::ensure_strip_window(&app) {
+                tracing::warn!("[taskbar] {error}");
+            }
             {
                 let db = app.state::<Db>();
                 if current_ui_mode(db.inner()) == "taskbar" {
                     let manager = app.state::<crate::taskbar::TaskbarManager>();
                     if crate::taskbar::taskbar_needs_reattach(manager.inner()) {
-                        match crate::taskbar::taskbar_reapply(&app, manager.inner(), db.inner()) {
-                            Ok(snapshot) => {
-                                let _ = app.emit("window://taskbar-state-changed", snapshot);
-                            }
-                            Err(error) => {
-                                tracing::warn!("[taskbar] 运行时重挂任务栏失败：{error}");
-                            }
+                        // 重挂必须在主线程执行（见 taskbar::reattach_on_main_thread）。
+                        let handle = app.clone();
+                        if let Err(error) = app.run_on_main_thread(move || {
+                            crate::taskbar::reattach_on_main_thread(&handle)
+                        }) {
+                            tracing::warn!("[taskbar] 投递任务栏重挂失败：{error}");
                         }
                     }
                     continue;
@@ -1441,5 +1496,13 @@ mod tests {
         assert_eq!(state["selected"], "primary");
         assert_eq!(state["resolved"], "DISPLAY1");
         assert_eq!(state["fallback"], false);
+    }
+
+    #[test]
+    fn free_drop_keeps_the_drag_capsule_center_and_is_identity_without_drag() {
+        // 240 宽拖动胶囊落在 x=1000：720 宽条状以胶囊中心（1120）居中。
+        assert_eq!(super::free_drop_anchor_x(1000, 240, 720), 760);
+        // 非拖动态：落点窗口即状态几何，x 不变。
+        assert_eq!(super::free_drop_anchor_x(1000, 720, 720), 1000);
     }
 }

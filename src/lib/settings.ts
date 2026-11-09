@@ -429,8 +429,42 @@ export async function windowDockEdgeSet(edge: DockEdge): Promise<DockEdge> {
   return parseDockEdge(await invoke<string>("window_dock_edge_set", { edge }));
 }
 
-export async function windowDragDropSettle(): Promise<DockEdge> {
-  return parseDockEdge(await invoke<string>("window_drag_drop_settle"));
+/** Rust 在系统拖动结束并完成落点结算后广播（2026-11-09 真机反馈）。 */
+export const DRAG_SETTLED_EVENT = "window://drag-settled";
+
+/** `window://drag-settled` 载荷（与 Rust island_drag::DragSettled 对齐）。 */
+export interface DragSettled {
+  id: number;
+  ok: boolean;
+  edge: string | null;
+  error: string | null;
+}
+
+export function isDragSettled(value: unknown): value is DragSettled {
+  if (typeof value !== "object" || value === null) return false;
+  const record = value as Record<string, unknown>;
+  const optionalString = (field: unknown) => field === null || typeof field === "string";
+  return (
+    typeof record.id === "number" &&
+    typeof record.ok === "boolean" &&
+    optionalString(record.edge) &&
+    optionalString(record.error)
+  );
+}
+
+/**
+ * Alt+拖动开始：原生窗口切为以光标为中心的 240×80 拖动胶囊、清除悬停阶段，并由 Rust 启动
+ * 系统拖动（BUG-20261108-01 #1/#6）。返回拖动 id，结束时以同一 id 广播 `window://drag-settled`；
+ * 返回 null 表示不拖动（任务栏模式）。
+ */
+export async function windowDragBegin(): Promise<number | null> {
+  const id = await invoke<unknown>("window_drag_begin");
+  return typeof id === "number" ? id : null;
+}
+
+/** 取消当前拖动：不结算落点，按已保存的停靠边/偏移回到原位。 */
+export async function windowDragCancel(): Promise<void> {
+  await invoke("window_drag_cancel");
 }
 
 /** 07a 配置导入结果摘要（与后端 ImportSummary 对齐，camelCase）。 */
