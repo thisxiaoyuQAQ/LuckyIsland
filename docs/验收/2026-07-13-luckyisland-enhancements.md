@@ -73,3 +73,10 @@
 - [x] 2026-07-16 用户取消非公开测试通道的 N → N+1 与坏签名人工验收，不再将其作为模块完成门禁。
 
 本次未创建测试 tag/Release、未更改 production stable endpoint、未执行公开发布。
+
+## 过程记录（2026-11-08 自 docs/开发进度.md 迁入）
+
+- Task 2 纯窗口归约器（2026-07-14）：TDD RED 为 `window_policy` 测试因 `IslandState`、`FocusIntent`、输入/决策类型与 `reduce` 缺失而编译失败；六条纯 reducer 规则（Hidden 最高优先级；priority override 越过全屏但不越过 Hidden；全屏隐藏无焦点；hover 仅扩展 Compact 且穿透时禁用；显式 Expanded 不被 pointer leave 收起；正常 focus intent 保留）逐条通过，`cargo check --lib` 通过，独立审查规格与质量均通过。进度表当时记录 8 条预期 dead-code warning，plan Task 2 同日证据记为 5 条，两处原文均保留。
+- Task 3 效果计划与入口迁移（2026-07-14）：从 EffectPlan RED（`window_policy::tests` 9/10，同态显式 focus 应生成 Focus）起修复；实现 `WindowPolicy` 短锁更新、效果计划、结构化快照/事件与严格状态解析，启动、单实例、Alt+X、托盘等岛窗口入口迁入 `WindowPolicy`。前端新增 `src/lib/window-policy.ts` 契约，`App.tsx` 按 `effectiveState` 渲染、不再乐观裁决窗口；通知监听只切页，并在 Task 8 前兼容通知后端唯一的旧字符串事件。多屏恢复不再直接 show/focus：断开后回退主屏并重新应用 `WindowPolicy`；已保存副屏恢复时主动移回，成功后才广播 `fallback=false`，失败保留回退态重试。验证：`window_policy::tests` 12/12、`monitor::tests` 12/12、`pnpm exec tsc --noEmit`、三入口 `pnpm build`、新模块 rustfmt 与全量 `git diff --check` 通过（仅既有主 chunk >500 kB 警告）；Windows 真机 smoke 见 plan Task 3 Step 9。
+- Task 4 空热键（2026-07-14）：缺失 DB 键使用动作的可选默认，显式空字符串保持未绑定，非空非法存量回退默认；注册跳过未绑定项并返回成功的空 binding，默认/冲突集合只含已绑定 ID；TypeScript 契约注明 current/default 空字符串语义，热键面板显示「默认：未绑定」，清空草稿仍可保存与恢复默认。RED（4 个 E0425）与 `hotkeys::tests` 9/9 见 plan Task 4。
+- Task 13 Open-Meteo 探针补充（2026-07-16）：区县名必须结合省/地级市候选消歧，禁止静默选择第一项；北京 forecast 返回 `Asia/Shanghai` 与 7 组对齐的日期、WMO code、高低温和最大降雨概率，日期范围 2026-07-15～2026-07-21；HTTPS、免 Key。供应商边界记录为 Open-Meteo forecast（CC BY 4.0）与基于 GeoNames 的 geocoding attribution；前端只消费统一 DTO，不暴露原始响应。
