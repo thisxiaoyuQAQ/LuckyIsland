@@ -29,7 +29,7 @@ LuckyIsland 把 macOS 灵动岛的形态搬到了 Windows：默认是一个常�
 - **天气**：uapis.cn 当前天气/预警 + Open-Meteo 未来最多七日预报、地点候选消歧、同地点离线缓存与部分降级；按城市独立请求状态机，切换/删除城市的晚到响应不会污染界面
 - **股票**：腾讯实时行情 + sina 搜索 + 日 / 周 / 月 K 线 + 拖拽排序
 - **待办**：CRUD + 优先级 / 截止 + SQLite 持久化
-- **终端**：xterm.js + portable-pty 多 tab + 快捷命令 + 一键打开 Windows Terminal
+- **终端**：xterm.js + portable-pty 多 tab + 快捷命令 + 一键打开 Windows Terminal；除 PowerShell / cmd 外可添加自定义程序（nushell、Git Bash、WSL 等，支持一键检测），新建 tab 或快捷命令可指定用哪个程序
 - **通知**：本地 HTTP 端点 + token 鉴权 + SQLite 历史 + Windows toast
 
 **AI 助手**
