@@ -297,4 +297,19 @@ export const isKBar: Guard<KBarLike> = (value): value is KBarLike => {
 
 export const isKBarList = isArr(isKBar);
 
+// ---- 终端域（05a）----
+
+export interface DetectedShellLike {
+  name: string;
+  program: string;
+  args: string[];
+}
+
+export const isDetectedShell: Guard<DetectedShellLike> = (value): value is DetectedShellLike => {
+  if (!hasStrFields(value, "name", "program")) return false;
+  return isArr(isStr)((value as Record<string, unknown>).args);
+};
+
+export const isDetectedShellList = isArr(isDetectedShell);
+
 export { assertIpc };

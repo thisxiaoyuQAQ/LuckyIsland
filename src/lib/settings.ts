@@ -17,6 +17,8 @@ export const KEYS = {
   terminalShell: "terminal:shell",
   terminalFontSize: "terminal:font_size",
   terminalShortcuts: "terminal:shortcuts",
+  /** 05a 自定义终端程序：JSON 数组 TerminalProfile[]（见 src/lib/terminal-profiles.ts）。 */
+  terminalProfiles: "terminal:profiles",
   windowMonitor: "window:monitor",
   /** 07a 窗口外观：岛容器 CSS 背景透明度（0.10~1.00）。按界面模式独立，实际键为
    *  `modeKey(windowOpacity, mode)`；此裸键只作为旧版本迁移来源保留。 */
@@ -73,6 +75,7 @@ export const DEFAULTS = {
   terminalShell: "default",
   terminalFontSize: "13",
   terminalShortcuts: "",
+  terminalProfiles: "",
   /** 07a 窗口外观默认值：透明度 0.7（对齐原 bg-card/70 视觉）、偏移 0/0（默认顶部居中）。 */
   windowOpacity: "0.7",
   windowOpacityExpanded: "0.7",
@@ -339,6 +342,8 @@ export interface Shortcut {
   name: string;
   command: string;
   cwd?: string;
+  /** 05a：运行程序（terminal:shell 同一取值域）；缺省跟随默认 shell */
+  shell?: string;
 }
 
 const SHORTCUT_FALLBACK: Shortcut[] = [
@@ -362,11 +367,12 @@ export function parseShortcuts(v: string | null | undefined): Shortcut[] {
         typeof (s as { name?: unknown }).name === "string" &&
         typeof (s as { command?: unknown }).command === "string"
       ) {
-        const sc = s as { name: string; command: string; cwd?: string };
+        const sc = s as { name: string; command: string; cwd?: unknown; shell?: unknown };
         out.push({
           name: sc.name,
           command: sc.command,
-          cwd: sc.cwd && sc.cwd.trim() ? sc.cwd : undefined,
+          cwd: typeof sc.cwd === "string" && sc.cwd.trim() ? sc.cwd : undefined,
+          shell: typeof sc.shell === "string" && sc.shell.trim() ? sc.shell.trim() : undefined,
         });
       }
     }

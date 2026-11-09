@@ -4,6 +4,7 @@ import {
   isAiCancelStatus,
   isAiHistoryList,
   isAiResponse,
+  isDetectedShellList,
   isKBar,
   isKBarList,
   isLocatedCity,
@@ -240,6 +241,25 @@ describe("ipc-schemas stock", () => {
     expect(isQuoteList([validQuote, { ...validQuote, name: 1 }])).toBe(false);
     expect(isKBar({ ...validKBar, volume: "1" })).toBe(false);
     expect(isStockSearchResultList([{ name: "x", symbol: "y" }])).toBe(false);
+  });
+});
+
+describe("ipc-schemas terminal", () => {
+  it("accepts detected shell lists", () => {
+    expect(isDetectedShellList([])).toBe(true);
+    expect(
+      isDetectedShellList([
+        { name: "Git Bash", program: "C:/Git/bin/bash.exe", args: ["--login", "-i"] },
+        { name: "Nushell", program: "nu.exe", args: [] },
+      ]),
+    ).toBe(true);
+  });
+
+  it("rejects malformed detected shells", () => {
+    expect(isDetectedShellList(null)).toBe(false);
+    expect(isDetectedShellList([{ name: "x", program: "y" }])).toBe(false);
+    expect(isDetectedShellList([{ name: "x", program: "y", args: [1] }])).toBe(false);
+    expect(isDetectedShellList([{ name: "x", args: [] }])).toBe(false);
   });
 });
 

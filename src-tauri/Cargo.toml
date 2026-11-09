@@ -82,6 +82,8 @@ windows = { version = "0.61", features = [
     "Win32_System_Com",
     # 嵌入条点击钩子取模块句柄（GetModuleHandleW）；该特性已被其它依赖启用，显式声明不改 Cargo.lock。
     "Win32_System_LibraryLoader",
+    # 05a 终端检测 WSL 发行版：读 HKCU\...\Lxss 注册表（不启动 wsl.exe）；只加 feature，不改 Cargo.lock。
+    "Win32_System_Registry",
     "Win32_System_Threading",
     "Win32_UI_HiDpi",
     # Alt+拖动结束判定读取主按钮状态（GetAsyncKeyState）；该特性已被其它依赖启用，显式声明不改 Cargo.lock。

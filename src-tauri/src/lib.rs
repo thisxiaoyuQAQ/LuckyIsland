@@ -56,7 +56,8 @@ use settings_window::{
     setting_set_and_emit, settings_list,
 };
 use terminal::{
-    term_create, term_kill, term_open_wt, term_resize, term_snapshot, term_write, TerminalRegistry,
+    term_create, term_detect_shells, term_kill, term_open_wt, term_resize, term_snapshot,
+    term_write, TerminalRegistry,
 };
 use voice::{
     voice_asr_model_ready, voice_download_model, voice_model_ready, voice_record_utterance,
@@ -294,6 +295,7 @@ pub fn run() {
             term_snapshot,
             term_kill,
             term_open_wt,
+            term_detect_shells,
             taskbar::taskbar_availability,
             taskbar::taskbar_enter_command,
             taskbar::taskbar_leave_command,

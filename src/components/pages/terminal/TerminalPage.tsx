@@ -6,41 +6,45 @@ import { getVerticalWheelDirection } from "@/lib/islandWheel";
 import { useReorder } from "@/lib/useReorder";
 import { TerminalTab } from "./TerminalTab";
 import { Shortcuts } from "./Shortcuts";
+import { NewTabMenu } from "./NewTabMenu";
 import type { Shortcut } from "@/lib/settings";
 import {
-  addTab,
   closeTab as storeCloseTab,
   ensureFirstTab,
   getActive,
+  getNotice,
   getTabs,
+  openTab,
   renameTab,
   reorderTabs,
   setActive as storeSetActive,
+  setNotice,
   subscribe,
 } from "./term-store";
 
 export function TerminalPage({ compact }: { compact: boolean }) {
   const tabs = useSyncExternalStore(subscribe, getTabs, getTabs);
   const active = useSyncExternalStore(subscribe, getActive, getActive);
-  const [err, setErr] = useState<string | null>(null);
+  const err = useSyncExternalStore(subscribe, getNotice, getNotice);
   const [editing, setEditing] = useState<string | null>(null);
   const [titleDraft, setTitleDraft] = useState("");
   const { overIndex, itemProps } = useReorder(reorderTabs);
 
-  // 首挂载建一个 tab（store 持久，重挂载不会重复建）
+  // 首挂载建一个 tab（store 持久，重挂载不会重复建）；默认程序启动失败时 store 回退并写入错误行
   useEffect(() => {
     ensureFirstTab();
   }, []);
 
+  // 新建 tab 失败（程序路径失效等）由 store 写入错误行，不静默吞掉
   const runShortcut = (s: Shortcut) => {
-    void addTab({ command: s.command, title: s.name, cwd: s.cwd });
+    void openTab({ command: s.command, title: s.name, cwd: s.cwd, shell: s.shell });
   };
 
   const openInWt = async () => {
     try {
       await invoke("term_open_wt", { cwd: null });
     } catch (e) {
-      setErr(String(e));
+      setNotice(String(e));
     }
   };
 
@@ -126,7 +130,7 @@ export function TerminalPage({ compact }: { compact: boolean }) {
             </span>
           ))}
           <button
-            onClick={() => void addTab()}
+            onClick={() => void openTab()}
             aria-label="新标签"
             className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-dashed border-border/60 text-muted-foreground hover:text-foreground"
           >
@@ -135,6 +139,7 @@ export function TerminalPage({ compact }: { compact: boolean }) {
         </div>
 
         <div className="flex shrink-0 items-center gap-2">
+          <NewTabMenu onPick={(shell, title) => void openTab({ shell, title })} />
           <Shortcuts onRun={runShortcut} />
           <button
             onClick={() => void openInWt()}

@@ -7,6 +7,8 @@ use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, State};
 use uuid::Uuid;
 
+mod detect;
+
 const DEFAULT_COLS: u16 = 80;
 const DEFAULT_ROWS: u16 = 24;
 
@@ -79,15 +81,50 @@ fn default_shell() -> CommandBuilder {
     cmd
 }
 
+/// 05a：按前端解析后的 shell/args 构建命令。shell 缺省走 default_shell 并忽略 args；
+/// shell 去空白后为空视为配置错误。portable-pty 在 Windows 上按 PATH/PATHEXT 查找 program。
+fn build_command(shell: Option<&str>, args: Option<&[String]>) -> Result<CommandBuilder, String> {
+    let Some(raw) = shell else {
+        return Ok(default_shell());
+    };
+    let program = raw.trim();
+    if program.is_empty() {
+        return Err("程序路径为空".to_string());
+    }
+    let mut cmd = CommandBuilder::new(program);
+    if let Some(args) = args {
+        cmd.args(args);
+    }
+    Ok(cmd)
+}
+
+/// 启动失败文案：带上程序名；命令名（非绝对路径）提示 PATH 只在应用启动时读取
+fn spawn_error(shell: Option<&str>, reason: &str) -> String {
+    match shell.map(str::trim) {
+        Some(program) if !Path::new(program).is_absolute() => {
+            format!("启动「{program}」失败：{reason}（若刚安装，可改填完整路径或重启 LuckyIsland）")
+        }
+        Some(program) => format!("启动「{program}」失败：{reason}"),
+        None => format!("启动默认 shell 失败：{reason}"),
+    }
+}
+
 /// 创建一个终端：开 PTY、spawn shell、起后台读线程推 term://output
 #[tauri::command]
 pub fn term_create(
     app: AppHandle,
     cwd: Option<String>,
     shell: Option<String>,
+    args: Option<Vec<String>>,
     command: Option<String>,
     registry: State<'_, TerminalRegistry>,
 ) -> Result<String, String> {
+    // 先校验配置，再开 PTY，避免空路径时白开一个 PTY
+    let mut cmd = build_command(shell.as_deref(), args.as_deref())?;
+    if let Some(c) = cwd.as_deref() {
+        cmd.cwd(c);
+    }
+
     let term_id = Uuid::new_v4().to_string();
     let pty_system = native_pty_system();
     let pair = pty_system
@@ -99,24 +136,20 @@ pub fn term_create(
         })
         .map_err(|e| e.to_string())?;
 
-    let mut cmd = match &shell {
-        Some(s) => CommandBuilder::new(s),
-        None => default_shell(),
-    };
-    if let Some(c) = cwd.as_deref() {
-        cmd.cwd(c);
-    }
-
-    let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
+    let child = pair
+        .slave
+        .spawn_command(cmd)
+        .map_err(|e| spawn_error(shell.as_deref(), &e.to_string()))?;
     drop(pair.slave); // 释放 slave，子进程由 child 持有
 
     let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
     let mut writer = pair.master.take_writer().map_err(|e| e.to_string())?;
     let output_buffer = Arc::new(Mutex::new(String::new()));
 
-    // 快捷命令：spawn 后把命令写入 PTY（PTY 输入缓冲会排队等 shell 就绪）
+    // 快捷命令：spawn 后把命令写入 PTY（PTY 输入缓冲会排队等 shell 就绪）。
+    // 结尾只写 \r（与 xterm 回车一致）；\r\n 会让 bash / nu 多执行一个空行。
     if let Some(command) = command.as_deref() {
-        let _ = writer.write_all(format!("{command}\r\n").as_bytes());
+        let _ = writer.write_all(format!("{command}\r").as_bytes());
         let _ = writer.flush();
     }
 
@@ -246,6 +279,15 @@ pub fn term_kill(term_id: String, registry: State<'_, TerminalRegistry>) -> Resu
     Ok(())
 }
 
+/// 05a：检测已安装的 Nushell / Git Bash / WSL 发行版（只检测不写设置）。
+/// 读文件系统与注册表放到阻塞线程，不占 async 运行时也不卡主线程。
+#[tauri::command]
+pub async fn term_detect_shells() -> Result<Vec<detect::DetectedShell>, String> {
+    tokio::task::spawn_blocking(detect::detect_installed)
+        .await
+        .map_err(|e| format!("检测 shell 失败：{e}"))
+}
+
 /// 在外部 Windows Terminal 打开（spawn wt.exe -d <cwd>）
 #[tauri::command]
 pub fn term_open_wt(cwd: Option<String>) -> Result<(), String> {
@@ -256,4 +298,53 @@ pub fn term_open_wt(cwd: Option<String>) -> Result<(), String> {
     cmd.spawn()
         .map_err(|e| format!("打开 Windows Terminal 失败：{e}（是否已安装？）"))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn argv(cmd: &CommandBuilder) -> Vec<String> {
+        cmd.get_argv()
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn build_command_rejects_blank_program() {
+        assert_eq!(
+            build_command(Some("   "), None).err().as_deref(),
+            Some("程序路径为空")
+        );
+    }
+
+    #[test]
+    fn build_command_trims_program_and_appends_args_in_order() {
+        let args = vec!["--login".to_string(), "-i".to_string()];
+        let cmd = build_command(Some(r" C:\Program Files\Git\bin\bash.exe "), Some(&args)).unwrap();
+        assert_eq!(
+            argv(&cmd),
+            vec![r"C:\Program Files\Git\bin\bash.exe", "--login", "-i"]
+        );
+        let cmd = build_command(Some("cmd.exe"), None).unwrap();
+        assert_eq!(argv(&cmd), vec!["cmd.exe"]);
+    }
+
+    #[test]
+    fn build_command_without_shell_uses_default_and_ignores_args() {
+        let args = vec!["-l".to_string()];
+        let cmd = build_command(None, Some(&args)).unwrap();
+        assert_eq!(cmd.get_argv().len(), 1);
+    }
+
+    #[test]
+    fn spawn_error_hints_full_path_only_for_command_names() {
+        assert!(spawn_error(Some("nu"), "not found").contains("可改填完整路径"));
+        assert_eq!(
+            spawn_error(Some(r"C:\nu\nu.exe"), "not found"),
+            r"启动「C:\nu\nu.exe」失败：not found"
+        );
+        assert_eq!(spawn_error(None, "boom"), "启动默认 shell 失败：boom");
+    }
 }
