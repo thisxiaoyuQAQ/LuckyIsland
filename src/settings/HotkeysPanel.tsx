@@ -10,6 +10,8 @@ import {
   type HotkeyEntry,
 } from "@/lib/settings";
 import { cn } from "@/lib/utils";
+import { MODULES_CHANGED_EVENT } from "@/lib/modules";
+import { useTauriEvent } from "@/lib/useTauriEvent";
 
 /**
  * 全局热键设置面板：列出可绑定动作，点击按键框录制组合键，保存后即时重新注册。
@@ -48,6 +50,18 @@ export function HotkeysPanel() {
       disposed = true;
     };
   }, []);
+
+  // 模块 15：安装/卸载问答后按后端重读停用标记；只同步标记，不覆盖未保存的草稿。
+  useTauriEvent<unknown>(MODULES_CHANGED_EVENT, () => {
+    void hotkeysList()
+      .then((list) => {
+        const flags = new Map(list.map((entry) => [entry.action, entry.disabled]));
+        setEntries((current) =>
+          current.map((entry) => ({ ...entry, disabled: flags.get(entry.action) ?? entry.disabled })),
+        );
+      })
+      .catch((error) => console.error("[hotkeys] 刷新停用状态失败:", error));
+  });
 
   const clearError = (action: string) =>
     setErrors((er) => {
@@ -167,7 +181,11 @@ export function HotkeysPanel() {
         const isRecording = recording === e.action;
         const err = errors[e.action];
         return (
-          <div key={e.action} className="flex items-center justify-between gap-4 py-2">
+          <div
+            key={e.action}
+            data-hotkey-action={e.action}
+            className="flex items-center justify-between gap-4 py-2"
+          >
             <div className="flex flex-col gap-0.5">
               <div className="text-sm font-medium">{e.label}</div>
               <div className="text-xs text-muted-foreground">
@@ -180,7 +198,7 @@ export function HotkeysPanel() {
                   setRecording(e.action);
                   clearError(e.action);
                 }}
-                disabled={saving}
+                disabled={saving || e.disabled}
                 className={cn(
                   "min-w-36 rounded-md border px-3 py-1.5 text-sm transition-colors disabled:opacity-50",
                   isRecording
@@ -189,14 +207,16 @@ export function HotkeysPanel() {
                   err && !isRecording && "border-destructive",
                 )}
               >
-                {isRecording
+                {e.disabled
+                  ? "问答已卸载，热键停用"
+                  : isRecording
                   ? "按下组合键…"
                   : draft
                     ? formatBinding(draft)
                     : "未设置（点击录制）"}
               </button>
               {err && <p className="text-xs text-destructive">{err}</p>}
-              {draft !== e.default && (
+              {!e.disabled && draft !== e.default && (
                 <button
                   onClick={() => {
                     setDrafts((d) => ({ ...d, [e.action]: e.default }));

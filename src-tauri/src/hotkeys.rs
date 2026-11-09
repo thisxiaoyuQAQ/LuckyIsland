@@ -130,6 +130,11 @@ fn load_bindings(db: &Db) -> Vec<(Action, Option<HotKey>)> {
         .collect()
 }
 
+/// 问答卸载后 `toggle_ai` 停用：保留绑定但不注册（模块 15），其余动作不受影响。
+fn action_disabled(action: Action, ai_installed: bool) -> bool {
+    matches!(action, Action::ToggleAi) && !ai_installed
+}
+
 /// UI 列表项（`hotkeys_list` 返回）。
 #[derive(serde::Serialize, Clone)]
 pub struct HotkeyEntry {
@@ -137,6 +142,8 @@ pub struct HotkeyEntry {
     pub label: String,
     pub binding: String,
     pub default: String,
+    /// 所属模块已卸载，动作停用（设置页不可录制）。
+    pub disabled: bool,
 }
 
 /// 应用结果（`hotkeys_apply` / `hotkeys_reset` 返回，每动作一条）。
@@ -153,8 +160,47 @@ pub struct HotkeyResult {
 /// 在 setup（主线程）与 async 命令（worker 线程）两种上下文调用均安全——
 /// `register`/`unregister_all` 内部 marshaling 到主线程，与历史 setup 直调 `register`
 /// 同一调用链。sync 命令上下文不要直接调（改走 async 命令）。
+/// 单个动作的注册计划（纯函数产出，便于单测；[`apply`] 负责执行）。
+enum Planned {
+    /// 显式未绑定。
+    Unbound,
+    /// 所属模块已卸载：不注册，返回原绑定供设置页回显。
+    Disabled(String),
+    /// 与更早的动作同键。
+    Conflict(String),
+    Register(HotKey),
+}
+
+/// 按 `ALL_ACTIONS` 顺序规划注册：同键时后者冲突。停用动作不注册但仍占住其组合键，
+/// 否则问答卸载期间别的动作可抢走 toggle_ai 的键，重装问答后 toggle_ai 静默注册失败（模块 15）。
+fn plan_registrations(
+    bindings: Vec<(Action, Option<HotKey>)>,
+    ai_installed: bool,
+) -> Vec<(Action, Planned)> {
+    let mut seen: HashSet<u32> = HashSet::new();
+    bindings
+        .into_iter()
+        .map(|(action, binding)| {
+            let planned = match binding {
+                None => Planned::Unbound,
+                Some(hotkey) => {
+                    let fresh = seen.insert(hotkey.id());
+                    if action_disabled(action, ai_installed) {
+                        Planned::Disabled(hotkey.into_string())
+                    } else if fresh {
+                        Planned::Register(hotkey)
+                    } else {
+                        Planned::Conflict(hotkey.into_string())
+                    }
+                }
+            };
+            (action, planned)
+        })
+        .collect()
+}
+
 pub fn apply(app: &AppHandle, db: &Db) -> Vec<HotkeyResult> {
-    let bindings = load_bindings(db);
+    let plan = plan_registrations(load_bindings(db), crate::modules::status(db).ai);
     let gs = app.global_shortcut();
     // 清旧绑定；首次启动或全空时是 no-op，忽略错误（未注册项注销失败无意义）。
     let _ = gs.unregister_all();
@@ -162,49 +208,51 @@ pub fn apply(app: &AppHandle, db: &Db) -> Vec<HotkeyResult> {
     let map = app.state::<HotkeyMap>();
     map.0.lock().unwrap().clear();
 
-    let mut seen: HashSet<u32> = HashSet::new();
-    let mut results = Vec::with_capacity(bindings.len());
-    for (action, binding) in bindings {
-        let Some(parsed) = binding else {
-            results.push(HotkeyResult {
-                action: action.id_str().to_string(),
+    let mut results = Vec::with_capacity(plan.len());
+    for (action, planned) in plan {
+        let action_id = action.id_str().to_string();
+        let result = match planned {
+            Planned::Unbound => HotkeyResult {
+                action: action_id,
                 binding: String::new(),
                 ok: true,
                 error: None,
-            });
-            continue;
-        };
-        let binding = parsed.into_string();
-        let id = parsed.id();
-        // 跨动作冲突：两个动作绑到同一组合键，后者拒绝注册。
-        if !seen.insert(id) {
-            results.push(HotkeyResult {
-                action: action.id_str().to_string(),
+            },
+            Planned::Disabled(binding) => HotkeyResult {
+                action: action_id,
+                binding,
+                ok: true,
+                error: None,
+            },
+            Planned::Conflict(binding) => HotkeyResult {
+                action: action_id,
                 binding,
                 ok: false,
                 error: Some("与其它动作冲突".to_string()),
-            });
-            continue;
-        }
-        match gs.register(parsed) {
-            Ok(()) => {
-                map.0.lock().unwrap().insert(id, action);
-                results.push(HotkeyResult {
-                    action: action.id_str().to_string(),
-                    binding,
-                    ok: true,
-                    error: None,
-                });
+            },
+            Planned::Register(parsed) => {
+                let binding = parsed.into_string();
+                let id = parsed.id();
+                match gs.register(parsed) {
+                    Ok(()) => {
+                        map.0.lock().unwrap().insert(id, action);
+                        HotkeyResult {
+                            action: action_id,
+                            binding,
+                            ok: true,
+                            error: None,
+                        }
+                    }
+                    Err(e) => HotkeyResult {
+                        action: action_id,
+                        binding,
+                        ok: false,
+                        error: Some(format!("注册失败：{e}")),
+                    },
+                }
             }
-            Err(e) => {
-                results.push(HotkeyResult {
-                    action: action.id_str().to_string(),
-                    binding,
-                    ok: false,
-                    error: Some(format!("注册失败：{e}")),
-                });
-            }
-        }
+        };
+        results.push(result);
     }
     results
 }
@@ -212,6 +260,7 @@ pub fn apply(app: &AppHandle, db: &Db) -> Vec<HotkeyResult> {
 /// 列出全部动作 + 当前绑定 + 默认绑定（设置面板初始化用）。
 #[tauri::command]
 pub fn hotkeys_list(db: State<'_, Db>) -> Result<Vec<HotkeyEntry>, String> {
+    let ai_installed = crate::modules::status(db.inner()).ai;
     Ok(ALL_ACTIONS
         .iter()
         .map(|&a| HotkeyEntry {
@@ -221,6 +270,7 @@ pub fn hotkeys_list(db: State<'_, Db>) -> Result<Vec<HotkeyEntry>, String> {
                 .map(|hotkey| hotkey.into_string())
                 .unwrap_or_default(),
             default: a.default_binding().unwrap_or_default().to_string(),
+            disabled: action_disabled(a, ai_installed),
         })
         .collect())
 }
@@ -311,6 +361,53 @@ mod tests {
         assert_eq!(Action::ToggleClickThrough.default_binding(), None);
         assert_eq!(binding_from_stored(None, Action::ToggleClickThrough), None);
         assert_eq!(default_hotkey_ids().len(), 2);
+    }
+
+    /// 模块 15：问答卸载后只停用 toggle_ai，其余动作照常注册。
+    #[test]
+    fn only_toggle_ai_is_disabled_when_ai_is_uninstalled() {
+        assert!(action_disabled(Action::ToggleAi, false));
+        assert!(!action_disabled(Action::ToggleAi, true));
+        assert!(!action_disabled(Action::ToggleIsland, false));
+        assert!(!action_disabled(Action::ToggleClickThrough, false));
+    }
+
+    fn hk(value: &str) -> HotKey {
+        HotKey::from_str(value).unwrap()
+    }
+
+    /// 审查 #2：问答卸载期间 toggle_ai 不注册，但仍占住组合键，
+    /// 否则别的动作抢走它，重装问答后 toggle_ai 静默注册失败。
+    #[test]
+    fn disabled_toggle_ai_keeps_its_key_reserved() {
+        let plan = plan_registrations(
+            vec![
+                (Action::ToggleIsland, Some(hk("alt+KeyX"))),
+                (Action::ToggleAi, Some(hk("alt+Space"))),
+                (Action::ToggleClickThrough, Some(hk("alt+Space"))),
+            ],
+            false,
+        );
+        assert!(matches!(plan[0].1, Planned::Register(_)));
+        assert!(
+            matches!(&plan[1].1, Planned::Disabled(binding) if binding == &hk("alt+Space").into_string())
+        );
+        assert!(matches!(plan[2].1, Planned::Conflict(_)));
+    }
+
+    #[test]
+    fn installed_ai_registers_and_unbound_actions_stay_unbound() {
+        let plan = plan_registrations(
+            vec![
+                (Action::ToggleIsland, Some(hk("alt+KeyX"))),
+                (Action::ToggleAi, Some(hk("alt+Space"))),
+                (Action::ToggleClickThrough, None),
+            ],
+            true,
+        );
+        assert!(matches!(plan[0].1, Planned::Register(_)));
+        assert!(matches!(plan[1].1, Planned::Register(_)));
+        assert!(matches!(plan[2].1, Planned::Unbound));
     }
 
     #[test]

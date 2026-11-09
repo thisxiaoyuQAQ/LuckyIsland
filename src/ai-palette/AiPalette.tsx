@@ -1,4 +1,5 @@
 import { useEffect, useReducer, useRef, useState } from "react";
+import { useModuleStatus } from "@/lib/modules";
 import { invoke } from "@tauri-apps/api/core";
 import { ChevronsUpDown, Check, Mic, Send, Square, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -117,6 +118,9 @@ export default function AiPalette() {
   const [input, setInput] = useState("");
   const [providerSwitching, setProviderSwitching] = useState(true);
   const [recording, setRecording] = useState(false);
+  // 模块 15：语音卸载后隐藏语音输入；读取完成前按已安装处理（面板随启动预建，用户打开时早已读完）。
+  const [modules] = useModuleStatus();
+  const voiceInstalled = modules?.voice ?? true;
   const [provider, setProvider] = useState<ProviderKind>("claude-cli");
   const scrollRef = useRef<HTMLDivElement>(null);
   const busy = phase !== "idle" || providerSwitching;
@@ -394,16 +398,18 @@ export default function AiPalette() {
             rows={1}
             className="max-h-32 min-h-[36px] flex-1 resize-none rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus:border-ring focus:ring-[3px] focus:ring-ring/50"
           />
-          <Button
-            size="icon"
-            variant="outline"
-            onClick={() => void recordVoice()}
-            disabled={recording || busy}
-            aria-label="语音输入"
-            title="语音输入（说完自动停，填进输入框，不自动发送）"
-          >
-            <Mic className={recording ? "h-4 w-4 animate-pulse text-destructive" : "h-4 w-4"} />
-          </Button>
+          {voiceInstalled && (
+            <Button
+              size="icon"
+              variant="outline"
+              onClick={() => void recordVoice()}
+              disabled={recording || busy}
+              aria-label="语音输入"
+              title="语音输入（说完自动停，填进输入框，不自动发送）"
+            >
+              <Mic className={recording ? "h-4 w-4 animate-pulse text-destructive" : "h-4 w-4"} />
+            </Button>
+          )}
           <Button
             size="icon"
             variant={phase === "idle" ? "default" : "destructive"}

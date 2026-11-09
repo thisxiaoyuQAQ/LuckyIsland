@@ -125,15 +125,30 @@ impl<F: FnOnce()> Drop for RecordingGuard<F> {
     }
 }
 
-/// 模型文件存放目录：`<app_data_dir>/voice-models/<model_dir_name>/`
-fn model_kind_dir(app: &AppHandle, kind: &ModelKind) -> Result<PathBuf, String> {
-    let base = app
+/// 全部语音模型的根目录：`<app_data_dir>/voice-models/`。
+fn models_root(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(app
         .path()
         .app_data_dir()
         .map_err(|e| e.to_string())?
-        .join("voice-models")
-        .join(kind.dir_name());
-    Ok(base)
+        .join("voice-models"))
+}
+
+/// 模型文件存放目录：`<app_data_dir>/voice-models/<model_dir_name>/`
+fn model_kind_dir(app: &AppHandle, kind: &ModelKind) -> Result<PathBuf, String> {
+    Ok(models_root(app)?.join(kind.dir_name()))
+}
+
+/// 删除全部已下载的语音模型（模块 15 卸载语音）。目录不存在视为成功；
+/// 调用方必须先停止监听并占住下载槽，确保没有线程持有或写入模型文件。
+pub fn remove_models(app: &AppHandle) -> Result<(), String> {
+    match std::fs::remove_dir_all(models_root(app)?) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!(
+            "删除语音模型失败：{error}。部分模型文件可能已被删除，可在语音页重新下载"
+        )),
+    }
 }
 
 /// 判断模型是否已下载完整。
@@ -208,11 +223,17 @@ pub async fn voice_download_model(
     model: String,
 ) -> Result<(), String> {
     let kind = ModelKind::parse(&model)?;
+    crate::modules::ensure_voice(app.state::<crate::storage::Db>().inner())?;
     if is_model_ready(&app, &kind) {
         return Ok(());
     }
     if state.downloading.swap(true, Ordering::SeqCst) {
         return Err("已有下载任务在进行".to_string());
+    }
+    // 占住下载槽后再确认一次：卸载语音也占用该槽，避免检查与占槽之间完成卸载后又写回模型（审查 #5）。
+    if let Err(error) = crate::modules::ensure_voice(app.state::<crate::storage::Db>().inner()) {
+        state.downloading.store(false, Ordering::SeqCst);
+        return Err(error);
     }
 
     let result = download_and_extract(&app, http.inner(), &kind).await;
@@ -329,6 +350,7 @@ pub fn voice_start_listening(
 /// 启动监听的内部实现（命令入口与 setup 自动恢复共用）。从 managed state 取 VoiceState。
 /// setup 里 app.state::<VoiceState>() 取的是启动时 manage 的同一个实例。
 pub fn start_listening_inner(app: &AppHandle, state: &VoiceState) -> Result<(), String> {
+    crate::modules::ensure_voice(app.state::<crate::storage::Db>().inner())?;
     if !is_model_ready(app, &ModelKind::Kws) {
         return Err("唤醒模型尚未下载，请先在设置里下载语音唤醒模型".to_string());
     }
@@ -464,11 +486,16 @@ fn speak_prompt(_app: &AppHandle, text: &str) {
 /// （reload_keyword 内部也用同样的 stop 逻辑；Exit 清理时不 join——进程马上退出 OS 会回收句柄。）
 #[tauri::command]
 pub fn voice_stop_listening(state: tauri::State<'_, VoiceState>) -> Result<(), String> {
+    stop_listening_inner(state.inner());
+    Ok(())
+}
+
+/// 停止监听并等监听线程退出（命令入口与模块 15 卸载语音共用）。
+pub fn stop_listening_inner(state: &VoiceState) {
     state.listening.store(false, Ordering::SeqCst);
     if let Some(handle) = state.thread.lock().unwrap().take() {
         let _ = handle.join();
     }
-    Ok(())
 }
 
 /// 监听线程主体：建 KeywordSpotter + cpal 输入流，PCM 经 mpsc 通道送进检测循环，
@@ -868,6 +895,7 @@ pub async fn voice_record_utterance(
     app: AppHandle,
     state: tauri::State<'_, VoiceState>,
 ) -> Result<String, String> {
+    crate::modules::ensure_voice(app.state::<crate::storage::Db>().inner())?;
     if !is_model_ready(&app, &ModelKind::Asr) {
         return Err("语音问答模型尚未下载，请先在设置里下载语音问答模型".to_string());
     }
@@ -886,6 +914,8 @@ fn record_utterance_blocking(
         let _ = app_for_stop.emit("voice://listening", false);
         eprintln!("[voice] 已 emit voice://listening=false，按需录音结束");
     });
+    // 置位录音标志后再确认一次：卸载语音会先检查该标志，二者交错时由这里拒绝（审查 #5）。
+    crate::modules::ensure_voice(app.state::<crate::storage::Db>().inner())?;
 
     let com_initialized = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
     struct ComGuard(bool);

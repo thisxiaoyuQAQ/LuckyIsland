@@ -59,6 +59,10 @@ vi.mock("../TerminalPanel", () => ({ TerminalPanel: () => <div data-testid="term
 vi.mock("../AiHistoryPanel", () => ({ AiHistoryPanel: () => <div data-testid="ai" /> }));
 vi.mock("../AboutPanel", () => ({ AboutPanel: () => <div data-testid="about" /> }));
 vi.mock("../VoicePanel", () => ({ VoicePanel: () => <div data-testid="voice" /> }));
+// 安装门的行为由 ModuleGate.test.tsx 覆盖；这里只验证导航，直接透传子页面。
+vi.mock("../ModuleGate", () => ({
+  ModuleGate: ({ children }: { children: import("react").ReactNode }) => <>{children}</>,
+}));
 vi.mock("../TimeAppearancePanel", () => ({
   TimeAppearancePanel: () => <div data-testid="time-appearance" />,
 }));

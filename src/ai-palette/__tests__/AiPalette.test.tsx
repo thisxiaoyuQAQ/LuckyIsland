@@ -122,13 +122,43 @@ beforeEach(() => {
   aiCancelMock.mockResolvedValue("cancelled");
   aiClearHistoryMock.mockResolvedValue(undefined);
   aiSwitchProviderMock.mockResolvedValue(undefined);
-  invokeMock.mockResolvedValue("");
+  invokeMock.mockImplementation(async (command: string) =>
+    command === "module_status" ? { ai: true, voice: true } : "",
+  );
 });
 
 afterEach(() => {
   vi.useRealTimers();
   document.body.replaceChildren();
   vi.restoreAllMocks();
+});
+
+describe("AiPalette voice module (module 15)", () => {
+  const micButton = () => document.querySelector('button[aria-label="语音输入"]');
+
+  it("hides voice input while the voice module is uninstalled and follows modules://changed", async () => {
+    invokeMock.mockImplementation(async (command: string) =>
+      command === "module_status" ? { ai: true, voice: false } : "",
+    );
+    const tree = await mountPalette();
+    expect(micButton()).toBeNull();
+
+    await emit(subscription("modules://changed"), { ai: true, voice: true });
+    expect(micButton()).not.toBeNull();
+    await tree.unmount();
+  });
+
+  it("keeps voice input when the module status cannot be read", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "module_status") throw new Error("ipc down");
+      return "";
+    });
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const tree = await mountPalette();
+    expect(micButton()).not.toBeNull();
+    error.mockRestore();
+    await tree.unmount();
+  });
 });
 
 describe("AiPalette event behavior", () => {

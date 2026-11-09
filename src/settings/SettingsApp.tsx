@@ -11,6 +11,7 @@ import { TerminalPanel } from "./TerminalPanel";
 import { AiHistoryPanel } from "./AiHistoryPanel";
 import { AboutPanel } from "./AboutPanel";
 import { VoicePanel } from "./VoicePanel";
+import { ModuleGate } from "./ModuleGate";
 import { TimeAppearancePanel } from "./TimeAppearancePanel";
 import { TimeWidgetsPanel } from "./TimeWidgetsPanel";
 import { cn } from "@/lib/utils";
@@ -131,7 +132,9 @@ function SettingsApp() {
         ) : tab === "stock" ? (
           <StockPanel />
         ) : tab === "ai" ? (
-          <AiHistoryPanel />
+          <ModuleGate module="ai">
+            <AiHistoryPanel />
+          </ModuleGate>
         ) : tab === "hotkeys" ? (
           <HotkeysPanel />
         ) : tab === "time_widgets" ? (
@@ -139,7 +142,9 @@ function SettingsApp() {
         ) : tab === "time_appearance" ? (
           <TimeAppearancePanel />
         ) : tab === "voice" ? (
-          <VoicePanel />
+          <ModuleGate module="voice">
+            <VoicePanel />
+          </ModuleGate>
         ) : tab === "about" ? (
           <AboutPanel />
         ) : (

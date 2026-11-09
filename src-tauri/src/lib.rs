@@ -6,6 +6,7 @@ mod fullscreen;
 mod hotkeys;
 mod island_drag;
 mod logging;
+mod modules;
 mod monitor;
 mod notify;
 mod settings;
@@ -94,6 +95,42 @@ impl Drop for UpdaterCleanupGuard {
 }
 
 /// Alt+Space / 托盘「AI 助手」：面板已显示则关闭（同 ESC，保存位置），否则打开
+const TRAY_ID: &str = "main";
+
+/// 托盘菜单；问答卸载后不含「AI 助手」项（模块 15）。
+fn build_tray_menu(app: &tauri::AppHandle, ai_installed: bool) -> tauri::Result<Menu<tauri::Wry>> {
+    let show_item = MenuItem::with_id(app, "show", "显示/隐藏", true, None::<&str>)?;
+    let settings_item = MenuItem::with_id(app, "settings", "设置...", true, None::<&str>)?;
+    let restart_item = MenuItem::with_id(app, "restart", "重启", true, None::<&str>)?;
+    let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+    if ai_installed {
+        let ai_item = MenuItem::with_id(app, "ai", "AI 助手", true, None::<&str>)?;
+        Menu::with_items(
+            app,
+            &[
+                &show_item,
+                &settings_item,
+                &ai_item,
+                &restart_item,
+                &quit_item,
+            ],
+        )
+    } else {
+        Menu::with_items(
+            app,
+            &[&show_item, &settings_item, &restart_item, &quit_item],
+        )
+    }
+}
+
+/// 按问答安装态重建托盘菜单（模块 15 安装/卸载后调用）。
+pub(crate) fn refresh_tray_menu(app: &tauri::AppHandle, ai_installed: bool) -> tauri::Result<()> {
+    let Some(tray) = app.tray_by_id(TRAY_ID) else {
+        return Ok(());
+    };
+    tray.set_menu(Some(build_tray_menu(app, ai_installed)?))
+}
+
 fn toggle_ai_palette(app: &tauri::AppHandle) {
     let visible = app
         .get_webview_window("ai-palette")
@@ -271,6 +308,9 @@ pub fn run() {
             voice_record_utterance,
             voice_validate_keyword,
             hotkeys_list,
+            modules::module_status,
+            modules::module_uninstall,
+            modules::module_install,
             hotkeys_apply,
             hotkeys_reset,
             hotkeys_suspend,
@@ -298,23 +338,12 @@ pub fn run() {
                     .plugin(tauri_plugin_updater::Builder::new().build())?;
             }
 
-            // 系统托盘
-            let show_item = MenuItem::with_id(app, "show", "显示/隐藏", true, None::<&str>)?;
-            let settings_item = MenuItem::with_id(app, "settings", "设置...", true, None::<&str>)?;
-            let ai_item = MenuItem::with_id(app, "ai", "AI 助手", true, None::<&str>)?;
-            let restart_item = MenuItem::with_id(app, "restart", "重启", true, None::<&str>)?;
-            let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-            let menu = Menu::with_items(
-                app,
-                &[
-                    &show_item,
-                    &settings_item,
-                    &ai_item,
-                    &restart_item,
-                    &quit_item,
-                ],
+            // 系统托盘（固定 id，模块 15 安装/卸载问答时按 id 重建菜单）
+            let menu = build_tray_menu(
+                app.handle(),
+                modules::status(app.state::<storage::Db>().inner()).ai,
             )?;
-            TrayIconBuilder::new()
+            TrayIconBuilder::with_id(TRAY_ID)
                 .icon(
                     app.default_window_icon()
                         .cloned()
@@ -402,10 +431,12 @@ pub fn run() {
             {
                 let app_for_voice = app.handle().clone();
                 let db = app.state::<crate::storage::Db>();
-                let enabled = db
-                    .setting_get("wake:enabled")
-                    .map(|v| v == "true")
-                    .unwrap_or(false);
+                // 语音模块已卸载（模块 15）时不恢复监听，也不报错。
+                let enabled = modules::status(db.inner()).voice
+                    && db
+                        .setting_get("wake:enabled")
+                        .map(|v| v == "true")
+                        .unwrap_or(false);
                 if enabled {
                     let state = app.state::<VoiceState>();
                     if let Err(e) = voice::start_listening_inner(&app_for_voice, state.inner()) {

@@ -516,6 +516,8 @@ export interface HotkeyEntry {
   binding: string;
   /** 默认绑定；空字符串表示该动作默认未绑定 */
   default: string;
+  /** 所属模块已卸载，动作停用、不可录制（模块 15：问答卸载后的 toggle_ai） */
+  disabled: boolean;
 }
 
 /** 应用结果（hotkeys_apply / hotkeys_reset 返回，每动作一条） */

@@ -534,6 +534,13 @@ mod portable_tests {
         assert!(!Db::is_portable_setting("weather:last"));
     }
 
+    /// 模块 15：模块安装态只描述本机（模型文件不随配置迁移），不随配置导出/导入。
+    #[test]
+    fn module_install_state_is_machine_local() {
+        assert!(!Db::is_portable_setting("modules:ai:installed"));
+        assert!(!Db::is_portable_setting("modules:voice:installed"));
+    }
+
     #[test]
     fn hotkeys_settings_portable() {
         // 自定义热键随配置导出/导入；密钥/运行时数据仍被排除。

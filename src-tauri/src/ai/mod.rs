@@ -71,6 +71,7 @@ pub async fn ai_chat(
     message: String,
     history: Vec<Message>,
 ) -> Result<AiResponse, String> {
+    crate::modules::ensure_ai(db.inner())?;
     if request_id.trim().is_empty() {
         return Err("requestId 不能为空".to_string());
     }
@@ -181,6 +182,8 @@ pub async fn ai_switch_provider(
 /// 未设置时回退屏幕中央偏上。show + 聚焦（不做失焦隐藏，仅 ESC / 再按 Alt+Space 关闭）。
 #[tauri::command]
 pub fn open_ai_palette(app: AppHandle) -> Result<(), String> {
+    // 热键、托盘、语音唤醒与前端 invoke 都经过这里：问答卸载后统一拒绝（模块 15）。
+    crate::modules::ensure_ai(app.state::<Db>().inner())?;
     if let Some(win) = app.get_webview_window("ai-palette") {
         // 从 managed state 取 Db（热键/托盘/前端 invoke 三种入口统一走这里）
         let db = app.state::<Db>();
